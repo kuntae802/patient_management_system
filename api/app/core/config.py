@@ -14,8 +14,10 @@ def _split_csv(raw: str) -> list[str]:
 class _Settings:
     # 서브패스 전파 (4개 서피스 일관). project-context: root_path=/patient_management_system/api
     api_root_path: str = os.getenv("API_ROOT_PATH", "/patient_management_system/api")
+    # 기본값에 로컬 dev origin 포함 (config가 .env 미로딩이라 무설정 시 이 값 사용).
+    # 배포는 compose env(CORS_ORIGINS=운영 origin)로 override.
     cors_origins: list[str] = _split_csv(
-        os.getenv("CORS_ORIGINS", "https://kuntae802.mooo.com")
+        os.getenv("CORS_ORIGINS", "http://localhost:3000,https://kuntae802.mooo.com")
     )
     # 로컬: supabase start 출력값. 서버 전용 시크릿은 클라 노출 금지.
     supabase_db_url: str | None = os.getenv("SUPABASE_DB_URL")

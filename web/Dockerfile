@@ -9,7 +9,14 @@ FROM node:22-bookworm-slim AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-ENV NEXT_PUBLIC_BASE_PATH=/patient_management_system
+# NEXT_PUBLIC_* 는 빌드타임에 클라 번들로 인라인됨 → 반드시 build ARG로 주입
+# (런타임 env로 넘기면 브라우저 번들엔 안 박힘. compose의 build.args가 .env에서 전달)
+ARG NEXT_PUBLIC_BASE_PATH=/patient_management_system
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+ENV NEXT_PUBLIC_BASE_PATH=$NEXT_PUBLIC_BASE_PATH \
+    NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
+    NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 RUN npm run build
 
 FROM node:22-bookworm-slim AS runner

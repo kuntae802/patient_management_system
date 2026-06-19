@@ -20,17 +20,27 @@ services:
     ports:
       # 108 nginx가 192.168.219.110:8060 → 컨테이너 8000으로 proxy (api 공개 라우팅)
       - "${API_HOST_BIND:-192.168.219.110:8060}:8000"
+    healthcheck:
+      # web의 depends_on이 readiness까지 대기하도록 (SSR 첫 요청 레이스 방지)
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   web:
     build:
       context: ./web
       dockerfile: Dockerfile
+      args:
+        # NEXT_PUBLIC_* 는 빌드타임 인라인 → build args로 전달 (런타임 env 아님). .env에서 주입.
+        NEXT_PUBLIC_BASE_PATH: ${NEXT_PUBLIC_BASE_PATH:-/patient_management_system}
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
     restart: unless-stopped
     environment:
-      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
-      NEXT_PUBLIC_BASE_PATH: ${NEXT_PUBLIC_BASE_PATH:-/patient_management_system}
-      # SSR 서버사이드 fetch는 컨테이너 네트워크로 api 직접 호출
+      # 서버 런타임 전용. SSR 서버사이드 fetch는 컨테이너 네트워크로 api 직접 호출
+      # (내부 경로는 prefix 없음: http://api:8000/v1/... — 외부 /…/api/v1/... 과 다름)
       API_INTERNAL_URL: http://api:8000
       # SSR 시각 표시(Intl/Date)를 KST로 (컨테이너 기본 UTC 교정)
       TZ: Asia/Seoul
@@ -38,4 +48,5 @@ services:
       # 108 nginx가 192.168.219.110:3002 → 컨테이너 3000으로 proxy
       - "${WEB_HOST_BIND:-192.168.219.110:3002}:3000"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
