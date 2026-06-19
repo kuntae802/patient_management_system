@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>진료상태 인디케이터 비교 — 진료 관리 시스템 (외래)</title>
+<!--
+================================================================================
+  STATUS-INDICATOR STYLE COMPARISON — Outpatient Patient Management System (KR)
+  Goal: make 진료상태(encounter status) MAXIMALLY distinguishable at a glance.
+  North star: "한눈에 · 헷갈리지 않게 · 누락 0" (new staff must not confuse states).
+
+  Problem being fixed: current design = single small colored dot only.
+    예약 and 취소 both read as grey → ambiguous; color-only fails grayscale /
+    color-blind scanning. Solution = REDUNDANT CODING (hue + SHAPE + tint + label).
+
+--------------------------------------------------------------------------------
+  PALETTE — lifted verbatim from color-themes-1.html, variation #4
+            "클리니컬 틸-블루 (Clinical Teal-Blue)". This page is built on it.
+--------------------------------------------------------------------------------
+    background        #FAFCFC
+    surface           #FFFFFF
+    surface-muted     #EFF5F5
+    border            #D9E5E5
+    text-primary      #0E1C1D
+    text-muted        #54686A
+    text-disabled     #97A9AA
+    primary (BRAND/ACTION accent — teal) #0E7C8E   <- buttons/links ONLY
+    primary-foreground #FFFFFF
+    primary-hover     #0A6675
+    ring              #2C9FB0
+    success           #2C8466
+    warning           #BC7E12
+    danger            #C2433B
+    info              #1E8FA0
+
+--------------------------------------------------------------------------------
+  FINAL 진료상태 MAPPING (SAME across styles A–D; only rendering changes).
+  Hues chosen to be maximally distinct AND to avoid colliding with teal #0E7C8E:
+    info teal-cyan (#1E8FA0) was REJECTED for 진행중 — too close to brand teal.
+    진행중 uses INDIGO instead, which is clearly off-brand and unmistakable.
+--------------------------------------------------------------------------------
+    STATE   ROLE/ACTIONABILITY     HEX        GLYPH   SHAPE NOTE
+    예약    future, not here yet   #64758A    ○       hollow/ring slate dot (low weight)
+    접수    waiting to be seen     #BC7E12    ●       filled amber dot (attention)
+    진행중  active right now       #4F46C7    ◐       indigo half/progress glyph (strong, off-brand)
+    완료    done / settled         #2C8466    ✓       green check (quiet positive)
+    취소    cancelled / killed     #C2433B    ✕       rose-red cross + strikethrough label
+
+    Slate(예약) vs Rose(취소) are now far apart in hue, weight AND glyph
+    (hollow ring vs solid cross) — the old grey-vs-grey confusion is resolved.
+================================================================================
+-->
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+
+  /* ---- THEME TOKENS: 클리니컬 틸-블루 (#4) ---- */
+  :root{
+    --background:#FAFCFC; --surface:#FFFFFF; --surface-muted:#EFF5F5; --border:#D9E5E5;
+    --text-primary:#0E1C1D; --text-muted:#54686A; --text-disabled:#97A9AA;
+    --primary:#0E7C8E; --primary-foreground:#FFFFFF; --primary-hover:#0A6675; --ring:#2C9FB0;
+    --success:#2C8466; --warning:#BC7E12; --danger:#C2433B; --info:#1E8FA0;
+
+    /* ---- 진료상태 colors (NOT brand teal) ---- */
+    --st-reserved:#64758A;  /* 예약  slate    */
+    --st-checkin:#BC7E12;   /* 접수  amber    */
+    --st-progress:#4F46C7;  /* 진행중 indigo  */
+    --st-done:#2C8466;      /* 완료  green    */
+    --st-cancel:#C2433B;    /* 취소  rose-red */
+  }
+
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo","Malgun Gothic","Segoe UI",sans-serif;
+    background:#eceef1; color:var(--text-primary); font-size:13px; line-height:1.5;
+    padding:28px 22px 64px;
+  }
+
+  .wrap{max-width:1120px; margin:0 auto; display:flex; flex-direction:column; gap:26px}
+
+  /* ---- page header ---- */
+  .page-head h1{font-size:19px; font-weight:650; letter-spacing:-0.01em; color:#0E1C1D}
+  .page-head p{font-size:12.5px; color:#54686A; margin-top:5px; line-height:1.65}
+  .page-head .meta{font-size:11.5px; color:#7b8089; margin-top:9px; line-height:1.7}
+  .page-head code{font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;font-size:11px;background:#fff;border:1px solid #dfe2e6;border-radius:4px;padding:1px 5px}
+  .swatch-tag{display:inline-flex;align-items:center;gap:6px}
+  .swatch-tag .sw{width:11px;height:11px;border-radius:3px;border:1px solid rgba(0,0,0,.12);display:inline-block;background:var(--primary)}
+
+  /* ---- generic panel ---- */
+  .panel{border:1px solid var(--border); background:var(--surface); border-radius:11px; overflow:hidden}
+  .panel-head{padding:14px 18px; border-bottom:1px solid var(--border); background:var(--background)}
+  .panel-head .ph-title{font-size:14.5px; font-weight:650; letter-spacing:-0.01em; color:var(--text-primary)}
+  .panel-head .ph-sub{font-size:12px; color:var(--text-muted); margin-top:3px; line-height:1.6}
+  .panel-head .ph-tag{
+    display:inline-block; font-size:10.5px; font-weight:600; letter-spacing:.04em;
+    color:var(--primary); background:color-mix(in srgb,var(--primary) 9%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--primary) 24%,var(--surface));
+    border-radius:5px; padding:1px 7px; margin-right:8px; vertical-align:1px;
+  }
+
+  /* ============================================================
+     SHARED STATUS PRIMITIVES (same mapping everywhere)
+     ============================================================ */
+  .status{display:inline-flex; align-items:center; gap:6px; font-size:12.5px; color:var(--text-primary); white-space:nowrap}
+
+  /* glyph atoms */
+  .g{width:11px; height:11px; flex:none; display:inline-flex; align-items:center; justify-content:center; line-height:1}
+  /* 예약 — hollow ring (slate) */
+  .g-reserved{border:1.6px solid var(--st-reserved); border-radius:50%; background:transparent}
+  /* 접수 — filled dot (amber) */
+  .g-checkin{border-radius:50%; background:var(--st-checkin)}
+  /* 진행중 — half/progress disc (indigo): conic split */
+  .g-progress{border-radius:50%; border:1.6px solid var(--st-progress);
+    background:conic-gradient(var(--st-progress) 0 50%, transparent 50% 100%)}
+  /* 완료 — green check */
+  .g-done{color:var(--st-done); font-size:11px; font-weight:800}
+  /* 취소 — rose cross */
+  .g-cancel{color:var(--st-cancel); font-size:11px; font-weight:800}
+
+  /* baseline tiny dot (Style A) */
+  .dot{width:7px; height:7px; border-radius:50%; flex:none}
+  .dot.d-reserved{background:var(--st-reserved)}
+  .dot.d-checkin{background:var(--st-checkin)}
+  .dot.d-progress{background:var(--st-progress)}
+  .dot.d-done{background:var(--st-done)}
+  .dot.d-cancel{background:var(--st-cancel)}
+  .status.a-cancel{color:var(--text-muted)} /* baseline: cancel only slightly differs (the problem) */
+
+  /* badge (Styles B/C/D): tint + shape-glyph + colored label */
+  .badge{
+    display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:600;
+    border-radius:6px; padding:2px 8px 2px 7px; border:1px solid transparent; line-height:1.55; white-space:nowrap;
+  }
+  .badge .g{width:10px;height:10px}
+  .badge.bs-reserved{color:var(--st-reserved); background:color-mix(in srgb,var(--st-reserved) 9%,var(--surface)); border-color:color-mix(in srgb,var(--st-reserved) 26%,var(--surface))}
+  .badge.bs-checkin {color:#8a5d09;              background:color-mix(in srgb,var(--st-checkin) 14%,var(--surface)); border-color:color-mix(in srgb,var(--st-checkin) 34%,var(--surface))}
+  .badge.bs-progress{color:var(--st-progress); background:color-mix(in srgb,var(--st-progress) 11%,var(--surface)); border-color:color-mix(in srgb,var(--st-progress) 30%,var(--surface))}
+  .badge.bs-done    {color:var(--st-done);     background:color-mix(in srgb,var(--st-done) 10%,var(--surface));    border-color:color-mix(in srgb,var(--st-done) 28%,var(--surface))}
+  .badge.bs-cancel  {color:var(--st-cancel);   background:color-mix(in srgb,var(--st-cancel) 10%,var(--surface));  border-color:color-mix(in srgb,var(--st-cancel) 28%,var(--surface)); text-decoration:line-through; text-decoration-thickness:1px}
+  /* check/cross inside badge inherit label color */
+  .badge.bs-done .g-done{color:var(--st-done)}
+  .badge.bs-cancel .g-cancel{color:var(--st-cancel); text-decoration:none}
+
+  /* ============================================================
+     TABLE (진료 대기 현황판) — dense Linear-minimal, hairline
+     ============================================================ */
+  .board{}
+  .board .bd-head{display:flex; align-items:center; justify-content:space-between; padding:11px 14px; border-bottom:1px solid var(--border); background:var(--surface)}
+  .board .bd-head .ttl{font-size:13px; font-weight:600; color:var(--text-primary); display:inline-flex; align-items:center; gap:8px}
+  .board .bd-head .ttl .cnt{font-size:11px; font-weight:500; color:var(--text-muted); background:var(--surface-muted); border:1px solid var(--border); border-radius:20px; padding:1px 8px}
+  .btn-primary{
+    font-family:inherit; font-size:12px; font-weight:550;
+    color:var(--primary-foreground); background:var(--primary);
+    border:1px solid var(--primary-hover); border-radius:6px; padding:5px 11px; cursor:pointer;
+    display:inline-flex; align-items:center; gap:6px;
+  }
+  .btn-primary:hover{background:var(--primary-hover)}
+  .btn-primary .ic{font-size:11px; line-height:1}
+
+  table.q{width:100%; border-collapse:collapse; font-size:13px}
+  table.q thead th{
+    text-align:left; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.05em;
+    color:var(--text-muted); padding:7px 14px; border-bottom:1px solid var(--border); background:var(--background); white-space:nowrap;
+  }
+  table.q tbody td{padding:6px 14px; border-bottom:1px solid var(--border); color:var(--text-primary); vertical-align:middle; white-space:nowrap}
+  table.q tbody tr:last-child td{border-bottom:none}
+  table.q tbody tr:hover{background:var(--background)}
+  table.q .num{font-variant-numeric:tabular-nums; color:var(--text-muted)}
+  table.q .name{font-weight:500}
+  table.q .doc{color:var(--text-muted)}
+  table.q .wait{font-variant-numeric:tabular-nums; color:var(--text-primary)}
+  table.q .wait.long{color:var(--danger); font-weight:600}
+  table.q .wait.none{color:var(--text-disabled)}
+  table.q td.st{width:148px}
+
+  /* Style C: colored left border per row */
+  table.cc tbody td:first-child{position:relative}
+  table.cc tbody td:first-child::before{content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--row-c, transparent)}
+  tr.rc-reserved{--row-c:var(--st-reserved)}
+  tr.rc-checkin {--row-c:var(--st-checkin)}
+  tr.rc-progress{--row-c:var(--st-progress)}
+  tr.rc-done    {--row-c:var(--st-done)}
+  tr.rc-cancel  {--row-c:var(--st-cancel)}
+
+  /* Style D: actionability emphasis */
+  /* settled (예약/완료/취소) recede; action-needed (접수/진행중) pop */
+  table.dd tbody tr.act{background:var(--row-bg, transparent)}
+  table.dd tbody tr.act-checkin {--row-bg:color-mix(in srgb,var(--st-checkin) 7%,var(--surface))}
+  table.dd tbody tr.act-progress{--row-bg:color-mix(in srgb,var(--st-progress) 7%,var(--surface))}
+  table.dd tbody tr.act:hover{filter:brightness(0.985)}
+  table.dd .name.quiet{color:var(--text-muted); font-weight:400}
+  /* settled badges: quieter (less tint, muted text) */
+  .badge.q-settled{font-weight:500; opacity:.92}
+  /* action badges: bolder, ring emphasis */
+  .badge.strong{font-weight:700; box-shadow:0 0 0 2px var(--bg-ring, transparent)}
+  .badge.strong.bs-checkin {--bg-ring:color-mix(in srgb,var(--st-checkin) 16%,var(--surface))}
+  .badge.strong.bs-progress{--bg-ring:color-mix(in srgb,var(--st-progress) 16%,var(--surface))}
+
+  /* ============================================================
+     LEGEND card
+     ============================================================ */
+  .legend-body{padding:14px 18px}
+  .legend-grid{display:grid; grid-template-columns:repeat(5,1fr); gap:10px}
+  .leg{border:1px solid var(--border); border-radius:9px; padding:11px 12px; background:var(--surface); display:flex; flex-direction:column; gap:7px}
+  .leg .lh{display:flex; align-items:center; gap:8px}
+  .leg .lh .lstate{font-size:13px; font-weight:650; color:var(--text-primary)}
+  .leg .lmean{font-size:11.5px; color:var(--text-muted); line-height:1.5}
+  .leg .lmean b{color:var(--text-primary); font-weight:600}
+  .leg .lhex{font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace; font-size:10px; color:var(--text-disabled); margin-top:1px}
+  .leg .leg-glyph{width:16px;height:16px}
+  .leg.cancelled .lstate{text-decoration:line-through; text-decoration-color:var(--st-cancel)}
+  @media (max-width:900px){.legend-grid{grid-template-columns:repeat(2,1fr)}}
+
+  /* ============================================================
+     색약 시뮬레이션 노트
+     ============================================================ */
+  .cb-note{padding:16px 18px}
+  .cb-cols{display:grid; grid-template-columns:1fr 1fr; gap:14px}
+  @media (max-width:760px){.cb-cols{grid-template-columns:1fr}}
+  .cb-card{border:1px solid var(--border); border-radius:9px; overflow:hidden; background:var(--surface)}
+  .cb-card .cbh{font-size:11px; font-weight:600; color:var(--text-muted); padding:8px 12px; border-bottom:1px solid var(--border); background:var(--background); text-transform:uppercase; letter-spacing:.04em}
+  .cb-card.gray .cbrow{filter:grayscale(1)}
+  .cbrow{display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:12px}
+  .cb-explain{font-size:11.5px; color:var(--text-muted); line-height:1.7; margin-top:12px}
+  .cb-explain b{color:var(--text-primary); font-weight:600}
+
+  .section-label{font-size:11px; font-weight:700; letter-spacing:.07em; text-transform:uppercase; color:#7b8089}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ================= PAGE HEADER ================= -->
+  <div class="page-head">
+    <h1>진료상태 인디케이터 — 스타일 비교</h1>
+    <p>
+      외래 진료 관리 시스템 · 팔레트: <span class="swatch-tag"><span class="sw"></span><strong>클리니컬 틸-블루</strong> (primary <code>#0E7C8E</code>)</span> 기반.
+      목표는 5개 진료상태를 <strong>한눈에 · 헷갈리지 않게</strong> 구분하는 것.
+    </p>
+    <p class="meta">
+      현재 문제: 진료상태가 <strong>작은 컬러 닷 하나</strong>로만 표현되어 <code>예약</code>·<code>취소</code>가 둘 다 회색으로 읽히고, 색만으로는 빠른 스캔·색약 사용자에게 약함.<br>
+      해결: <strong>색(hue) + 도형(shape) + 틴트 + 라벨</strong>을 모두 같은 의미에 중복 인코딩(redundant coding). 진행중은 브랜드 틸과 충돌하지 않도록 <strong>인디고</strong>를 사용.<br>
+      아래 4개 스타일은 <strong>매핑은 동일</strong>하고 렌더링 방식만 다릅니다. A는 현재(베이스라인), D는 액션성(actionability) 기반 강조.
+    </p>
+  </div>
+
+  <!-- ================= LEGEND ================= -->
+  <section class="panel">
+    <div class="panel-head">
+      <div class="ph-title">범례 — 진료상태 매핑 (5개 상태 = 색 + 도형 + 의미)</div>
+      <div class="ph-sub">모든 스타일에서 동일하게 사용. 도형이 색과 별개로 의미를 전달하므로 흑백·색약에서도 구분됩니다.</div>
+    </div>
+    <div class="legend-body">
+      <div class="legend-grid">
+        <div class="leg">
+          <div class="lh"><span class="g g-reserved leg-glyph"></span><span class="lstate">예약</span></div>
+          <div class="lmean"><b>예정</b> · 아직 내원 전</div>
+          <div class="lhex">slate ○ #64758A</div>
+        </div>
+        <div class="leg">
+          <div class="lh"><span class="g g-checkin leg-glyph"></span><span class="lstate">접수</span></div>
+          <div class="lmean"><b>대기</b> · 진료 대기중</div>
+          <div class="lhex">amber ● #BC7E12</div>
+        </div>
+        <div class="leg">
+          <div class="lh"><span class="g g-progress leg-glyph"></span><span class="lstate">진행중</span></div>
+          <div class="lmean"><b>진행</b> · 지금 진료중</div>
+          <div class="lhex">indigo ◐ #4F46C7</div>
+        </div>
+        <div class="leg">
+          <div class="lh"><span class="g g-done leg-glyph">✓</span><span class="lstate">완료</span></div>
+          <div class="lmean"><b>완료</b> · 진료 종료</div>
+          <div class="lhex">green ✓ #2C8466</div>
+        </div>
+        <div class="leg cancelled">
+          <div class="lh"><span class="g g-cancel leg-glyph">✕</span><span class="lstate">취소</span></div>
+          <div class="lmean"><b>취소</b> · 진료 취소됨</div>
+          <div class="lhex">rose ✕ #C2433B</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= STYLE A ================= -->
+  <section class="panel">
+    <div class="panel-head">
+      <div class="ph-title"><span class="ph-tag">스타일 A</span>점만 — 베이스라인 (현재)</div>
+      <div class="ph-sub">작은 컬러 닷 + 라벨. 색만으로 인코딩 → 예약·취소가 비슷해 보이고 스캔이 느림. (대조용)</div>
+    </div>
+    <div class="board">
+      <div class="bd-head">
+        <span class="ttl">진료 대기 현황판 <span class="cnt">총 8명</span></span>
+        <button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button>
+      </div>
+      <table class="q">
+        <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+        <tbody>
+          <tr><td class="num">A-012</td><td class="name">김영희</td><td class="st"><span class="status"><span class="dot d-progress"></span>진행중</span></td><td class="doc">이정훈</td><td class="wait">04:12</td></tr>
+          <tr><td class="num">A-013</td><td class="name">박철수</td><td class="st"><span class="status"><span class="dot d-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">08:45</td></tr>
+          <tr><td class="num">A-014</td><td class="name">이민준</td><td class="st"><span class="status"><span class="dot d-checkin"></span>접수</span></td><td class="doc">서민경</td><td class="wait long">21:30</td></tr>
+          <tr><td class="num">A-015</td><td class="name">정수아</td><td class="st"><span class="status"><span class="dot d-reserved"></span>예약</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+          <tr><td class="num">A-016</td><td class="name">한지우</td><td class="st"><span class="status a-cancel"><span class="dot d-cancel"></span>취소</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+          <tr><td class="num">A-010</td><td class="name">오세훈</td><td class="st"><span class="status"><span class="dot d-done"></span>완료</span></td><td class="doc">이정훈</td><td class="wait none">—</td></tr>
+          <tr><td class="num">A-017</td><td class="name">윤서연</td><td class="st"><span class="status"><span class="dot d-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">12:05</td></tr>
+          <tr><td class="num">A-011</td><td class="name">강도윤</td><td class="st"><span class="status"><span class="dot d-done"></span>완료</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= STYLE B ================= -->
+  <section class="panel">
+    <div class="panel-head">
+      <div class="ph-title"><span class="ph-tag">스타일 B</span>도형+색 뱃지 (중복 인코딩)</div>
+      <div class="ph-sub">소프트 틴트 pill 뱃지 안에 도형 글리프(○/●/◐/✓/✕) + 컬러 라벨. 색 AND 도형 AND 틴트가 함께 상태를 인코딩.</div>
+    </div>
+    <div class="board">
+      <div class="bd-head">
+        <span class="ttl">진료 대기 현황판 <span class="cnt">총 8명</span></span>
+        <button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button>
+      </div>
+      <table class="q">
+        <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+        <tbody>
+          <tr><td class="num">A-012</td><td class="name">김영희</td><td class="st"><span class="badge bs-progress"><span class="g g-progress"></span>진행중</span></td><td class="doc">이정훈</td><td class="wait">04:12</td></tr>
+          <tr><td class="num">A-013</td><td class="name">박철수</td><td class="st"><span class="badge bs-checkin"><span class="g g-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">08:45</td></tr>
+          <tr><td class="num">A-014</td><td class="name">이민준</td><td class="st"><span class="badge bs-checkin"><span class="g g-checkin"></span>접수</span></td><td class="doc">서민경</td><td class="wait long">21:30</td></tr>
+          <tr><td class="num">A-015</td><td class="name">정수아</td><td class="st"><span class="badge bs-reserved"><span class="g g-reserved"></span>예약</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+          <tr><td class="num">A-016</td><td class="name">한지우</td><td class="st"><span class="badge bs-cancel"><span class="g g-cancel">✕</span>취소</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+          <tr><td class="num">A-010</td><td class="name">오세훈</td><td class="st"><span class="badge bs-done"><span class="g g-done">✓</span>완료</span></td><td class="doc">이정훈</td><td class="wait none">—</td></tr>
+          <tr><td class="num">A-017</td><td class="name">윤서연</td><td class="st"><span class="badge bs-checkin"><span class="g g-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">12:05</td></tr>
+          <tr><td class="num">A-011</td><td class="name">강도윤</td><td class="st"><span class="badge bs-done"><span class="g g-done">✓</span>완료</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= STYLE C ================= -->
+  <section class="panel">
+    <div class="panel-head">
+      <div class="ph-title"><span class="ph-tag">스타일 C</span>행 좌측 컬러 보더 + 뱃지</div>
+      <div class="ph-sub">각 행 왼쪽에 3px 상태색 보더 + B의 뱃지. 긴 목록에서 행 단위 스캔성(scannability)을 극대화.</div>
+    </div>
+    <div class="board">
+      <div class="bd-head">
+        <span class="ttl">진료 대기 현황판 <span class="cnt">총 8명</span></span>
+        <button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button>
+      </div>
+      <table class="q cc">
+        <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+        <tbody>
+          <tr class="rc-progress"><td class="num">A-012</td><td class="name">김영희</td><td class="st"><span class="badge bs-progress"><span class="g g-progress"></span>진행중</span></td><td class="doc">이정훈</td><td class="wait">04:12</td></tr>
+          <tr class="rc-checkin"><td class="num">A-013</td><td class="name">박철수</td><td class="st"><span class="badge bs-checkin"><span class="g g-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">08:45</td></tr>
+          <tr class="rc-checkin"><td class="num">A-014</td><td class="name">이민준</td><td class="st"><span class="badge bs-checkin"><span class="g g-checkin"></span>접수</span></td><td class="doc">서민경</td><td class="wait long">21:30</td></tr>
+          <tr class="rc-reserved"><td class="num">A-015</td><td class="name">정수아</td><td class="st"><span class="badge bs-reserved"><span class="g g-reserved"></span>예약</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+          <tr class="rc-cancel"><td class="num">A-016</td><td class="name">한지우</td><td class="st"><span class="badge bs-cancel"><span class="g g-cancel">✕</span>취소</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+          <tr class="rc-done"><td class="num">A-010</td><td class="name">오세훈</td><td class="st"><span class="badge bs-done"><span class="g g-done">✓</span>완료</span></td><td class="doc">이정훈</td><td class="wait none">—</td></tr>
+          <tr class="rc-checkin"><td class="num">A-017</td><td class="name">윤서연</td><td class="st"><span class="badge bs-checkin"><span class="g g-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">12:05</td></tr>
+          <tr class="rc-done"><td class="num">A-011</td><td class="name">강도윤</td><td class="st"><span class="badge bs-done"><span class="g g-done">✓</span>완료</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= STYLE D ================= -->
+  <section class="panel">
+    <div class="panel-head">
+      <div class="ph-title"><span class="ph-tag">스타일 D</span>강조 분리 — 액션성(actionability) 기반</div>
+      <div class="ph-sub">정착 상태(완료/취소/예약)는 조용히 가라앉히고, 조치 필요 상태(접수/진행중)는 더 강하게(굵은 뱃지 + 연한 행 배경). "다음에 할 일"이 먼저 보이도록.</div>
+    </div>
+    <div class="board">
+      <div class="bd-head">
+        <span class="ttl">진료 대기 현황판 <span class="cnt">조치 필요 3명</span></span>
+        <button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button>
+      </div>
+      <table class="q dd">
+        <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+        <tbody>
+          <tr class="act act-progress"><td class="num">A-012</td><td class="name">김영희</td><td class="st"><span class="badge bs-progress strong"><span class="g g-progress"></span>진행중</span></td><td class="doc">이정훈</td><td class="wait">04:12</td></tr>
+          <tr class="act act-checkin"><td class="num">A-013</td><td class="name">박철수</td><td class="st"><span class="badge bs-checkin strong"><span class="g g-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">08:45</td></tr>
+          <tr class="act act-checkin"><td class="num">A-014</td><td class="name">이민준</td><td class="st"><span class="badge bs-checkin strong"><span class="g g-checkin"></span>접수</span></td><td class="doc">서민경</td><td class="wait long">21:30</td></tr>
+          <tr><td class="num">A-015</td><td class="name quiet">정수아</td><td class="st"><span class="badge bs-reserved q-settled"><span class="g g-reserved"></span>예약</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+          <tr><td class="num">A-016</td><td class="name quiet">한지우</td><td class="st"><span class="badge bs-cancel q-settled"><span class="g g-cancel">✕</span>취소</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+          <tr><td class="num">A-010</td><td class="name quiet">오세훈</td><td class="st"><span class="badge bs-done q-settled"><span class="g g-done">✓</span>완료</span></td><td class="doc">이정훈</td><td class="wait none">—</td></tr>
+          <tr class="act act-checkin"><td class="num">A-017</td><td class="name">윤서연</td><td class="st"><span class="badge bs-checkin strong"><span class="g g-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">12:05</td></tr>
+          <tr><td class="num">A-011</td><td class="name quiet">강도윤</td><td class="st"><span class="badge bs-done q-settled"><span class="g g-done">✓</span>완료</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= 색약 시뮬레이션 노트 ================= -->
+  <section class="panel">
+    <div class="panel-head">
+      <div class="ph-title">색약 시뮬레이션 노트</div>
+      <div class="ph-sub">왼쪽은 정상 색, 오른쪽은 동일 행을 흑백(<code>filter: grayscale(1)</code>)으로 렌더링. 색이 사라져도 <strong>도형 글리프</strong>로 5개 상태가 여전히 구분됩니다.</div>
+    </div>
+    <div class="cb-note">
+      <div class="cb-cols">
+        <div class="cb-card">
+          <div class="cbh">정상 색상</div>
+          <div class="cbrow">
+            <span class="badge bs-reserved"><span class="g g-reserved"></span>예약</span>
+            <span class="badge bs-checkin"><span class="g g-checkin"></span>접수</span>
+            <span class="badge bs-progress"><span class="g g-progress"></span>진행중</span>
+            <span class="badge bs-done"><span class="g g-done">✓</span>완료</span>
+            <span class="badge bs-cancel"><span class="g g-cancel">✕</span>취소</span>
+          </div>
+        </div>
+        <div class="cb-card gray">
+          <div class="cbh">흑백 (grayscale 1) — 색약 시뮬레이션</div>
+          <div class="cbrow">
+            <span class="badge bs-reserved"><span class="g g-reserved"></span>예약</span>
+            <span class="badge bs-checkin"><span class="g g-checkin"></span>접수</span>
+            <span class="badge bs-progress"><span class="g g-progress"></span>진행중</span>
+            <span class="badge bs-done"><span class="g g-done">✓</span>완료</span>
+            <span class="badge bs-cancel"><span class="g g-cancel">✕</span>취소</span>
+          </div>
+        </div>
+      </div>
+      <div class="cb-explain">
+        흑백에서도 <b>예약(○ 빈 링)</b> · <b>접수(● 채운 점)</b> · <b>진행중(◐ 반원)</b> · <b>완료(✓ 체크)</b> · <b>취소(✕ 가위표 + 취소선)</b>가 형태만으로 구별됩니다.
+        이것이 베이스라인(스타일 A, 점만)과의 핵심 차이 — 색이 죽어도 <b>의미 손실 0</b>.
+      </div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

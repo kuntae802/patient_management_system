@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>진료 대기 현황 — 원무/접수 (대기 현황판)</title>
+<!--
+================================================================================
+  KEY SCREEN — 진료 대기 현황판 (Outpatient Waiting Board)  ·  role: 원무/접수
+  Governs DESIGN.md / EXPERIENCE.md:
+    Components:    sidebar, topbar, page-header, hero-next-action, kpi-strip,
+                   grouped-table, status-badge(A3), button(primary/ghost), select
+    State Patterns: empty / loading(skeleton) / stale(realtime degraded)
+    Flow:          접수 → 대기 → 호출 → 진료 시작 → 완료  (first-class "다음 할 일")
+
+  --------------------------------------------------------------------------------
+  [LOCKED — applied verbatim, do NOT redesign]
+    • Palette 클리니컬 틸-블루 (lifted from status-sorted-1.html):
+        --background #FAFCFC  --surface #FFFFFF  --surface-muted #EFF5F5
+        --border #D9E5E5  --text-primary #0E1C1D  --text-muted #54686A
+        --text-disabled #97A9AA  --primary #0E7C8E  --primary-hover #0A6675
+        --ring #2C9FB0
+    • Aesthetic: Linear-minimal, high-density, LIGHT mode, 1px hairline borders,
+      near-zero shadows, single teal accent. Teal = action/brand ONLY.
+    • Status A3 = ~8px dot + LABEL TEXT in state color. FIXED mapping:
+        예약   슬레이트 #64758A ○ | 접수 앰버 #BC7E12 ● | 진행중 인디고 #4F46C7 ◐
+        완료   그린     #2C8466 ✓ | 취소 로즈레드 #C2433B ✕ (취소선)
+    • List = grouped sections (dot + colored name + count). Sort = 활성도 순:
+        진행중 → 접수 → 예약 → 완료 → 취소.  완료/취소 = collapsed & muted.
+    • shadcn/ui + Tailwind look. 100% Korean UI. KRW integer · KST times.
+
+  [PROPOSED — NEW LAYER, awaiting user confirmation]
+    • NAV SHELL: left sidebar (~240px, collapsible, hairline) + top bar (~52px).
+        Sidebar = 원무/접수 role view (운영 / 환자 / 정산 groups + footer user block).
+        Top bar = collapse toggle · global 환자 검색(⌘K) · 실시간 indicator ·
+                  date+clock · 알림 bell+badge · avatar/role menu.
+    • TYPOGRAPHY: Pretendard-led stack, NO @font-face / NO network (system fallback):
+        'Pretendard Variable', Pretendard, -apple-system, 'Apple SD Gothic Neo',
+        'Malgun Gothic', sans-serif.
+        Type scale: page-title 20/600 · section 13/600 muted · body 13–14/400 ·
+        caption 12/muted. tabular-nums for 대기번호/시간/카운트.
+  --------------------------------------------------------------------------------
+  Constraints honored: inline CSS only, NO JS, NO network, fully offline.
+                       Logo = text + CSS shape. Desktop frame ~1440px content.
+================================================================================
+-->
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+
+  :root{
+    /* ---- 클리니컬 틸-블루 THEME (LOCKED) ---- */
+    --background:#FAFCFC; --surface:#FFFFFF; --surface-muted:#EFF5F5; --border:#D9E5E5;
+    --text-primary:#0E1C1D; --text-muted:#54686A; --text-disabled:#97A9AA;
+    --primary:#0E7C8E; --primary-foreground:#FFFFFF; --primary-hover:#0A6675; --ring:#2C9FB0;
+    --danger:#C2433B;
+
+    /* ---- 진료상태 colors (FIXED) ---- */
+    --st-reserved:#64758A;  /* 예약   slate    */
+    --st-checkin:#BC7E12;   /* 접수   amber    */
+    --st-progress:#4F46C7;  /* 진행중 indigo   */
+    --st-done:#2C8466;      /* 완료   green     */
+    --st-cancel:#C2433B;    /* 취소   rose-red  */
+    --st-checkin-ink:#8A5D09;  /* amber label darkened for white-bg legibility */
+
+    --sidebar-w:240px;
+  }
+
+  /* PROPOSED typography stack — Pretendard self-hosted(번들) → 윈도우(맑은 고딕) → 맥 폴백 순. 윈도우 우선. */
+  body{
+    font-family:'Pretendard Variable',Pretendard,'Malgun Gothic','맑은 고딕','Apple SD Gothic Neo',-apple-system,system-ui,sans-serif;
+    background:#e7eaed; color:var(--text-primary); font-size:13px; line-height:1.5;
+  }
+
+  /* ============================================================
+     BROWSER FRAME (desktop chrome, ~1440px content)
+     ============================================================ */
+  .browser{max-width:1440px; margin:26px auto 60px; border:1px solid #cbd3d6;
+    border-radius:12px; overflow:hidden; background:var(--surface);
+    box-shadow:0 1px 2px rgba(16,28,29,.06), 0 8px 28px rgba(16,28,29,.08)}
+  .chrome{height:38px; background:#f1f3f4; border-bottom:1px solid #dfe3e5;
+    display:flex; align-items:center; gap:8px; padding:0 14px}
+  .chrome .dots{display:flex; gap:7px}
+  .chrome .dots i{width:11px;height:11px;border-radius:50%;display:block}
+  .chrome .dots i:nth-child(1){background:#ed6a5e}
+  .chrome .dots i:nth-child(2){background:#f4be4f}
+  .chrome .dots i:nth-child(3){background:#61c454}
+  .chrome .url{flex:1; max-width:560px; margin:0 auto; height:23px; background:#fff;
+    border:1px solid #dfe3e5; border-radius:6px; display:flex; align-items:center;
+    gap:7px; padding:0 10px; font-size:11.5px; color:var(--text-muted)}
+  .chrome .url .lock{font-size:9px;color:var(--st-done)}
+  .chrome .url b{color:var(--text-primary);font-weight:500}
+
+  /* ============================================================
+     APP SHELL  (PROPOSED: sidebar + topbar grid)
+     ============================================================ */
+  .app{display:grid; grid-template-columns:var(--sidebar-w) 1fr; min-height:760px; background:var(--background)}
+
+  /* ---------- LEFT SIDEBAR (PROPOSED) ---------- */
+  .sidebar{background:var(--surface); border-right:1px solid var(--border);
+    display:flex; flex-direction:column; min-height:100%}
+  .sb-brand{display:flex; align-items:center; gap:10px; padding:15px 16px 14px;
+    border-bottom:1px solid var(--border)}
+  .sb-logo{width:28px;height:28px;border-radius:8px;flex:none;position:relative;
+    background:linear-gradient(135deg,var(--primary),var(--ring));}
+  .sb-logo::after{content:"";position:absolute;inset:8px;border-radius:2px;
+    background:#fff;clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%,50% 35%,65% 50%,50% 65%,35% 50%)}
+  .sb-brand .wm{display:flex;flex-direction:column;line-height:1.15}
+  .sb-brand .wm b{font-size:14px;font-weight:650;letter-spacing:-.01em;color:var(--text-primary)}
+  .sb-brand .wm span{font-size:10.5px;color:var(--text-muted)}
+
+  .sb-nav{flex:1; padding:12px 10px 8px; overflow:auto}
+  .sb-cap{font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+    color:#8a939b;padding:14px 8px 6px}
+  .sb-cap:first-child{padding-top:2px}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:7px;
+    font-size:13px;color:var(--text-primary);cursor:pointer;position:relative;text-decoration:none;
+    margin-bottom:1px}
+  .nav-item .ic{width:16px;text-align:center;font-size:13px;color:var(--text-muted);flex:none}
+  .nav-item .lbl{flex:1}
+  .nav-item .tail{font-size:11px;color:var(--text-muted);font-variant-numeric:tabular-nums;
+    background:var(--surface-muted);border:1px solid var(--border);border-radius:20px;padding:0 7px}
+  .nav-item:hover{background:var(--surface-muted)}
+  .nav-item.active{background:color-mix(in srgb,var(--primary) 10%,var(--surface));color:var(--primary);font-weight:600}
+  .nav-item.active .ic{color:var(--primary)}
+  .nav-item.active::before{content:"";position:absolute;left:-10px;top:6px;bottom:6px;width:3px;
+    border-radius:0 3px 3px 0;background:var(--primary)}
+  .nav-item.active .tail{background:color-mix(in srgb,var(--primary) 14%,var(--surface));
+    border-color:color-mix(in srgb,var(--primary) 26%,var(--surface));color:var(--primary)}
+
+  .sb-foot{border-top:1px solid var(--border);padding:8px 10px 10px}
+  .sb-foot .nav-item{font-size:12.5px}
+  .sb-user{display:flex;align-items:center;gap:10px;padding:9px 9px 4px;margin-top:4px;
+    border-top:1px solid var(--surface-muted)}
+  .sb-user .av{width:30px;height:30px;border-radius:50%;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:12px;font-weight:600;color:#fff;
+    background:linear-gradient(135deg,#3a8d9c,#0E7C8E)}
+  .sb-user .who{flex:1;line-height:1.2;min-width:0}
+  .sb-user .who b{font-size:12.5px;font-weight:600;display:block;color:var(--text-primary)}
+  .sb-user .who span{font-size:10.5px;color:var(--text-muted)}
+  .role-badge{font-size:10px;font-weight:700;letter-spacing:.02em;color:var(--primary);
+    background:color-mix(in srgb,var(--primary) 10%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--primary) 26%,var(--surface));
+    border-radius:5px;padding:1px 6px;flex:none}
+
+  /* ---------- MAIN COLUMN ---------- */
+  .main{display:flex;flex-direction:column;min-width:0}
+
+  /* ---------- TOP BAR (PROPOSED) ---------- */
+  .topbar{height:52px;background:var(--surface);border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:14px;padding:0 18px;flex:none}
+  .tb-toggle{width:30px;height:30px;border:1px solid var(--border);border-radius:7px;background:var(--surface);
+    color:var(--text-muted);cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;flex:none}
+  .tb-toggle:hover{background:var(--surface-muted)}
+  .tb-crumb{font-size:12.5px;color:var(--text-muted);display:flex;align-items:center;gap:7px;white-space:nowrap}
+  .tb-crumb b{color:var(--text-primary);font-weight:600}
+  .tb-crumb .sep{color:var(--text-disabled)}
+
+  .tb-search{flex:1;max-width:380px;height:33px;background:var(--surface-muted);
+    border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;gap:9px;
+    padding:0 10px;color:var(--text-disabled);font-size:12.5px;cursor:text}
+  .tb-search .mag{font-size:13px;color:var(--text-muted)}
+  .tb-search .ph{flex:1;color:var(--text-disabled)}
+  .tb-search .kbd{font-size:10.5px;font-weight:600;color:var(--text-muted);background:var(--surface);
+    border:1px solid var(--border);border-radius:5px;padding:1px 6px;font-variant-numeric:tabular-nums}
+
+  .tb-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+  .tb-live{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--text-muted);white-space:nowrap}
+  .tb-live .live-dot{width:7px;height:7px;border-radius:50%;background:var(--st-done);flex:none;
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--st-done) 18%,transparent)}
+  .tb-live b{color:var(--st-done);font-weight:600}
+  .tb-clock{font-size:12px;color:var(--text-muted);font-variant-numeric:tabular-nums;white-space:nowrap;
+    border-left:1px solid var(--border);padding-left:14px}
+  .tb-clock b{color:var(--text-primary);font-weight:600}
+  .tb-bell{position:relative;width:32px;height:32px;border:1px solid var(--border);border-radius:8px;
+    background:var(--surface);color:var(--text-muted);display:flex;align-items:center;justify-content:center;
+    font-size:15px;cursor:pointer;flex:none}
+  .tb-bell:hover{background:var(--surface-muted)}
+  .tb-bell .badge{position:absolute;top:-5px;right:-5px;min-width:16px;height:16px;border-radius:9px;
+    background:var(--danger);color:#fff;font-size:9.5px;font-weight:700;display:flex;align-items:center;
+    justify-content:center;padding:0 4px;border:1.5px solid var(--surface);font-variant-numeric:tabular-nums}
+  .tb-av{width:32px;height:32px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-weight:600;color:#fff;background:linear-gradient(135deg,#3a8d9c,#0E7C8E);cursor:pointer}
+
+  /* ============================================================
+     CONTENT
+     ============================================================ */
+  .content{padding:20px 24px 40px;overflow:auto}
+
+  /* ---------- page header row ---------- */
+  .page-header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  .ph-l h1{font-size:20px;font-weight:600;letter-spacing:-.02em;color:var(--text-primary);line-height:1.2}
+  .ph-l .sub{font-size:12.5px;color:var(--text-muted);margin-top:5px;display:flex;align-items:center;gap:7px}
+  .ph-l .sub .sep{color:var(--text-disabled)}
+  .ph-r{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+
+  .sel{height:32px;border:1px solid var(--border);background:var(--surface);border-radius:7px;
+    padding:0 10px;font-size:12.5px;color:var(--text-primary);display:inline-flex;align-items:center;gap:8px;
+    cursor:pointer;font-family:inherit}
+  .sel .k{font-size:10px;color:var(--text-disabled)}
+  .sel .v{font-weight:500}
+  .sel .car{font-size:9px;color:var(--text-muted)}
+  .sel:hover{background:var(--surface-muted)}
+  .datepick{height:32px;border:1px solid var(--border);background:var(--surface);border-radius:7px;
+    display:inline-flex;align-items:center;overflow:hidden}
+  .datepick .arw{width:28px;height:100%;display:flex;align-items:center;justify-content:center;
+    color:var(--text-muted);cursor:pointer;font-size:11px}
+  .datepick .arw:hover{background:var(--surface-muted)}
+  .datepick .day{padding:0 11px;font-size:12.5px;font-weight:600;color:var(--text-primary);
+    border-left:1px solid var(--border);border-right:1px solid var(--border);font-variant-numeric:tabular-nums}
+
+  .btn-primary{font-family:inherit;font-size:13px;font-weight:550;color:var(--primary-foreground);
+    background:var(--primary);border:1px solid var(--primary-hover);border-radius:7px;padding:0 14px;height:32px;
+    cursor:pointer;display:inline-flex;align-items:center;gap:7px}
+  .btn-primary:hover{background:var(--primary-hover)}
+  .btn-primary .ic{font-size:11px;line-height:1}
+
+  /* ---------- HERO next-action hint ---------- */
+  .hero-next{margin-top:14px;border:1px solid color-mix(in srgb,var(--primary) 28%,var(--border));
+    background:color-mix(in srgb,var(--primary) 6%,var(--surface));border-radius:10px;
+    padding:11px 14px;display:flex;align-items:center;gap:13px}
+  .hero-next .glyph{width:30px;height:30px;border-radius:8px;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:14px;color:#fff;background:var(--primary)}
+  .hero-next .txt{flex:1;line-height:1.45;min-width:0}
+  .hero-next .txt .k{font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--primary)}
+  .hero-next .txt .m{font-size:13.5px;color:var(--text-primary)}
+  .hero-next .txt .m b{font-weight:650;font-variant-numeric:tabular-nums}
+  .hero-next .txt .m .meta{color:var(--text-muted);font-size:12.5px}
+  .hero-next .btn-primary{height:30px;font-size:12.5px}
+
+  /* ---------- KPI strip ---------- */
+  .kpi-strip{margin-top:14px;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .kpi{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;background:var(--surface);
+    border:1px solid var(--border);border-radius:8px;padding:6px 11px;font-weight:500}
+  .kpi .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .kpi .gl{font-size:9px;width:9px;text-align:center;font-weight:700;flex:none}
+  .kpi .lab{color:var(--text-primary)}
+  .kpi .n{font-variant-numeric:tabular-nums;font-weight:700;font-size:13px;margin-left:1px}
+  .kpi.k-checkin{color:var(--st-checkin-ink)}  .kpi.k-checkin .dot{background:var(--st-checkin)}
+  .kpi.k-progress{color:var(--st-progress)}    .kpi.k-progress .dot{background:var(--st-progress)}
+  .kpi.k-reserved{color:var(--st-reserved)}    .kpi.k-reserved .dot{background:var(--st-reserved)}
+  .kpi.k-done{color:var(--st-done)}            .kpi.k-done .dot{background:var(--st-done)}
+  .kpi.k-cancel{color:var(--st-cancel)}        .kpi.k-cancel .dot{background:var(--st-cancel)}
+  .kpi-strip .total{margin-left:auto;font-size:12px;color:var(--text-muted);font-variant-numeric:tabular-nums}
+  .kpi-strip .total b{color:var(--text-primary);font-weight:600}
+
+  /* ============================================================
+     PANEL + TABLE
+     ============================================================ */
+  .panel{margin-top:16px;border:1px solid var(--border);background:var(--surface);border-radius:11px;overflow:hidden}
+  .bd-head{display:flex;align-items:center;justify-content:space-between;padding:11px 16px;
+    border-bottom:1px solid var(--border);background:var(--surface)}
+  .bd-head .ttl{font-size:13.5px;font-weight:600;color:var(--text-primary);display:inline-flex;align-items:center;gap:9px}
+  .bd-head .ttl .cnt{font-size:11px;font-weight:500;color:var(--text-muted);background:var(--surface-muted);
+    border:1px solid var(--border);border-radius:20px;padding:1px 9px;font-variant-numeric:tabular-nums}
+  .bd-head .tools{display:flex;align-items:center;gap:8px}
+  .seg{display:inline-flex;border:1px solid var(--border);border-radius:7px;overflow:hidden;font-size:11.5px}
+  .seg span{padding:5px 10px;color:var(--text-muted);cursor:pointer;border-right:1px solid var(--border)}
+  .seg span:last-child{border-right:none}
+  .seg span.on{background:color-mix(in srgb,var(--primary) 10%,var(--surface));color:var(--primary);font-weight:600}
+
+  table.q{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+  table.q col.c-num{width:9%} table.q col.c-name{width:19%} table.q col.c-st{width:13%}
+  table.q col.c-doc{width:19%} table.q col.c-time{width:11%} table.q col.c-wait{width:11%} table.q col.c-act{width:18%}
+  table.q thead th{text-align:left;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;
+    color:var(--text-muted);padding:8px 14px;border-bottom:1px solid var(--border);background:var(--background);white-space:nowrap}
+  table.q thead th.r{text-align:right}
+  table.q tbody td{padding:8px 14px;border-bottom:1px solid var(--border);color:var(--text-primary);
+    vertical-align:middle;white-space:nowrap}
+  table.q tbody tr:last-child td{border-bottom:none}
+  table.q tbody tr.row:hover{background:var(--surface-muted)}
+  table.q .num{font-variant-numeric:tabular-nums;color:var(--text-muted);font-weight:500}
+  table.q .name{font-weight:550}
+  table.q .name .chart{font-size:11px;color:var(--text-muted);font-weight:400;margin-left:7px;font-variant-numeric:tabular-nums}
+  table.q .doc{color:var(--text-muted)}
+  table.q .doc .room{color:var(--text-primary)}
+  table.q .time{font-variant-numeric:tabular-nums;color:var(--text-muted)}
+  table.q .wait{font-variant-numeric:tabular-nums;color:var(--text-primary)}
+  table.q .wait.soon{color:var(--st-progress);font-weight:600}
+  table.q .wait.long{color:var(--danger);font-weight:600}
+  table.q .wait.none{color:var(--text-disabled)}
+  table.q .wait.appt{color:var(--text-muted);font-variant-numeric:normal}
+  table.q td.act{text-align:right}
+  .act-wrap{display:inline-flex;gap:6px;justify-content:flex-end}
+
+  /* A3 status (LOCKED) */
+  .status{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;font-size:13px;font-weight:500}
+  .status .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .status.s-reserved{color:var(--st-reserved)} .status.s-reserved .dot{background:var(--st-reserved)}
+  .status.s-checkin {color:var(--st-checkin-ink)} .status.s-checkin .dot{background:var(--st-checkin)}
+  .status.s-progress{color:var(--st-progress)} .status.s-progress .dot{background:var(--st-progress)}
+  .status.s-done    {color:var(--st-done)} .status.s-done .dot{background:var(--st-done)}
+  .status.s-cancel  {color:var(--st-cancel)} .status.s-cancel .dot{background:var(--st-cancel)}
+  .status.s-cancel .lbl{text-decoration:line-through;text-decoration-thickness:1px}
+
+  /* ghost / secondary row action buttons */
+  .btn-ghost{font-family:inherit;font-size:11.5px;font-weight:550;color:var(--text-muted);
+    background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:4px 9px;cursor:pointer;
+    display:inline-flex;align-items:center;gap:5px}
+  .btn-ghost:hover{background:var(--surface-muted);color:var(--text-primary)}
+  .btn-ghost.key{color:var(--primary);border-color:color-mix(in srgb,var(--primary) 38%,var(--border));
+    background:color-mix(in srgb,var(--primary) 7%,var(--surface));font-weight:600}
+  .btn-ghost.key:hover{background:color-mix(in srgb,var(--primary) 12%,var(--surface))}
+
+  /* section header rows (LOCKED) */
+  tr.sec td{padding:9px 14px 7px;border-bottom:1px solid var(--border);background:var(--background)}
+  .sec-head{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:650;letter-spacing:.01em}
+  .sec-head .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .sec-head .ct{font-size:10.5px;font-weight:600;color:var(--text-muted);background:var(--surface-muted);
+    border:1px solid var(--border);border-radius:20px;padding:0 7px;margin-left:1px;font-variant-numeric:tabular-nums}
+  .sec-head.h-progress{color:var(--st-progress)} .sec-head.h-progress .dot{background:var(--st-progress)}
+  .sec-head.h-checkin {color:var(--st-checkin-ink)} .sec-head.h-checkin .dot{background:var(--st-checkin)}
+  .sec-head.h-reserved{color:var(--st-reserved)} .sec-head.h-reserved .dot{background:var(--st-reserved)}
+  tr.sec.collapsed td{background:var(--surface)}
+  .sec-head.muted{color:var(--text-disabled);font-weight:550;cursor:pointer}
+  .sec-head.muted .arrow{font-size:9px;color:var(--text-disabled);width:9px;text-align:center}
+  .sec-head.muted .dot{width:7px;height:7px;opacity:.55}
+  .sec-head.muted.h-done .dot{background:var(--st-done)}
+  .sec-head.muted.h-cancel .dot{background:var(--st-cancel)}
+  .sec-head.muted .ct{color:var(--text-disabled);background:var(--surface);border-color:var(--border)}
+  .sec-head.muted .hint{font-size:10px;color:var(--text-disabled);font-weight:400;margin-left:4px}
+
+  /* ============================================================
+     STATE PATTERNS (secondary, reduced)
+     ============================================================ */
+  .sp-head{margin-top:30px;display:flex;align-items:center;gap:10px}
+  .sp-head h2{font-size:13px;font-weight:600;color:var(--text-muted);letter-spacing:.01em}
+  .sp-head .tag{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#8a939b;
+    background:var(--surface-muted);border:1px solid var(--border);border-radius:5px;padding:1px 7px}
+  .sp-head .line{flex:1;height:1px;background:var(--border)}
+  .sp-grid{margin-top:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .sp-card{border:1px solid var(--border);background:var(--surface);border-radius:10px;overflow:hidden;
+    transform:scale(.98);transform-origin:top left}
+  .sp-card .sp-cap{padding:9px 13px;border-bottom:1px solid var(--border);background:var(--background);
+    font-size:11.5px;font-weight:600;color:var(--text-primary);display:flex;align-items:center;gap:7px}
+  .sp-card .sp-cap .n{font-size:10px;font-weight:700;color:#8a939b}
+  .sp-body{padding:16px 14px;min-height:128px;display:flex;flex-direction:column}
+
+  /* empty */
+  .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:9px}
+  .empty .ring{width:40px;height:40px;border-radius:50%;border:1.5px dashed var(--border);display:flex;
+    align-items:center;justify-content:center;color:var(--text-disabled);font-size:17px}
+  .empty .msg{font-size:12.5px;color:var(--text-muted)}
+  .empty .hint-btn{font-family:inherit;font-size:11.5px;font-weight:600;color:var(--primary);background:var(--surface);
+    border:1px solid color-mix(in srgb,var(--primary) 36%,var(--border));border-radius:6px;padding:5px 11px;cursor:pointer}
+
+  /* skeleton */
+  .skel-row{display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--border)}
+  .skel-row:last-child{border-bottom:none}
+  .sk{height:11px;border-radius:4px;background:var(--surface-muted);border:1px solid var(--border)}
+  .sk.dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .sk.w1{width:34px} .sk.w2{width:78px;flex:1;max-width:120px} .sk.w3{width:54px} .sk.w4{width:40px;margin-left:auto}
+
+  /* stale */
+  .stale{flex:1;display:flex;flex-direction:column;gap:11px;justify-content:center}
+  .stale-banner{display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;
+    background:color-mix(in srgb,var(--st-checkin) 9%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--st-checkin) 32%,var(--border));font-size:12px;color:var(--st-checkin-ink)}
+  .stale-banner .pulse{width:8px;height:8px;border-radius:50%;background:var(--st-checkin);flex:none;
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--st-checkin) 20%,transparent)}
+  .stale-banner b{font-weight:650}
+  .stale-banner .ts{margin-left:auto;font-size:11px;font-variant-numeric:tabular-nums;color:var(--st-checkin-ink);opacity:.85}
+  .stale-note{font-size:11px;color:var(--text-muted);line-height:1.55}
+  .stale-note b{color:var(--text-primary);font-weight:600}
+  .stale-retry{align-self:flex-start;font-family:inherit;font-size:11.5px;font-weight:600;color:var(--text-primary);
+    background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:5px 11px;cursor:pointer}
+
+  .foot-note{margin-top:18px;font-size:11px;color:var(--text-disabled);line-height:1.7}
+  .foot-note b{color:var(--text-muted);font-weight:600}
+</style>
+</head>
+<body>
+<div class="browser">
+
+  <!-- desktop browser chrome -->
+  <div class="chrome">
+    <span class="dots"><i></i><i></i><i></i></span>
+    <div class="url"><span class="lock">●</span><b>pms.ourclinic.kr</b>/operations/waiting</div>
+  </div>
+
+  <!-- ===================== APP SHELL ===================== -->
+  <div class="app">
+
+    <!-- ---------- LEFT SIDEBAR (PROPOSED) ---------- -->
+    <aside class="sidebar">
+      <div class="sb-brand">
+        <div class="sb-logo"></div>
+        <div class="wm"><b>○○의원</b><span>외래 진료 관리</span></div>
+      </div>
+
+      <nav class="sb-nav">
+        <div class="sb-cap">운영</div>
+        <a class="nav-item active"><span class="ic">▦</span><span class="lbl">대기 현황</span><span class="tail">11</span></a>
+        <a class="nav-item"><span class="ic">＋</span><span class="lbl">접수</span></a>
+        <a class="nav-item"><span class="ic">▤</span><span class="lbl">예약 관리</span></a>
+
+        <div class="sb-cap">환자</div>
+        <a class="nav-item"><span class="ic">⊕</span><span class="lbl">환자 등록</span></a>
+        <a class="nav-item"><span class="ic">⌕</span><span class="lbl">환자 검색</span></a>
+
+        <div class="sb-cap">정산</div>
+        <a class="nav-item"><span class="ic">₩</span><span class="lbl">수납</span></a>
+        <a class="nav-item"><span class="ic">🖶</span><span class="lbl">문서 출력</span></a>
+      </nav>
+
+      <div class="sb-foot">
+        <a class="nav-item"><span class="ic">⚙</span><span class="lbl">설정</span></a>
+        <a class="nav-item"><span class="ic">?</span><span class="lbl">도움말</span></a>
+        <div class="sb-user">
+          <div class="av">김</div>
+          <div class="who"><b>김원무</b><span>접수 데스크 1</span></div>
+          <span class="role-badge">원무</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ---------- MAIN COLUMN ---------- -->
+    <div class="main">
+
+      <!-- ---------- TOP BAR (PROPOSED) ---------- -->
+      <header class="topbar">
+        <button class="tb-toggle" title="사이드바 접기">≡</button>
+        <div class="tb-crumb">운영<span class="sep">›</span><b>대기 현황</b></div>
+
+        <div class="tb-search">
+          <span class="mag">⌕</span>
+          <span class="ph">환자명 · 차트번호 · 연락처 검색</span>
+          <span class="kbd">Ctrl K</span>
+        </div>
+
+        <div class="tb-right">
+          <div class="tb-live"><span class="live-dot"></span><b>실시간</b> · 방금 업데이트</div>
+          <div class="tb-clock">2026-06-19 (목) · <b>14:32</b></div>
+          <button class="tb-bell" title="알림">♢<span class="badge">3</span></button>
+          <div class="tb-av">김</div>
+        </div>
+      </header>
+
+      <!-- ---------- CONTENT ---------- -->
+      <div class="content">
+
+        <!-- page header row -->
+        <div class="page-header">
+          <div class="ph-l">
+            <h1>진료 대기 현황</h1>
+            <div class="sub">내과<span class="sep">·</span>2026-06-19 (목)<span class="sep">·</span>활성 9명 · 정착 3명</div>
+          </div>
+          <div class="ph-r">
+            <span class="sel"><span class="k">진료과</span><span class="v">내과</span><span class="car">▾</span></span>
+            <span class="sel"><span class="k">진료실</span><span class="v">전체</span><span class="car">▾</span></span>
+            <span class="datepick"><span class="arw">◀</span><span class="day">오늘</span><span class="arw">▶</span></span>
+            <button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button>
+          </div>
+        </div>
+
+        <!-- HERO next-action hint -->
+        <div class="hero-next">
+          <div class="glyph">▶</div>
+          <div class="txt">
+            <div class="k">다음 호출</div>
+            <div class="m"><b>12번 이민준</b> <span class="meta">· 내과 2진료실 · 12분 대기</span></div>
+          </div>
+          <button class="btn-primary"><span class="ic">▶</span>호출</button>
+        </div>
+
+        <!-- KPI strip -->
+        <div class="kpi-strip">
+          <span class="kpi k-checkin"><span class="dot"></span><span class="lab">접수</span><span class="n">3</span></span>
+          <span class="kpi k-progress"><span class="dot"></span><span class="lab">진행중</span><span class="n">2</span></span>
+          <span class="kpi k-reserved"><span class="dot"></span><span class="lab">예약</span><span class="n">4</span></span>
+          <span class="kpi k-done"><span class="dot"></span><span class="lab">완료</span><span class="n">2</span></span>
+          <span class="kpi k-cancel"><span class="dot"></span><span class="lab">취소</span><span class="n">1</span></span>
+          <span class="total">총 <b>12</b>명 · 평균 대기 <b>11</b>분</span>
+        </div>
+
+        <!-- ============ THE GROUPED WAITING LIST (core) ============ -->
+        <section class="panel">
+          <div class="bd-head">
+            <span class="ttl">진료 대기 목록 <span class="cnt">활성 9 · 정착 3</span></span>
+            <div class="tools">
+              <span class="seg"><span class="on">활성도 순</span><span>호출 순</span><span>대기시간 순</span></span>
+            </div>
+          </div>
+          <table class="q">
+            <colgroup><col class="c-num"><col class="c-name"><col class="c-st"><col class="c-doc"><col class="c-time"><col class="c-wait"><col class="c-act"></colgroup>
+            <thead><tr>
+              <th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의 · 진료실</th><th>접수시각</th><th>대기시간</th><th class="r">액션</th>
+            </tr></thead>
+            <tbody>
+
+              <!-- ◐ 진행중 · 2 -->
+              <tr class="sec"><td colspan="7"><span class="sec-head h-progress"><span class="dot"></span>진행중<span class="ct">2</span></span></td></tr>
+              <tr class="row">
+                <td class="num">11번</td>
+                <td class="name">김영희<span class="chart">00123</span></td>
+                <td><span class="status s-progress"><span class="dot"></span><span class="lbl">진행중</span></span></td>
+                <td class="doc">이정훈 과장 · <span class="room">1진료실</span></td>
+                <td class="time">14:05</td>
+                <td class="wait soon">진행 8분</td>
+                <td class="act"><div class="act-wrap"><button class="btn-ghost key">완료 처리</button></div></td>
+              </tr>
+              <tr class="row">
+                <td class="num">10번</td>
+                <td class="name">박철수<span class="chart">00098</span></td>
+                <td><span class="status s-progress"><span class="dot"></span><span class="lbl">진행중</span></span></td>
+                <td class="doc">이정훈 과장 · <span class="room">1진료실</span></td>
+                <td class="time">13:58</td>
+                <td class="wait long">진행 21분</td>
+                <td class="act"><div class="act-wrap"><button class="btn-ghost key">완료 처리</button></div></td>
+              </tr>
+
+              <!-- ● 접수 · 3 -->
+              <tr class="sec"><td colspan="7"><span class="sec-head h-checkin"><span class="dot"></span>접수<span class="ct">3</span></span></td></tr>
+              <tr class="row">
+                <td class="num">12번</td>
+                <td class="name">이민준<span class="chart">00211</span></td>
+                <td><span class="status s-checkin"><span class="dot"></span><span class="lbl">접수</span></span></td>
+                <td class="doc">미배정 · <span class="room">2진료실 배정</span></td>
+                <td class="time">14:20</td>
+                <td class="wait">12분</td>
+                <td class="act"><div class="act-wrap"><button class="btn-ghost key">호출</button><button class="btn-ghost">진료 시작</button></div></td>
+              </tr>
+              <tr class="row">
+                <td class="num">13번</td>
+                <td class="name">정수아<span class="chart">00187</span></td>
+                <td><span class="status s-checkin"><span class="dot"></span><span class="lbl">접수</span></span></td>
+                <td class="doc">최민호 과장 · <span class="room">2진료실</span></td>
+                <td class="time">14:24</td>
+                <td class="wait">8분</td>
+                <td class="act"><div class="act-wrap"><button class="btn-ghost key">호출</button><button class="btn-ghost">진료 시작</button></div></td>
+              </tr>
+              <tr class="row">
+                <td class="num">14번</td>
+                <td class="name">한지우<span class="chart">00250</span></td>
+                <td><span class="status s-checkin"><span class="dot"></span><span class="lbl">접수</span></span></td>
+                <td class="doc">최민호 과장 · <span class="room">2진료실</span></td>
+                <td class="time">14:29</td>
+                <td class="wait">3분</td>
+                <td class="act"><div class="act-wrap"><button class="btn-ghost key">호출</button><button class="btn-ghost">진료 시작</button></div></td>
+              </tr>
+
+              <!-- ○ 예약 · 4 -->
+              <tr class="sec"><td colspan="7"><span class="sec-head h-reserved"><span class="dot"></span>예약<span class="ct">4</span></span></td></tr>
+              <tr class="row">
+                <td class="num">—</td>
+                <td class="name">오세훈<span class="chart">00144</span></td>
+                <td><span class="status s-reserved"><span class="dot"></span><span class="lbl">예약</span></span></td>
+                <td class="doc">이정훈 과장 · <span class="room">1진료실</span></td>
+                <td class="time">—</td>
+                <td class="wait appt">예약 14:30</td>
+                <td class="act"><div class="act-wrap"><button class="btn-ghost">접수</button></div></td>
+              </tr>
+              <tr class="row">
+                <td class="num">—</td>
+                <td class="name">윤서연<span class="chart">00176</span></td>
+                <td><span class="status s-reserved"><span class="dot"></span><span class="lbl">예약</span></span></td>
+                <td class="doc">최민호 과장 · <span class="room">2진료실</span></td>
+                <td class="time">—</td>
+                <td class="wait appt">예약 14:45</td>
+                <td class="act"><div class="act-wrap"><button class="btn-ghost">접수</button></div></td>
+              </tr>
+              <tr class="row">
+                <td class="num">—</td>
+                <td class="name">강도윤<span class="chart">00203</span></td>
+                <td><span class="status s-reserved"><span class="dot"></span><span class="lbl">예약</span></span></td>
+                <td class="doc">이정훈 과장 · <span class="room">1진료실</span></td>
+                <td class="time">—</td>
+                <td class="wait appt">예약 15:00</td>
+                <td class="act"><div class="act-wrap"><button class="btn-ghost">접수</button></div></td>
+              </tr>
+              <tr class="row">
+                <td class="num">—</td>
+                <td class="name">임하늘<span class="chart">00229</span></td>
+                <td><span class="status s-reserved"><span class="dot"></span><span class="lbl">예약</span></span></td>
+                <td class="doc">최민호 과장 · <span class="room">2진료실</span></td>
+                <td class="time">—</td>
+                <td class="wait appt">예약 15:15</td>
+                <td class="act"><div class="act-wrap"><button class="btn-ghost">접수</button></div></td>
+              </tr>
+
+              <!-- ✓ 완료 · 2  (collapsed / de-emphasized) -->
+              <tr class="sec collapsed"><td colspan="7"><span class="sec-head muted h-done"><span class="arrow">▸</span><span class="dot"></span>완료<span class="ct">2</span><span class="hint">접힘</span></span></td></tr>
+              <!-- ✕ 취소 · 1  (collapsed / de-emphasized) -->
+              <tr class="sec collapsed"><td colspan="7"><span class="sec-head muted h-cancel"><span class="arrow">▸</span><span class="dot"></span>취소<span class="ct">1</span><span class="hint">접힘</span></span></td></tr>
+
+            </tbody>
+          </table>
+        </section>
+
+        <!-- ============ STATE PATTERNS (secondary) ============ -->
+        <div class="sp-head">
+          <h2>상태 패턴 (참고)</h2>
+          <span class="tag">State Patterns</span>
+          <span class="line"></span>
+        </div>
+        <div class="sp-grid">
+
+          <!-- 1. empty -->
+          <div class="sp-card">
+            <div class="sp-cap"><span class="n">1</span>빈 상태 — Empty</div>
+            <div class="sp-body">
+              <div class="empty">
+                <div class="ring">◔</div>
+                <div class="msg">오늘 접수된 환자가 없습니다</div>
+                <button class="hint-btn">＋ 환자 접수하기</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 2. skeleton -->
+          <div class="sp-card">
+            <div class="sp-cap"><span class="n">2</span>로딩 — Skeleton</div>
+            <div class="sp-body">
+              <div class="skel-row"><span class="sk w1"></span><span class="sk w2"></span><span class="sk dot"></span><span class="sk w3"></span><span class="sk w4"></span></div>
+              <div class="skel-row"><span class="sk w1"></span><span class="sk w2"></span><span class="sk dot"></span><span class="sk w3"></span><span class="sk w4"></span></div>
+              <div class="skel-row"><span class="sk w1"></span><span class="sk w2"></span><span class="sk dot"></span><span class="sk w3"></span><span class="sk w4"></span></div>
+            </div>
+          </div>
+
+          <!-- 3. stale -->
+          <div class="sp-card">
+            <div class="sp-cap"><span class="n">3</span>실시간 끊김 — Stale</div>
+            <div class="sp-body">
+              <div class="stale">
+                <div class="stale-banner"><span class="pulse"></span><b>연결 지연</b> · 실시간 갱신 멈춤<span class="ts">마지막 14:30</span></div>
+                <div class="stale-note">표시된 데이터가 <b>최신이 아닐 수</b> 있습니다. 호출 전 새로고침을 권장합니다.</div>
+                <button class="stale-retry">↻ 다시 연결</button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="foot-note">
+          <b>이 화면이 정의하는 컴포넌트/패턴:</b> 사이드바 · 탑바 · 페이지 헤더 · 다음 할 일 히어로 · KPI 스트립 ·
+          그룹 테이블 · 상태 배지(A3) · 버튼(primary/ghost) · 셀렉트 · 상태 패턴(empty/loading/stale) · 흐름(접수→대기→호출).
+          <b>제안 레이어(확인 대기):</b> 좌측 사이드바+탑바 쉘 · Pretendard 타이포.
+        </div>
+
+      </div><!-- /content -->
+    </div><!-- /main -->
+  </div><!-- /app -->
+</div><!-- /browser -->
+</body>
+</html>

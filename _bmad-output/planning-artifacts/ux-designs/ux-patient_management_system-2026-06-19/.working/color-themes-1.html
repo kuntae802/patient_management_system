@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>색상 팔레트 후보 — 진료 관리 시스템 (외래)</title>
+<!--
+================================================================================
+  COLOR THEME CANDIDATES — Outpatient Patient Management System (Korean clinic)
+  Direction: Linear-style minimal high-density + calm clinical blue, LIGHT-FIRST.
+  Single blue accent + near-grayscale neutrals. 1px hairline borders, no shadows.
+  Status as small colored dots/badges. All 5 variations are LIGHT MODE.
+
+  Status dot mapping (SAME across all 5 variations — only palette changes):
+    예약(reserved)  = neutral grey dot
+    접수(checked-in) = info (cyan/blue-grey)
+    진행중(in-prog)  = warning (amber)
+    완료(done)       = success (green)
+    취소(cancelled)  = muted/strike grey
+
+--------------------------------------------------------------------------------
+  CONCRETE HEX VALUES — lift these directly.
+--------------------------------------------------------------------------------
+
+  1) 딥 네이비 (Deep Navy — conservative / trust / formal; cool-neutral grays)
+     background      #FBFCFD
+     surface         #FFFFFF
+     surface-muted   #F2F5F8
+     border          #DCE3EA
+     text-primary    #0F1B2D
+     text-muted      #5A6B7C
+     text-disabled   #9DAAB8
+     primary         #1E3A5F   (the navy blue)
+     primary-foreground #FFFFFF
+     primary-hover   #182F4D
+     ring            #3B5C86
+     success         #2E7D5B
+     warning         #B8770E
+     danger          #C03A33
+     info            #2F6F8F
+
+  2) 차분한 코발트 (Calm Cobalt — balanced / standard; neutral grays) [SAFE DEFAULT]
+     background      #FBFBFC
+     surface         #FFFFFF
+     surface-muted   #F3F4F6
+     border          #E2E4E8
+     text-primary    #131722
+     text-muted      #5C616C
+     text-disabled   #A0A4AD
+     primary         #2563C9   (classic mid clinical blue)
+     primary-foreground #FFFFFF
+     primary-hover   #1F54AC
+     ring            #5B8AE0
+     success         #2F855A
+     warning         #C2840D
+     danger          #CB3A33
+     info            #2B7FB8
+
+  3) 프레시 스카이 (Fresh Sky — bright / modern / approachable; warmer-clean grays)
+     background      #FCFCFB
+     surface         #FFFFFF
+     surface-muted   #F5F5F3
+     border          #E6E5E1
+     text-primary    #1A1C1A
+     text-muted      #62655F
+     text-disabled   #A6A89F
+     primary         #2E90E6   (lighter sky / azure)
+     primary-foreground #FFFFFF
+     primary-hover   #1E7CD0
+     ring            #6FB3F0
+     success         #38915F
+     warning         #CE8A12
+     danger          #D24438
+     info            #2E96C9
+
+  4) 클리니컬 틸-블루 (Clinical Teal-Blue — medical / calm / clean)
+     background      #FAFCFC
+     surface         #FFFFFF
+     surface-muted   #EFF5F5
+     border          #D9E5E5
+     text-primary    #0E1C1D
+     text-muted      #54686A
+     text-disabled   #97A9AA
+     primary         #0E7C8E   (blue leaning teal/cyan)
+     primary-foreground #FFFFFF
+     primary-hover   #0A6675
+     ring            #2C9FB0
+     success         #2C8466
+     warning         #BC7E12
+     danger          #C2433B
+     info            #1E8FA0
+
+  5) 슬레이트 미니멀 (Slate Minimal — extreme restraint; near-monochrome, blue is a whisper)
+     background      #FCFCFD
+     surface         #FFFFFF
+     surface-muted   #F4F5F7
+     border          #E4E6EA
+     text-primary    #15181E
+     text-muted      #5E636D
+     text-disabled   #A2A6AE
+     primary         #475569   (muted slate / grey-blue)
+     primary-foreground #FFFFFF
+     primary-hover   #3A4456
+     ring            #7C8AA0
+     success         #3A7A5C
+     warning         #A9810F
+     danger          #B24A43
+     info            #4A7188
+================================================================================
+-->
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo","Malgun Gothic","Segoe UI",sans-serif;
+    background:#eceef1;color:#15181e;font-size:13px;line-height:1.5;padding:28px 22px 60px;
+  }
+  .page-head{max-width:1320px;margin:0 auto 26px}
+  .page-head h1{font-size:19px;font-weight:650;letter-spacing:-0.01em;color:#11141a}
+  .page-head p{font-size:12.5px;color:#5b606b;margin-top:4px}
+  .page-head .note{font-size:11.5px;color:#7b8089;margin-top:8px;line-height:1.6}
+  .page-head code{font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;font-size:11px;background:#fff;border:1px solid #dfe2e6;border-radius:4px;padding:1px 5px}
+
+  .variations{max-width:1320px;margin:0 auto;display:flex;flex-direction:column;gap:30px}
+
+  /* one variation = self-themed via CSS vars on a scope class */
+  .v{
+    border:1px solid var(--border);
+    background:var(--surface);
+    border-radius:10px;
+    overflow:hidden;
+  }
+  .v-head{
+    padding:16px 20px;border-bottom:1px solid var(--border);
+    background:var(--background);
+    display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
+  }
+  .v-head .vname{font-size:16px;font-weight:650;letter-spacing:-0.01em;color:var(--text-primary)}
+  .v-head .vreg{font-size:12.5px;color:var(--text-muted)}
+  .v-head .vaccent{
+    margin-left:auto;display:inline-flex;align-items:center;gap:7px;
+    font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;font-size:11px;color:var(--text-muted);
+  }
+  .v-head .vaccent .sw{width:13px;height:13px;border-radius:3px;border:1px solid rgba(0,0,0,.12);background:var(--primary)}
+
+  .v-body{
+    display:grid;grid-template-columns:332px 1fr;gap:0;
+  }
+  .tokens{padding:16px 18px;border-right:1px solid var(--border);background:var(--background)}
+  .snippet{padding:18px 20px;background:var(--surface)}
+
+  .tok-group{margin-bottom:14px}
+  .tok-group:last-child{margin-bottom:0}
+  .tok-group h4{
+    font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;
+    color:var(--text-muted);margin-bottom:7px;
+  }
+  .chips{display:flex;flex-direction:column;gap:5px}
+  .chip{
+    display:flex;align-items:center;gap:9px;
+    border:1px solid var(--border);border-radius:6px;background:var(--surface);
+    padding:5px 8px;
+  }
+  .chip .swatch{width:24px;height:24px;border-radius:5px;border:1px solid rgba(0,0,0,.10);flex:none}
+  .chip .meta{display:flex;flex-direction:column;line-height:1.35;min-width:0}
+  .chip .lbl{font-size:11.5px;color:var(--text-primary);font-weight:500}
+  .chip .hex{font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;font-size:10px;color:var(--text-muted)}
+  /* show border color as an outlined swatch so a near-white border is visible */
+  .chip .swatch.is-border{background:var(--surface);border:1px solid var(--border);position:relative}
+  .chip .swatch.is-border::after{content:"";position:absolute;inset:5px;border-radius:2px;border:1px solid var(--border)}
+
+  /* ---- UI snippet: 진료 대기 현황판 ---- */
+  .card{border:1px solid var(--border);border-radius:9px;background:var(--surface);overflow:hidden}
+  .card-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--border)}
+  .card-head .ttl{font-size:13.5px;font-weight:600;color:var(--text-primary);display:flex;align-items:center;gap:8px}
+  .card-head .ttl .cnt{font-size:11px;font-weight:500;color:var(--text-muted);background:var(--surface-muted);border:1px solid var(--border);border-radius:20px;padding:1px 8px}
+  .btn-primary{
+    font-family:inherit;font-size:12.5px;font-weight:550;
+    color:var(--primary-foreground);background:var(--primary);
+    border:1px solid var(--primary-hover);border-radius:6px;
+    padding:6px 12px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;
+  }
+  .btn-primary:hover{background:var(--primary-hover)}
+  .btn-primary:focus-visible{outline:2px solid var(--ring);outline-offset:1px}
+  .btn-primary .ic{font-size:12px;line-height:1}
+
+  table.q{width:100%;border-collapse:collapse;font-size:13px}
+  table.q thead th{
+    text-align:left;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;
+    color:var(--text-muted);padding:7px 12px;border-bottom:1px solid var(--border);background:var(--background);
+    white-space:nowrap;
+  }
+  table.q tbody td{padding:7px 12px;border-bottom:1px solid var(--border);color:var(--text-primary);vertical-align:middle;white-space:nowrap}
+  table.q tbody tr:last-child td{border-bottom:none}
+  table.q tbody tr:hover{background:var(--background)}
+  table.q .num{font-variant-numeric:tabular-nums;color:var(--text-muted);font-feature-settings:"tnum"}
+  table.q .name{font-weight:500}
+  table.q .doc{color:var(--text-muted)}
+  table.q .wait{font-variant-numeric:tabular-nums;color:var(--text-primary)}
+  table.q .wait.long{color:var(--danger);font-weight:550}
+
+  .status{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-primary)}
+  .dot{width:7px;height:7px;border-radius:50%;flex:none;box-shadow:0 0 0 2px var(--dot-halo, transparent)}
+  .dot.s-reserved{background:var(--text-disabled)}
+  .dot.s-checkin{background:var(--info)}
+  .dot.s-progress{background:var(--warning)}
+  .dot.s-done{background:var(--success)}
+  .dot.s-cancel{background:var(--text-disabled)}
+  .status.is-cancel{color:var(--text-disabled);text-decoration:line-through}
+
+  .card-foot{padding:11px 14px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:9px;background:var(--background)}
+  .badge-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .badge-row .grp-lbl{font-size:11px;color:var(--text-muted);margin-right:2px}
+  .badge{
+    display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:500;
+    border-radius:5px;padding:2px 8px;border:1px solid transparent;line-height:1.6;
+  }
+  .badge .bdot{width:6px;height:6px;border-radius:50%}
+  .badge.b-danger{color:var(--danger);background:color-mix(in srgb,var(--danger) 10%,var(--surface));border-color:color-mix(in srgb,var(--danger) 28%,var(--surface))}
+  .badge.b-danger .bdot{background:var(--danger)}
+  .badge.b-warning{color:var(--warning);background:color-mix(in srgb,var(--warning) 12%,var(--surface));border-color:color-mix(in srgb,var(--warning) 30%,var(--surface))}
+  .badge.b-warning .bdot{background:var(--warning)}
+  .badge.b-success{color:var(--success);background:color-mix(in srgb,var(--success) 10%,var(--surface));border-color:color-mix(in srgb,var(--success) 28%,var(--surface))}
+  .badge.b-success .bdot{background:var(--success)}
+  .chip-plain{display:inline-flex;align-items:center;font-size:11.5px;color:var(--text-primary);background:var(--surface-muted);border:1px solid var(--border);border-radius:5px;padding:2px 8px}
+  .chip-plain.muted{color:var(--text-muted)}
+
+  .pii{display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--text-muted)}
+  .pii .lbl{color:var(--text-muted)}
+  .pii .val{font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;color:var(--text-primary);font-size:12px;letter-spacing:.02em}
+  .btn-ghost{
+    font-family:inherit;font-size:11.5px;color:var(--text-muted);
+    background:transparent;border:1px solid var(--border);border-radius:5px;
+    padding:2px 9px;cursor:pointer;
+  }
+  .btn-ghost:hover{background:var(--surface-muted);color:var(--text-primary)}
+  .btn-ghost:focus-visible{outline:2px solid var(--ring);outline-offset:1px}
+
+  .snip-cap{font-size:10.5px;color:var(--text-muted);margin-bottom:9px;text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+
+  @media (max-width:880px){
+    .v-body{grid-template-columns:1fr}
+    .tokens{border-right:none;border-bottom:1px solid var(--border)}
+  }
+
+  /* ============ THEME SCOPES ============ */
+  .t1{ /* 딥 네이비 */
+    --background:#FBFCFD;--surface:#FFFFFF;--surface-muted:#F2F5F8;--border:#DCE3EA;
+    --text-primary:#0F1B2D;--text-muted:#5A6B7C;--text-disabled:#9DAAB8;
+    --primary:#1E3A5F;--primary-foreground:#FFFFFF;--primary-hover:#182F4D;--ring:#3B5C86;
+    --success:#2E7D5B;--warning:#B8770E;--danger:#C03A33;--info:#2F6F8F;
+  }
+  .t2{ /* 차분한 코발트 */
+    --background:#FBFBFC;--surface:#FFFFFF;--surface-muted:#F3F4F6;--border:#E2E4E8;
+    --text-primary:#131722;--text-muted:#5C616C;--text-disabled:#A0A4AD;
+    --primary:#2563C9;--primary-foreground:#FFFFFF;--primary-hover:#1F54AC;--ring:#5B8AE0;
+    --success:#2F855A;--warning:#C2840D;--danger:#CB3A33;--info:#2B7FB8;
+  }
+  .t3{ /* 프레시 스카이 */
+    --background:#FCFCFB;--surface:#FFFFFF;--surface-muted:#F5F5F3;--border:#E6E5E1;
+    --text-primary:#1A1C1A;--text-muted:#62655F;--text-disabled:#A6A89F;
+    --primary:#2E90E6;--primary-foreground:#FFFFFF;--primary-hover:#1E7CD0;--ring:#6FB3F0;
+    --success:#38915F;--warning:#CE8A12;--danger:#D24438;--info:#2E96C9;
+  }
+  .t4{ /* 클리니컬 틸-블루 */
+    --background:#FAFCFC;--surface:#FFFFFF;--surface-muted:#EFF5F5;--border:#D9E5E5;
+    --text-primary:#0E1C1D;--text-muted:#54686A;--text-disabled:#97A9AA;
+    --primary:#0E7C8E;--primary-foreground:#FFFFFF;--primary-hover:#0A6675;--ring:#2C9FB0;
+    --success:#2C8466;--warning:#BC7E12;--danger:#C2433B;--info:#1E8FA0;
+  }
+  .t5{ /* 슬레이트 미니멀 */
+    --background:#FCFCFD;--surface:#FFFFFF;--surface-muted:#F4F5F7;--border:#E4E6EA;
+    --text-primary:#15181E;--text-muted:#5E636D;--text-disabled:#A2A6AE;
+    --primary:#475569;--primary-foreground:#FFFFFF;--primary-hover:#3A4456;--ring:#7C8AA0;
+    --success:#3A7A5C;--warning:#A9810F;--danger:#B24A43;--info:#4A7188;
+  }
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>색상 팔레트 후보 — 진료 관리 시스템 (외래)</h1>
+  <p>Linear 풍 미니멀 고밀도 · 차분한 임상 블루 · <strong>라이트 모드 전용</strong> · 단일 액센트 + 거의 무채색 중성 · 1px 헤어라인 보더 (그림자 거의 없음) · 상태는 작은 컬러 닷/배지로 표현.</p>
+  <p class="note">
+    5개 후보는 <strong>레지스터(블루의 성격 + 중성 온도)</strong>만 다르며 구조·밀도·상태 매핑은 동일합니다.
+    진료상태 닷 매핑은 5개 모두 고정: <code>예약=중성회색</code> · <code>접수=info</code> · <code>진행중=warning</code> · <code>완료=success</code> · <code>취소=muted</code>.
+    각 후보의 정확한 hex 값은 파일 상단 <code>&lt;style&gt;</code> 주석에 정리되어 있습니다.
+  </p>
+</div>
+
+<div class="variations">
+
+  <!-- ============================== V1 ============================== -->
+  <section class="v t1">
+    <div class="v-head">
+      <span class="vname">1 · 딥 네이비</span>
+      <span class="vreg">보수적 · 신뢰 · 격식 — 가장 "정식 병원" 느낌의 깊은 네이비</span>
+      <span class="vaccent"><span class="sw"></span>primary #1E3A5F</span>
+    </div>
+    <div class="v-body">
+      <div class="tokens">
+        <div class="tok-group">
+          <h4>표면 / 배경</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#FBFCFD"></span><span class="meta"><span class="lbl">background 배경</span><span class="hex">#FBFCFD</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#FFFFFF"></span><span class="meta"><span class="lbl">surface 표면</span><span class="hex">#FFFFFF</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#F2F5F8"></span><span class="meta"><span class="lbl">surface-muted 보조 표면</span><span class="hex">#F2F5F8</span></span></div>
+            <div class="chip"><span class="swatch is-border"></span><span class="meta"><span class="lbl">border 헤어라인</span><span class="hex">#DCE3EA</span></span></div>
+          </div>
+        </div>
+        <div class="tok-group">
+          <h4>텍스트</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#0F1B2D"></span><span class="meta"><span class="lbl">text-primary 본문</span><span class="hex">#0F1B2D</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#5A6B7C"></span><span class="meta"><span class="lbl">text-muted 보조</span><span class="hex">#5A6B7C</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#9DAAB8"></span><span class="meta"><span class="lbl">text-disabled 비활성</span><span class="hex">#9DAAB8</span></span></div>
+          </div>
+        </div>
+        <div class="tok-group">
+          <h4>액센트</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#1E3A5F"></span><span class="meta"><span class="lbl">primary 액센트 블루</span><span class="hex">#1E3A5F</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#FFFFFF"></span><span class="meta"><span class="lbl">primary-foreground</span><span class="hex">#FFFFFF</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#182F4D"></span><span class="meta"><span class="lbl">primary-hover</span><span class="hex">#182F4D</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#3B5C86"></span><span class="meta"><span class="lbl">ring 포커스</span><span class="hex">#3B5C86</span></span></div>
+          </div>
+        </div>
+        <div class="tok-group">
+          <h4>기능 상태색</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#2E7D5B"></span><span class="meta"><span class="lbl">success 완료/정상</span><span class="hex">#2E7D5B</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#B8770E"></span><span class="meta"><span class="lbl">warning 주의/부분수납</span><span class="hex">#B8770E</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#C03A33"></span><span class="meta"><span class="lbl">danger 미수납/노쇼</span><span class="hex">#C03A33</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#2F6F8F"></span><span class="meta"><span class="lbl">info 정보/접수</span><span class="hex">#2F6F8F</span></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="snippet">
+        <div class="snip-cap">실제 화면 예시 · 진료 대기 현황판</div>
+        <div class="card">
+          <div class="card-head">
+            <span class="ttl">진료 대기 현황판 <span class="cnt">대기 6명</span></span>
+            <button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button>
+          </div>
+          <table class="q">
+            <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+            <tbody>
+              <tr><td class="num">A-012</td><td class="name">김영희</td><td><span class="status"><span class="dot s-progress"></span>진행중</span></td><td class="doc">이정훈</td><td class="wait">04:12</td></tr>
+              <tr><td class="num">A-013</td><td class="name">박철수</td><td><span class="status"><span class="dot s-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">08:45</td></tr>
+              <tr><td class="num">A-014</td><td class="name">이민준</td><td><span class="status"><span class="dot s-checkin"></span>접수</span></td><td class="doc">서민경</td><td class="wait long">21:30</td></tr>
+              <tr><td class="num">A-015</td><td class="name">정수아</td><td><span class="status"><span class="dot s-reserved"></span>예약</span></td><td class="doc">서민경</td><td class="wait">—</td></tr>
+              <tr><td class="num">A-010</td><td class="name">한지우</td><td><span class="status"><span class="dot s-done"></span>완료</span></td><td class="doc">이정훈</td><td class="wait">00:00</td></tr>
+              <tr><td class="num">A-011</td><td class="name">오세훈</td><td><span class="status is-cancel"><span class="dot s-cancel"></span>취소</span></td><td class="doc">서민경</td><td class="wait">—</td></tr>
+            </tbody>
+          </table>
+          <div class="card-foot">
+            <div class="badge-row">
+              <span class="grp-lbl">결제상태</span>
+              <span class="badge b-danger"><span class="bdot"></span>미수납</span>
+              <span class="badge b-warning"><span class="bdot"></span>부분수납</span>
+              <span class="badge b-success"><span class="bdot"></span>수납완료</span>
+              <span class="grp-lbl" style="margin-left:10px">급여구분</span>
+              <span class="chip-plain">급여</span>
+              <span class="chip-plain muted">비급여</span>
+            </div>
+            <div class="pii">
+              <span class="lbl">주민번호</span>
+              <span class="val">900101-1******</span>
+              <button class="btn-ghost">표시</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== V2 ============================== -->
+  <section class="v t2">
+    <div class="v-head">
+      <span class="vname">2 · 차분한 코발트</span>
+      <span class="vreg">균형 · 표준 — 무난한 기본값(safe default), 전형적인 임상 블루</span>
+      <span class="vaccent"><span class="sw"></span>primary #2563C9</span>
+    </div>
+    <div class="v-body">
+      <div class="tokens">
+        <div class="tok-group">
+          <h4>표면 / 배경</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#FBFBFC"></span><span class="meta"><span class="lbl">background 배경</span><span class="hex">#FBFBFC</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#FFFFFF"></span><span class="meta"><span class="lbl">surface 표면</span><span class="hex">#FFFFFF</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#F3F4F6"></span><span class="meta"><span class="lbl">surface-muted 보조 표면</span><span class="hex">#F3F4F6</span></span></div>
+            <div class="chip"><span class="swatch is-border"></span><span class="meta"><span class="lbl">border 헤어라인</span><span class="hex">#E2E4E8</span></span></div>
+          </div>
+        </div>
+        <div class="tok-group">
+          <h4>텍스트</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#131722"></span><span class="meta"><span class="lbl">text-primary 본문</span><span class="hex">#131722</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#5C616C"></span><span class="meta"><span class="lbl">text-muted 보조</span><span class="hex">#5C616C</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#A0A4AD"></span><span class="meta"><span class="lbl">text-disabled 비활성</span><span class="hex">#A0A4AD</span></span></div>
+          </div>
+        </div>
+        <div class="tok-group">
+          <h4>액센트</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#2563C9"></span><span class="meta"><span class="lbl">primary 액센트 블루</span><span class="hex">#2563C9</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#FFFFFF"></span><span class="meta"><span class="lbl">primary-foreground</span><span class="hex">#FFFFFF</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#1F54AC"></span><span class="meta"><span class="lbl">primary-hover</span><span class="hex">#1F54AC</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#5B8AE0"></span><span class="meta"><span class="lbl">ring 포커스</span><span class="hex">#5B8AE0</span></span></div>
+          </div>
+        </div>
+        <div class="tok-group">
+          <h4>기능 상태색</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#2F855A"></span><span class="meta"><span class="lbl">success 완료/정상</span><span class="hex">#2F855A</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#C2840D"></span><span class="meta"><span class="lbl">warning 주의/부분수납</span><span class="hex">#C2840D</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#CB3A33"></span><span class="meta"><span class="lbl">danger 미수납/노쇼</span><span class="hex">#CB3A33</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#2B7FB8"></span><span class="meta"><span class="lbl">info 정보/접수</span><span class="hex">#2B7FB8</span></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="snippet">
+        <div class="snip-cap">실제 화면 예시 · 진료 대기 현황판</div>
+        <div class="card">
+          <div class="card-head">
+            <span class="ttl">진료 대기 현황판 <span class="cnt">대기 6명</span></span>
+            <button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button>
+          </div>
+          <table class="q">
+            <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+            <tbody>
+              <tr><td class="num">A-012</td><td class="name">김영희</td><td><span class="status"><span class="dot s-progress"></span>진행중</span></td><td class="doc">이정훈</td><td class="wait">04:12</td></tr>
+              <tr><td class="num">A-013</td><td class="name">박철수</td><td><span class="status"><span class="dot s-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">08:45</td></tr>
+              <tr><td class="num">A-014</td><td class="name">이민준</td><td><span class="status"><span class="dot s-checkin"></span>접수</span></td><td class="doc">서민경</td><td class="wait long">21:30</td></tr>
+              <tr><td class="num">A-015</td><td class="name">정수아</td><td><span class="status"><span class="dot s-reserved"></span>예약</span></td><td class="doc">서민경</td><td class="wait">—</td></tr>
+              <tr><td class="num">A-010</td><td class="name">한지우</td><td><span class="status"><span class="dot s-done"></span>완료</span></td><td class="doc">이정훈</td><td class="wait">00:00</td></tr>
+              <tr><td class="num">A-011</td><td class="name">오세훈</td><td><span class="status is-cancel"><span class="dot s-cancel"></span>취소</span></td><td class="doc">서민경</td><td class="wait">—</td></tr>
+            </tbody>
+          </table>
+          <div class="card-foot">
+            <div class="badge-row">
+              <span class="grp-lbl">결제상태</span>
+              <span class="badge b-danger"><span class="bdot"></span>미수납</span>
+              <span class="badge b-warning"><span class="bdot"></span>부분수납</span>
+              <span class="badge b-success"><span class="bdot"></span>수납완료</span>
+              <span class="grp-lbl" style="margin-left:10px">급여구분</span>
+              <span class="chip-plain">급여</span>
+              <span class="chip-plain muted">비급여</span>
+            </div>
+            <div class="pii">
+              <span class="lbl">주민번호</span>
+              <span class="val">900101-1******</span>
+              <button class="btn-ghost">표시</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== V3 ============================== -->
+  <section class="v t3">
+    <div class="v-head">
+      <span class="vname">3 · 프레시 스카이</span>
+      <span class="vreg">밝고 현대적 — 가장 친근한, 산뜻한 스카이/애저 액센트</span>
+      <span class="vaccent"><span class="sw"></span>primary #2E90E6</span>
+    </div>
+    <div class="v-body">
+      <div class="tokens">
+        <div class="tok-group">
+          <h4>표면 / 배경</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#FCFCFB"></span><span class="meta"><span class="lbl">background 배경</span><span class="hex">#FCFCFB</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#FFFFFF"></span><span class="meta"><span class="lbl">surface 표면</span><span class="hex">#FFFFFF</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#F5F5F3"></span><span class="meta"><span class="lbl">surface-muted 보조 표면</span><span class="hex">#F5F5F3</span></span></div>
+            <div class="chip"><span class="swatch is-border"></span><span class="meta"><span class="lbl">border 헤어라인</span><span class="hex">#E6E5E1</span></span></div>
+          </div>
+        </div>
+        <div class="tok-group">
+          <h4>텍스트</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#1A1C1A"></span><span class="meta"><span class="lbl">text-primary 본문</span><span class="hex">#1A1C1A</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#62655F"></span><span class="meta"><span class="lbl">text-muted 보조</span><span class="hex">#62655F</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#A6A89F"></span><span class="meta"><span class="lbl">text-disabled 비활성</span><span class="hex">#A6A89F</span></span></div>
+          </div>
+        </div>
+        <div class="tok-group">
+          <h4>액센트</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#2E90E6"></span><span class="meta"><span class="lbl">primary 액센트 블루</span><span class="hex">#2E90E6</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#FFFFFF"></span><span class="meta"><span class="lbl">primary-foreground</span><span class="hex">#FFFFFF</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#1E7CD0"></span><span class="meta"><span class="lbl">primary-hover</span><span class="hex">#1E7CD0</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#6FB3F0"></span><span class="meta"><span class="lbl">ring 포커스</span><span class="hex">#6FB3F0</span></span></div>
+          </div>
+        </div>
+        <div class="tok-group">
+          <h4>기능 상태색</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#38915F"></span><span class="meta"><span class="lbl">success 완료/정상</span><span class="hex">#38915F</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#CE8A12"></span><span class="meta"><span class="lbl">warning 주의/부분수납</span><span class="hex">#CE8A12</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#D24438"></span><span class="meta"><span class="lbl">danger 미수납/노쇼</span><span class="hex">#D24438</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#2E96C9"></span><span class="meta"><span class="lbl">info 정보/접수</span><span class="hex">#2E96C9</span></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="snippet">
+        <div class="snip-cap">실제 화면 예시 · 진료 대기 현황판</div>
+        <div class="card">
+          <div class="card-head">
+            <span class="ttl">진료 대기 현황판 <span class="cnt">대기 6명</span></span>
+            <button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button>
+          </div>
+          <table class="q">
+            <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+            <tbody>
+              <tr><td class="num">A-012</td><td class="name">김영희</td><td><span class="status"><span class="dot s-progress"></span>진행중</span></td><td class="doc">이정훈</td><td class="wait">04:12</td></tr>
+              <tr><td class="num">A-013</td><td class="name">박철수</td><td><span class="status"><span class="dot s-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">08:45</td></tr>
+              <tr><td class="num">A-014</td><td class="name">이민준</td><td><span class="status"><span class="dot s-checkin"></span>접수</span></td><td class="doc">서민경</td><td class="wait long">21:30</td></tr>
+              <tr><td class="num">A-015</td><td class="name">정수아</td><td><span class="status"><span class="dot s-reserved"></span>예약</span></td><td class="doc">서민경</td><td class="wait">—</td></tr>
+              <tr><td class="num">A-010</td><td class="name">한지우</td><td><span class="status"><span class="dot s-done"></span>완료</span></td><td class="doc">이정훈</td><td class="wait">00:00</td></tr>
+              <tr><td class="num">A-011</td><td class="name">오세훈</td><td><span class="status is-cancel"><span class="dot s-cancel"></span>취소</span></td><td class="doc">서민경</td><td class="wait">—</td></tr>
+            </tbody>
+          </table>
+          <div class="card-foot">
+            <div class="badge-row">
+              <span class="grp-lbl">결제상태</span>
+              <span class="badge b-danger"><span class="bdot"></span>미수납</span>
+              <span class="badge b-warning"><span class="bdot"></span>부분수납</span>
+              <span class="badge b-success"><span class="bdot"></span>수납완료</span>
+              <span class="grp-lbl" style="margin-left:10px">급여구분</span>
+              <span class="chip-plain">급여</span>
+              <span class="chip-plain muted">비급여</span>
+            </div>
+            <div class="pii">
+              <span class="lbl">주민번호</span>
+              <span class="val">900101-1******</span>
+              <button class="btn-ghost">표시</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== V4 ============================== -->
+  <section class="v t4">
+    <div class="v-head">
+      <span class="vname">4 · 클리니컬 틸-블루</span>
+      <span class="vreg">의료 · 차분 — 틸/시안 쪽으로 기운, 가장 "의료·청결" 연상</span>
+      <span class="vaccent"><span class="sw"></span>primary #0E7C8E</span>
+    </div>
+    <div class="v-body">
+      <div class="tokens">
+        <div class="tok-group">
+          <h4>표면 / 배경</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#FAFCFC"></span><span class="meta"><span class="lbl">background 배경</span><span class="hex">#FAFCFC</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#FFFFFF"></span><span class="meta"><span class="lbl">surface 표면</span><span class="hex">#FFFFFF</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#EFF5F5"></span><span class="meta"><span class="lbl">surface-muted 보조 표면</span><span class="hex">#EFF5F5</span></span></div>
+            <div class="chip"><span class="swatch is-border"></span><span class="meta"><span class="lbl">border 헤어라인</span><span class="hex">#D9E5E5</span></span></div>
+          </div>
+        </div>
+        <div class="tok-group">
+          <h4>텍스트</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#0E1C1D"></span><span class="meta"><span class="lbl">text-primary 본문</span><span class="hex">#0E1C1D</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#54686A"></span><span class="meta"><span class="lbl">text-muted 보조</span><span class="hex">#54686A</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#97A9AA"></span><span class="meta"><span class="lbl">text-disabled 비활성</span><span class="hex">#97A9AA</span></span></div>
+          </div>
+        </div>
+        <div class="tok-group">
+          <h4>액센트</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#0E7C8E"></span><span class="meta"><span class="lbl">primary 액센트 블루</span><span class="hex">#0E7C8E</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#FFFFFF"></span><span class="meta"><span class="lbl">primary-foreground</span><span class="hex">#FFFFFF</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#0A6675"></span><span class="meta"><span class="lbl">primary-hover</span><span class="hex">#0A6675</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#2C9FB0"></span><span class="meta"><span class="lbl">ring 포커스</span><span class="hex">#2C9FB0</span></span></div>
+          </div>
+        </div>
+        <div class="tok-group">
+          <h4>기능 상태색</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#2C8466"></span><span class="meta"><span class="lbl">success 완료/정상</span><span class="hex">#2C8466</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#BC7E12"></span><span class="meta"><span class="lbl">warning 주의/부분수납</span><span class="hex">#BC7E12</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#C2433B"></span><span class="meta"><span class="lbl">danger 미수납/노쇼</span><span class="hex">#C2433B</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#1E8FA0"></span><span class="meta"><span class="lbl">info 정보/접수</span><span class="hex">#1E8FA0</span></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="snippet">
+        <div class="snip-cap">실제 화면 예시 · 진료 대기 현황판</div>
+        <div class="card">
+          <div class="card-head">
+            <span class="ttl">진료 대기 현황판 <span class="cnt">대기 6명</span></span>
+            <button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button>
+          </div>
+          <table class="q">
+            <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+            <tbody>
+              <tr><td class="num">A-012</td><td class="name">김영희</td><td><span class="status"><span class="dot s-progress"></span>진행중</span></td><td class="doc">이정훈</td><td class="wait">04:12</td></tr>
+              <tr><td class="num">A-013</td><td class="name">박철수</td><td><span class="status"><span class="dot s-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">08:45</td></tr>
+              <tr><td class="num">A-014</td><td class="name">이민준</td><td><span class="status"><span class="dot s-checkin"></span>접수</span></td><td class="doc">서민경</td><td class="wait long">21:30</td></tr>
+              <tr><td class="num">A-015</td><td class="name">정수아</td><td><span class="status"><span class="dot s-reserved"></span>예약</span></td><td class="doc">서민경</td><td class="wait">—</td></tr>
+              <tr><td class="num">A-010</td><td class="name">한지우</td><td><span class="status"><span class="dot s-done"></span>완료</span></td><td class="doc">이정훈</td><td class="wait">00:00</td></tr>
+              <tr><td class="num">A-011</td><td class="name">오세훈</td><td><span class="status is-cancel"><span class="dot s-cancel"></span>취소</span></td><td class="doc">서민경</td><td class="wait">—</td></tr>
+            </tbody>
+          </table>
+          <div class="card-foot">
+            <div class="badge-row">
+              <span class="grp-lbl">결제상태</span>
+              <span class="badge b-danger"><span class="bdot"></span>미수납</span>
+              <span class="badge b-warning"><span class="bdot"></span>부분수납</span>
+              <span class="badge b-success"><span class="bdot"></span>수납완료</span>
+              <span class="grp-lbl" style="margin-left:10px">급여구분</span>
+              <span class="chip-plain">급여</span>
+              <span class="chip-plain muted">비급여</span>
+            </div>
+            <div class="pii">
+              <span class="lbl">주민번호</span>
+              <span class="val">900101-1******</span>
+              <button class="btn-ghost">표시</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== V5 ============================== -->
+  <section class="v t5">
+    <div class="v-head">
+      <span class="vname">5 · 슬레이트 미니멀</span>
+      <span class="vreg">극도 절제 — 거의 모노크롬, 블루는 속삭임처럼. 가장 Linear-미니멀</span>
+      <span class="vaccent"><span class="sw"></span>primary #475569</span>
+    </div>
+    <div class="v-body">
+      <div class="tokens">
+        <div class="tok-group">
+          <h4>표면 / 배경</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#FCFCFD"></span><span class="meta"><span class="lbl">background 배경</span><span class="hex">#FCFCFD</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#FFFFFF"></span><span class="meta"><span class="lbl">surface 표면</span><span class="hex">#FFFFFF</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#F4F5F7"></span><span class="meta"><span class="lbl">surface-muted 보조 표면</span><span class="hex">#F4F5F7</span></span></div>
+            <div class="chip"><span class="swatch is-border"></span><span class="meta"><span class="lbl">border 헤어라인</span><span class="hex">#E4E6EA</span></span></div>
+          </div>
+        </div>
+        <div class="tok-group">
+          <h4>텍스트</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#15181E"></span><span class="meta"><span class="lbl">text-primary 본문</span><span class="hex">#15181E</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#5E636D"></span><span class="meta"><span class="lbl">text-muted 보조</span><span class="hex">#5E636D</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#A2A6AE"></span><span class="meta"><span class="lbl">text-disabled 비활성</span><span class="hex">#A2A6AE</span></span></div>
+          </div>
+        </div>
+        <div class="tok-group">
+          <h4>액센트</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#475569"></span><span class="meta"><span class="lbl">primary 액센트 (슬레이트)</span><span class="hex">#475569</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#FFFFFF"></span><span class="meta"><span class="lbl">primary-foreground</span><span class="hex">#FFFFFF</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#3A4456"></span><span class="meta"><span class="lbl">primary-hover</span><span class="hex">#3A4456</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#7C8AA0"></span><span class="meta"><span class="lbl">ring 포커스</span><span class="hex">#7C8AA0</span></span></div>
+          </div>
+        </div>
+        <div class="tok-group">
+          <h4>기능 상태색</h4>
+          <div class="chips">
+            <div class="chip"><span class="swatch" style="background:#3A7A5C"></span><span class="meta"><span class="lbl">success 완료/정상</span><span class="hex">#3A7A5C</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#A9810F"></span><span class="meta"><span class="lbl">warning 주의/부분수납</span><span class="hex">#A9810F</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#B24A43"></span><span class="meta"><span class="lbl">danger 미수납/노쇼</span><span class="hex">#B24A43</span></span></div>
+            <div class="chip"><span class="swatch" style="background:#4A7188"></span><span class="meta"><span class="lbl">info 정보/접수</span><span class="hex">#4A7188</span></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="snippet">
+        <div class="snip-cap">실제 화면 예시 · 진료 대기 현황판</div>
+        <div class="card">
+          <div class="card-head">
+            <span class="ttl">진료 대기 현황판 <span class="cnt">대기 6명</span></span>
+            <button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button>
+          </div>
+          <table class="q">
+            <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+            <tbody>
+              <tr><td class="num">A-012</td><td class="name">김영희</td><td><span class="status"><span class="dot s-progress"></span>진행중</span></td><td class="doc">이정훈</td><td class="wait">04:12</td></tr>
+              <tr><td class="num">A-013</td><td class="name">박철수</td><td><span class="status"><span class="dot s-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">08:45</td></tr>
+              <tr><td class="num">A-014</td><td class="name">이민준</td><td><span class="status"><span class="dot s-checkin"></span>접수</span></td><td class="doc">서민경</td><td class="wait long">21:30</td></tr>
+              <tr><td class="num">A-015</td><td class="name">정수아</td><td><span class="status"><span class="dot s-reserved"></span>예약</span></td><td class="doc">서민경</td><td class="wait">—</td></tr>
+              <tr><td class="num">A-010</td><td class="name">한지우</td><td><span class="status"><span class="dot s-done"></span>완료</span></td><td class="doc">이정훈</td><td class="wait">00:00</td></tr>
+              <tr><td class="num">A-011</td><td class="name">오세훈</td><td><span class="status is-cancel"><span class="dot s-cancel"></span>취소</span></td><td class="doc">서민경</td><td class="wait">—</td></tr>
+            </tbody>
+          </table>
+          <div class="card-foot">
+            <div class="badge-row">
+              <span class="grp-lbl">결제상태</span>
+              <span class="badge b-danger"><span class="bdot"></span>미수납</span>
+              <span class="badge b-warning"><span class="bdot"></span>부분수납</span>
+              <span class="badge b-success"><span class="bdot"></span>수납완료</span>
+              <span class="grp-lbl" style="margin-left:10px">급여구분</span>
+              <span class="chip-plain">급여</span>
+              <span class="chip-plain muted">비급여</span>
+            </div>
+            <div class="pii">
+              <span class="lbl">주민번호</span>
+              <span class="val">900101-1******</span>
+              <button class="btn-ghost">표시</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

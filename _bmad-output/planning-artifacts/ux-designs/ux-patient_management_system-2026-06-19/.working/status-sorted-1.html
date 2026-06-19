@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>진료상태 정렬·그룹화 — 혼잡은 정렬 문제였다</title>
+<!--
+================================================================================
+  STATUS SORTING / GROUPING — "the table looked busy only because statuses
+  were randomly interleaved; real screens sort/group by status."
+
+  Palette: 클리니컬 틸-블루 (lifted from status-refine-1.html).
+  Status style: A3 standard = small ~8px dot + LABEL TEXT in the state color.
+  Fixed 5-state mapping (NEVER brand teal):
+    예약   = 슬레이트  #64758A  ○
+    접수   = 앰버      #BC7E12  ●
+    진행중 = 인디고    #4F46C7  ◐
+    완료   = 그린      #2C8466  ✓
+    취소   = 로즈레드  #C2433B  ✕ (label strikethrough)
+  Teal #0E7C8E = action/brand only.
+
+  SAME 12 patients across all three views (comparable):
+    진행중(2): 김영희, 박철수
+    접수(3):   이민준, 정수아, 한지우
+    예약(4):   오세훈, 윤서연, 강도윤, 임하늘
+    완료(2):   서지호, 노아인
+    취소(1):   문가온
+================================================================================
+-->
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+
+  :root{
+    /* ---- 클리니컬 틸-블루 THEME ---- */
+    --background:#FAFCFC; --surface:#FFFFFF; --surface-muted:#EFF5F5; --border:#D9E5E5;
+    --text-primary:#0E1C1D; --text-muted:#54686A; --text-disabled:#97A9AA;
+    --primary:#0E7C8E; --primary-foreground:#FFFFFF; --primary-hover:#0A6675; --ring:#2C9FB0;
+    --danger:#C2433B;
+
+    /* ---- 진료상태 colors (FIXED) ---- */
+    --st-reserved:#64758A;  /* 예약   slate    */
+    --st-checkin:#BC7E12;   /* 접수   amber    */
+    --st-progress:#4F46C7;  /* 진행중 indigo   */
+    --st-done:#2C8466;      /* 완료   green     */
+    --st-cancel:#C2433B;    /* 취소   rose-red  */
+    --st-checkin-ink:#8A5D09;  /* amber label darkened for white-bg legibility */
+  }
+
+  body{
+    font-family:-apple-system,"Pretendard","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+    background:#eceef1; color:var(--text-primary); font-size:13px; line-height:1.5;
+    padding:28px 22px 72px;
+  }
+  .wrap{max-width:980px; margin:0 auto; display:flex; flex-direction:column; gap:24px}
+
+  /* ---- page header ---- */
+  .page-head h1{font-size:19px; font-weight:650; letter-spacing:-0.01em; color:var(--text-primary)}
+  .page-head p{font-size:12.5px; color:var(--text-muted); margin-top:7px; line-height:1.7}
+  .page-head .swatch-tag{display:inline-flex;align-items:center;gap:6px}
+  .page-head .swatch-tag .sw{width:11px;height:11px;border-radius:3px;border:1px solid rgba(0,0,0,.12);display:inline-block;background:var(--primary)}
+  .page-head b{color:var(--text-primary); font-weight:600}
+
+  /* ---- legend strip ---- */
+  .legend{border:1px solid var(--border); background:var(--surface); border-radius:11px; padding:11px 16px;
+    display:flex; align-items:center; flex-wrap:wrap; gap:7px 18px}
+  .legend .lg-label{font-size:11px; font-weight:700; letter-spacing:.05em; color:#7b8089; text-transform:uppercase; margin-right:2px}
+  .legend .lg{display:inline-flex; align-items:center; gap:7px; font-size:12.5px; font-weight:600; white-space:nowrap}
+  .legend .lg .gl{font-size:10px; line-height:1; width:13px; text-align:center}
+  .legend .lg-reserved{color:var(--st-reserved)}
+  .legend .lg-checkin{color:var(--st-checkin-ink)}
+  .legend .lg-progress{color:var(--st-progress)}
+  .legend .lg-done{color:var(--st-done)}
+  .legend .lg-cancel{color:var(--st-cancel)}
+  .legend .lg-note{font-size:11px; color:var(--text-muted); font-weight:400; margin-left:auto}
+
+  /* ---- view card ---- */
+  .panel{border:1px solid var(--border); background:var(--surface); border-radius:11px; overflow:hidden}
+  .panel-head{padding:13px 18px; border-bottom:1px solid var(--border); background:var(--background)}
+  .panel-head .ph-title{font-size:14px; font-weight:650; letter-spacing:-0.01em; color:var(--text-primary)}
+  .panel-head .ph-tag{
+    display:inline-block; font-size:10.5px; font-weight:700; letter-spacing:.04em;
+    color:var(--primary); background:color-mix(in srgb,var(--primary) 9%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--primary) 24%,var(--surface));
+    border-radius:5px; padding:1px 7px; margin-right:9px; vertical-align:1px;
+  }
+  .caption{font-size:11.5px; color:var(--text-muted); margin-top:5px; line-height:1.6}
+  .caption b{color:var(--text-primary); font-weight:600}
+
+  /* ---- board header (inside panel) ---- */
+  .bd-head{display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-bottom:1px solid var(--border); background:var(--surface)}
+  .bd-head .ttl{font-size:13px; font-weight:600; color:var(--text-primary); display:inline-flex; align-items:center; gap:8px}
+  .bd-head .ttl .cnt{font-size:11px; font-weight:500; color:var(--text-muted); background:var(--surface-muted); border:1px solid var(--border); border-radius:20px; padding:1px 8px}
+  .btn-primary{
+    font-family:inherit; font-size:12px; font-weight:550;
+    color:var(--primary-foreground); background:var(--primary);
+    border:1px solid var(--primary-hover); border-radius:6px; padding:5px 11px; cursor:pointer;
+    display:inline-flex; align-items:center; gap:6px;
+  }
+  .btn-primary:hover{background:var(--primary-hover)}
+  .btn-primary .ic{font-size:11px; line-height:1}
+
+  /* ============================================================
+     TABLE — dense, hairline, Linear-minimal, NO shadows
+     ============================================================ */
+  table.q{width:100%; border-collapse:collapse; font-size:13px; table-layout:fixed}
+  table.q col.c-num{width:15%} table.q col.c-name{width:21%} table.q col.c-st{width:27%}
+  table.q col.c-doc{width:22%} table.q col.c-wait{width:15%}
+  table.q thead th{
+    text-align:left; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.05em;
+    color:var(--text-muted); padding:7px 14px; border-bottom:1px solid var(--border); background:var(--background); white-space:nowrap;
+  }
+  table.q tbody td{padding:6px 14px; border-bottom:1px solid var(--border); color:var(--text-primary); vertical-align:middle; white-space:nowrap}
+  table.q tbody tr:last-child td{border-bottom:none}
+  table.q tbody tr:hover{background:var(--surface-muted)}
+  table.q .num{font-variant-numeric:tabular-nums; color:var(--text-muted)}
+  table.q .name{font-weight:500}
+  table.q .doc{color:var(--text-muted)}
+  table.q .wait{font-variant-numeric:tabular-nums; color:var(--text-primary)}
+  table.q .wait.soon{color:var(--st-progress); font-weight:600}
+  table.q .wait.long{color:var(--danger); font-weight:600}
+  table.q .wait.none{color:var(--text-disabled)}
+  table.q .wait.appt{color:var(--text-muted); font-variant-numeric:normal}
+
+  /* group divider (뷰 2) — very faint hairline between status clusters */
+  table.q tr.grp-edge td{border-top:1px solid color-mix(in srgb,var(--border) 60%,transparent)}
+
+  /* ============================================================
+     A3 STATUS STYLE — small dot + colored label text (STANDARD)
+     ============================================================ */
+  .status{display:inline-flex; align-items:center; gap:7px; white-space:nowrap; font-size:13px; font-weight:500}
+  .status .dot{width:8px; height:8px; border-radius:50%; flex:none}
+  .status .gl{font-size:9px; line-height:1; flex:none; width:9px; text-align:center; font-weight:700}
+  .status.s-reserved{color:var(--st-reserved)} .status.s-reserved .dot{background:var(--st-reserved)}
+  .status.s-checkin {color:var(--st-checkin-ink)} .status.s-checkin .dot{background:var(--st-checkin)}
+  .status.s-progress{color:var(--st-progress)} .status.s-progress .dot{background:var(--st-progress)}
+  .status.s-done    {color:var(--st-done)} .status.s-done .dot{background:var(--st-done)}
+  .status.s-cancel  {color:var(--st-cancel)} .status.s-cancel .dot{background:var(--st-cancel)}
+  .status.s-cancel .lbl{text-decoration:line-through; text-decoration-thickness:1px}
+
+  /* ============================================================
+     SECTION HEADERS (뷰 3) — lightweight, small-caps, not heavy bars
+     ============================================================ */
+  tr.sec td{
+    padding:8px 14px 6px; border-bottom:1px solid var(--border);
+    background:var(--background);
+  }
+  .sec-head{display:inline-flex; align-items:center; gap:8px; font-size:11.5px; font-weight:650; letter-spacing:.01em}
+  .sec-head .dot{width:8px; height:8px; border-radius:50%; flex:none}
+  .sec-head .gl{font-size:9px; line-height:1; flex:none; width:9px; text-align:center; font-weight:700}
+  .sec-head .ct{font-size:10.5px; font-weight:600; color:var(--text-muted); background:var(--surface-muted);
+    border:1px solid var(--border); border-radius:20px; padding:0 7px; margin-left:1px; font-variant-numeric:tabular-nums}
+  .sec-head.h-progress{color:var(--st-progress)} .sec-head.h-progress .dot{background:var(--st-progress)}
+  .sec-head.h-checkin {color:var(--st-checkin-ink)} .sec-head.h-checkin .dot{background:var(--st-checkin)}
+  .sec-head.h-reserved{color:var(--st-reserved)} .sec-head.h-reserved .dot{background:var(--st-reserved)}
+
+  /* collapsed/de-emphasized section headers (완료 / 취소) */
+  tr.sec.collapsed td{background:var(--surface)}
+  .sec-head.muted{color:var(--text-disabled); font-weight:550}
+  .sec-head.muted .arrow{font-size:9px; color:var(--text-disabled); width:9px; text-align:center}
+  .sec-head.muted .dot{width:7px; height:7px; opacity:.55}
+  .sec-head.muted.h-done .dot{background:var(--st-done)}
+  .sec-head.muted.h-cancel .dot{background:var(--st-cancel)}
+  .sec-head.muted .ct{color:var(--text-disabled); background:var(--surface); border-color:var(--border)}
+  .sec-head.muted .hint{font-size:10px; color:var(--text-disabled); font-weight:400; margin-left:4px}
+
+  /* ============================================================
+     comparison callout (above 뷰 3)
+     ============================================================ */
+  .compare{border:1px solid var(--border); background:var(--surface-muted); border-radius:10px;
+    padding:11px 14px; display:flex; align-items:center; flex-wrap:wrap; gap:9px 14px}
+  .compare .lead{font-size:11.5px; color:var(--text-muted); line-height:1.55; flex:1 1 200px; min-width:200px}
+  .compare .lead b{color:var(--text-primary); font-weight:600}
+  .compare .chips{display:flex; gap:9px; flex-wrap:wrap}
+  .chip{display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:600;
+    background:var(--surface); border:1px solid var(--border); border-radius:7px; padding:5px 10px; color:var(--text-primary); white-space:nowrap}
+  .chip .ck{font-size:9.5px; font-weight:700; letter-spacing:.04em; color:#7b8089; text-transform:uppercase}
+  .chip .seq{font-variant-numeric:tabular-nums; color:var(--text-muted); font-weight:500}
+  .chip .seq .on-prog{color:var(--st-progress); font-weight:650}
+  .chip .seq .on-chk{color:var(--st-checkin-ink); font-weight:650}
+
+  /* view separator label */
+  .view-sep{margin:4px 2px -8px; display:flex; align-items:baseline; gap:9px}
+  .view-sep .vk{font-size:11px; font-weight:800; letter-spacing:.12em; color:var(--primary)}
+  .view-sep .vt{font-size:12px; color:var(--text-muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ===================== PAGE HEADER ===================== -->
+  <div class="page-head">
+    <h1>혼잡은 ‘색’이 아니라 ‘정렬’ 문제였다 — 진료상태 정렬·그룹화</h1>
+    <p>
+      <span class="swatch-tag"><span class="sw"></span><strong>클리니컬 틸-블루</strong></span> · A3 표준 상태 표기(<b>~8px 점 + 상태색 라벨</b>) 그대로.
+      앞선 테스트 표가 번잡해 보인 건 상태가 <b>행마다 무작위로 섞여</b> 있었기 때문 — 실제 화면은 <b>상태로 정렬·그룹화</b>합니다.
+      아래 <b>같은 12명</b>을 세 방식으로 렌더해 비교합니다.
+    </p>
+  </div>
+
+  <!-- ===================== LEGEND STRIP ===================== -->
+  <div class="legend">
+    <span class="lg-label">상태</span>
+    <span class="lg lg-progress"><span class="gl">◐</span>진행중</span>
+    <span class="lg lg-checkin"><span class="gl">●</span>접수</span>
+    <span class="lg lg-reserved"><span class="gl">○</span>예약</span>
+    <span class="lg lg-done"><span class="gl">✓</span>완료</span>
+    <span class="lg lg-cancel"><span class="gl">✕</span>취소</span>
+    <span class="lg-note">매핑 고정 · 점 + 상태색 라벨</span>
+  </div>
+
+  <!-- ============================================================
+       뷰 1 — 미정렬 (혼잡 기준선)
+       ============================================================ -->
+  <div class="view-sep"><span class="vk">뷰 1</span><span class="vt">미정렬 — 혼잡 기준선</span></div>
+  <section class="panel">
+    <div class="panel-head">
+      <div class="ph-title"><span class="ph-tag">뷰 1</span>미정렬 (혼잡 기준선)</div>
+      <div class="caption"><b>상태가 행마다 튀어 스캔이 어려움.</b> 색이 위아래로 뒤섞여 같은 상태를 눈으로 모으기 힘듦 — 이게 “번잡해 보였던” 진짜 원인.</div>
+    </div>
+    <div class="bd-head"><span class="ttl">진료 대기 현황판 <span class="cnt">총 12명</span></span><button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button></div>
+    <table class="q">
+      <colgroup><col class="c-num"><col class="c-name"><col class="c-st"><col class="c-doc"><col class="c-wait"></colgroup>
+      <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+      <tbody>
+        <tr><td class="num">A-104</td><td class="name">오세훈</td><td><span class="status s-reserved"><span class="dot"></span><span class="lbl">예약</span></span></td><td class="doc">이정훈 과장</td><td class="wait appt">예약 14:30</td></tr>
+        <tr><td class="num">A-097</td><td class="name">김영희</td><td><span class="status s-progress"><span class="dot"></span><span class="lbl">진행중</span></span></td><td class="doc">박서연 원장</td><td class="wait soon">방금</td></tr>
+        <tr><td class="num">A-101</td><td class="name">이민준</td><td><span class="status s-checkin"><span class="dot"></span><span class="lbl">접수</span></span></td><td class="doc">이정훈 과장</td><td class="wait">12분</td></tr>
+        <tr><td class="num">A-088</td><td class="name">서지호</td><td><span class="status s-done"><span class="dot"></span><span class="lbl">완료</span></span></td><td class="doc">박서연 원장</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-106</td><td class="name">윤서연</td><td><span class="status s-reserved"><span class="dot"></span><span class="lbl">예약</span></span></td><td class="doc">최민호 과장</td><td class="wait appt">예약 15:00</td></tr>
+        <tr><td class="num">A-102</td><td class="name">정수아</td><td><span class="status s-checkin"><span class="dot"></span><span class="lbl">접수</span></span></td><td class="doc">최민호 과장</td><td class="wait">7분</td></tr>
+        <tr><td class="num">A-091</td><td class="name">문가온</td><td><span class="status s-cancel"><span class="dot"></span><span class="lbl">취소</span></span></td><td class="doc">이정훈 과장</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-098</td><td class="name">박철수</td><td><span class="status s-progress"><span class="dot"></span><span class="lbl">진행중</span></span></td><td class="doc">최민호 과장</td><td class="wait soon">3분</td></tr>
+        <tr><td class="num">A-108</td><td class="name">강도윤</td><td><span class="status s-reserved"><span class="dot"></span><span class="lbl">예약</span></span></td><td class="doc">박서연 원장</td><td class="wait appt">예약 15:30</td></tr>
+        <tr><td class="num">A-103</td><td class="name">한지우</td><td><span class="status s-checkin"><span class="dot"></span><span class="lbl">접수</span></span></td><td class="doc">박서연 원장</td><td class="wait long">26분</td></tr>
+        <tr><td class="num">A-090</td><td class="name">노아인</td><td><span class="status s-done"><span class="dot"></span><span class="lbl">완료</span></span></td><td class="doc">최민호 과장</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-110</td><td class="name">임하늘</td><td><span class="status s-reserved"><span class="dot"></span><span class="lbl">예약</span></span></td><td class="doc">이정훈 과장</td><td class="wait appt">예약 16:00</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ============================================================
+       뷰 2 — 상태 플랫 정렬
+       ============================================================ -->
+  <div class="view-sep"><span class="vk">뷰 2</span><span class="vt">상태 플랫 정렬 — 정렬만으로 혼잡 해소</span></div>
+  <section class="panel">
+    <div class="panel-head">
+      <div class="ph-title"><span class="ph-tag">뷰 2</span>상태 플랫 정렬 (진행중 → 접수 → 예약 → 완료 → 취소)</div>
+      <div class="caption"><b>같은 상태끼리 뭉쳐 색이 안정됨 — 정렬만으로 혼잡 해소.</b> 헤더 없이, 상태 묶음 사이에 아주 옅은 헤어라인 구분선만 둠.</div>
+    </div>
+    <div class="bd-head"><span class="ttl">진료 대기 현황판 <span class="cnt">총 12명</span></span><button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button></div>
+    <table class="q">
+      <colgroup><col class="c-num"><col class="c-name"><col class="c-st"><col class="c-doc"><col class="c-wait"></colgroup>
+      <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+      <tbody>
+        <!-- 진행중 (2) -->
+        <tr><td class="num">A-097</td><td class="name">김영희</td><td><span class="status s-progress"><span class="dot"></span><span class="lbl">진행중</span></span></td><td class="doc">박서연 원장</td><td class="wait soon">방금</td></tr>
+        <tr><td class="num">A-098</td><td class="name">박철수</td><td><span class="status s-progress"><span class="dot"></span><span class="lbl">진행중</span></span></td><td class="doc">최민호 과장</td><td class="wait soon">3분</td></tr>
+        <!-- 접수 (3) -->
+        <tr class="grp-edge"><td class="num">A-102</td><td class="name">정수아</td><td><span class="status s-checkin"><span class="dot"></span><span class="lbl">접수</span></span></td><td class="doc">최민호 과장</td><td class="wait">7분</td></tr>
+        <tr><td class="num">A-101</td><td class="name">이민준</td><td><span class="status s-checkin"><span class="dot"></span><span class="lbl">접수</span></span></td><td class="doc">이정훈 과장</td><td class="wait">12분</td></tr>
+        <tr><td class="num">A-103</td><td class="name">한지우</td><td><span class="status s-checkin"><span class="dot"></span><span class="lbl">접수</span></span></td><td class="doc">박서연 원장</td><td class="wait long">26분</td></tr>
+        <!-- 예약 (4) -->
+        <tr class="grp-edge"><td class="num">A-104</td><td class="name">오세훈</td><td><span class="status s-reserved"><span class="dot"></span><span class="lbl">예약</span></span></td><td class="doc">이정훈 과장</td><td class="wait appt">예약 14:30</td></tr>
+        <tr><td class="num">A-106</td><td class="name">윤서연</td><td><span class="status s-reserved"><span class="dot"></span><span class="lbl">예약</span></span></td><td class="doc">최민호 과장</td><td class="wait appt">예약 15:00</td></tr>
+        <tr><td class="num">A-108</td><td class="name">강도윤</td><td><span class="status s-reserved"><span class="dot"></span><span class="lbl">예약</span></span></td><td class="doc">박서연 원장</td><td class="wait appt">예약 15:30</td></tr>
+        <tr><td class="num">A-110</td><td class="name">임하늘</td><td><span class="status s-reserved"><span class="dot"></span><span class="lbl">예약</span></span></td><td class="doc">이정훈 과장</td><td class="wait appt">예약 16:00</td></tr>
+        <!-- 완료 (2) -->
+        <tr class="grp-edge"><td class="num">A-088</td><td class="name">서지호</td><td><span class="status s-done"><span class="dot"></span><span class="lbl">완료</span></span></td><td class="doc">박서연 원장</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-090</td><td class="name">노아인</td><td><span class="status s-done"><span class="dot"></span><span class="lbl">완료</span></span></td><td class="doc">최민호 과장</td><td class="wait none">—</td></tr>
+        <!-- 취소 (1) -->
+        <tr class="grp-edge"><td class="num">A-091</td><td class="name">문가온</td><td><span class="status s-cancel"><span class="dot"></span><span class="lbl">취소</span></span></td><td class="doc">이정훈 과장</td><td class="wait none">—</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ===================== COMPARISON CALLOUT ===================== -->
+  <div class="compare">
+    <div class="lead"><b>정렬 순서는 화면 목적에 달림.</b> “다음 환자 호출” 보드라면 <b>접수(대기 중)</b>가 먼저 와야 할 수도 — 정답은 하나가 아닙니다.</div>
+    <div class="chips">
+      <span class="chip"><span class="ck">활성도 순</span><span class="seq"><span class="on-prog">진행중</span>▸접수▸…</span></span>
+      <span class="chip"><span class="ck">호출 순</span><span class="seq"><span class="on-chk">접수</span>▸진행중▸…</span></span>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       뷰 3 — 상태 그룹 섹션 (Linear 패턴)
+       ============================================================ -->
+  <div class="view-sep"><span class="vk">뷰 3</span><span class="vt">상태 그룹 섹션 — Linear 패턴</span></div>
+  <section class="panel">
+    <div class="panel-head">
+      <div class="ph-title"><span class="ph-tag">뷰 3</span>상태 그룹 섹션 (헤더 + 카운트)</div>
+      <div class="caption"><b>섹션 헤더+카운트로 한눈에, 완료/취소는 접어 시야에서 내림.</b> 활성 상태(진행중·접수·예약)는 펼침, 정착된 상태(완료·취소)는 접어 시각적으로 후퇴시킴.</div>
+    </div>
+    <div class="bd-head"><span class="ttl">진료 대기 현황판 <span class="cnt">활성 9명 · 정착 3명</span></span><button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button></div>
+    <table class="q">
+      <colgroup><col class="c-num"><col class="c-name"><col class="c-st"><col class="c-doc"><col class="c-wait"></colgroup>
+      <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+      <tbody>
+        <!-- ◐ 진행중 · 2 -->
+        <tr class="sec"><td colspan="5"><span class="sec-head h-progress"><span class="dot"></span>진행중<span class="ct">2</span></span></td></tr>
+        <tr><td class="num">A-097</td><td class="name">김영희</td><td><span class="status s-progress"><span class="dot"></span><span class="lbl">진행중</span></span></td><td class="doc">박서연 원장</td><td class="wait soon">방금</td></tr>
+        <tr><td class="num">A-098</td><td class="name">박철수</td><td><span class="status s-progress"><span class="dot"></span><span class="lbl">진행중</span></span></td><td class="doc">최민호 과장</td><td class="wait soon">3분</td></tr>
+        <!-- ● 접수 · 3 -->
+        <tr class="sec"><td colspan="5"><span class="sec-head h-checkin"><span class="dot"></span>접수<span class="ct">3</span></span></td></tr>
+        <tr><td class="num">A-102</td><td class="name">정수아</td><td><span class="status s-checkin"><span class="dot"></span><span class="lbl">접수</span></span></td><td class="doc">최민호 과장</td><td class="wait">7분</td></tr>
+        <tr><td class="num">A-101</td><td class="name">이민준</td><td><span class="status s-checkin"><span class="dot"></span><span class="lbl">접수</span></span></td><td class="doc">이정훈 과장</td><td class="wait">12분</td></tr>
+        <tr><td class="num">A-103</td><td class="name">한지우</td><td><span class="status s-checkin"><span class="dot"></span><span class="lbl">접수</span></span></td><td class="doc">박서연 원장</td><td class="wait long">26분</td></tr>
+        <!-- ○ 예약 · 4 -->
+        <tr class="sec"><td colspan="5"><span class="sec-head h-reserved"><span class="dot"></span>예약<span class="ct">4</span></span></td></tr>
+        <tr><td class="num">A-104</td><td class="name">오세훈</td><td><span class="status s-reserved"><span class="dot"></span><span class="lbl">예약</span></span></td><td class="doc">이정훈 과장</td><td class="wait appt">예약 14:30</td></tr>
+        <tr><td class="num">A-106</td><td class="name">윤서연</td><td><span class="status s-reserved"><span class="dot"></span><span class="lbl">예약</span></span></td><td class="doc">최민호 과장</td><td class="wait appt">예약 15:00</td></tr>
+        <tr><td class="num">A-108</td><td class="name">강도윤</td><td><span class="status s-reserved"><span class="dot"></span><span class="lbl">예약</span></span></td><td class="doc">박서연 원장</td><td class="wait appt">예약 15:30</td></tr>
+        <tr><td class="num">A-110</td><td class="name">임하늘</td><td><span class="status s-reserved"><span class="dot"></span><span class="lbl">예약</span></span></td><td class="doc">이정훈 과장</td><td class="wait appt">예약 16:00</td></tr>
+        <!-- ✓ 완료 · 2  (collapsed / de-emphasized) -->
+        <tr class="sec collapsed"><td colspan="5"><span class="sec-head muted h-done"><span class="arrow">▸</span><span class="dot"></span>완료<span class="ct">2</span><span class="hint">접힘</span></span></td></tr>
+        <!-- ✕ 취소 · 1  (collapsed / de-emphasized) -->
+        <tr class="sec collapsed"><td colspan="5"><span class="sec-head muted h-cancel"><span class="arrow">▸</span><span class="dot"></span>취소<span class="ct">1</span><span class="hint">접힘</span></span></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>권한 관리 — 관리자/원장 (역할×권한 매트릭스)</title>
+<!--
+================================================================================
+  KEY SCREEN — 권한 관리 RBAC 매트릭스 (Role × Permission Matrix)  ·  role: 관리자/원장
+  Governs DESIGN.md / EXPERIENCE.md:
+    Components:    permission-matrix (sticky header + sticky first column),
+                   checkbox-cell (checked/unchecked/locked states),
+                   group-rows (domain group header rows), page-header,
+                   sidebar, topbar, button(secondary), autosave-indicator
+    State Patterns: immediate-apply (변경 즉시 적용) + audit (감사 로그 기록)
+    Accessibility:  checked legibility — MONITOR-ROBUST (fill + glyph, not tint)
+
+  --------------------------------------------------------------------------------
+  [REUSED VERBATIM from key-waiting-board-1.html — shell + tokens, do NOT redesign]
+    • Palette 클리니컬 틸-블루:
+        --background #FAFCFC  --surface #FFFFFF  --surface-muted #EFF5F5
+        --border #D9E5E5  --text-primary #0E1C1D  --text-muted #54686A
+        --text-disabled #97A9AA  --primary #0E7C8E  --primary-hover #0A6675  --ring #2C9FB0
+    • Global shell: browser chrome + left sidebar(240px) + top bar(52px), brand block,
+      user block. Pretendard-first Windows stack. Lucide-style Unicode icons. No network.
+    • Aesthetic: Linear-minimal, high-density, LIGHT, 1px hairline borders, single teal
+      accent. Teal = action/brand ONLY. 100% Korean UI. Ctrl hints (not ⌘).
+    • Nav swapped to 관리자 role: 운영/대시보드 · 마스터 · 권한(active) · 근무 스케줄 · 감사 로그.
+
+  [NEW LAYER for this screen — permission matrix]
+    • CHECKED-STATE ENCODING (MONITOR-ROBUST, critical):
+        checked   = SOLID teal fill (#0E7C8E) + white ✓ check glyph — unmistakable.
+        unchecked = empty box, hairline border on surface — clearly empty.
+        locked    = teal fill + ✓ + lock dimming + 🔒 hint (관리자 column = all-on/locked).
+      Never rely on faint tint/shadow alone; fill+glyph must read at ~1280px on a monitor.
+    • SENSITIVE PERMISSIONS (주민번호 표시·환자 삭제·수가 조정·권한 관리·감사 로그 조회):
+        row gets amber "민감" pill + ⚠ marker (color + LABEL, monitor-robust) so admins
+        are deliberate before granting.
+    • GROUP ROWS: rows grouped by domain (환자/진료/간호·처치/영상/수납/관리) with subtle
+        group-header rows (background + uppercase-ish bold label + count).
+    • ORIENTATION: rows = 권한, columns = 역할. Sticky col header + sticky first column.
+    • IMMEDIATE-APPLY: no save button; autosave indicator + "변경은 즉시 적용 + 감사 로그" note.
+  --------------------------------------------------------------------------------
+  Constraints honored: inline CSS only, NO JS (static visual states), NO network, fully
+                       offline. Logo = text + CSS shape. Desktop frame ~1440px; dense
+                       matrix legible at ~1280px.
+================================================================================
+-->
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+
+  :root{
+    /* ---- 클리니컬 틸-블루 THEME (REUSED) ---- */
+    --background:#FAFCFC; --surface:#FFFFFF; --surface-muted:#EFF5F5; --border:#D9E5E5;
+    --text-primary:#0E1C1D; --text-muted:#54686A; --text-disabled:#97A9AA;
+    --primary:#0E7C8E; --primary-foreground:#FFFFFF; --primary-hover:#0A6675; --ring:#2C9FB0;
+    --danger:#C2433B;
+
+    /* ---- 진료상태 / accent colors (REUSED) ---- */
+    --st-done:#2C8466;      /* 완료 green */
+    --st-checkin:#BC7E12;   /* amber */
+    --st-checkin-ink:#8A5D09;  /* amber ink for white-bg legibility — 민감 marker */
+
+    --sidebar-w:240px;
+  }
+
+  /* typography stack — Pretendard 번들 → 윈도우(맑은 고딕) → 맥 폴백. 윈도우 우선. */
+  body{
+    font-family:'Pretendard Variable',Pretendard,'Malgun Gothic','맑은 고딕','Apple SD Gothic Neo',-apple-system,system-ui,sans-serif;
+    background:#e7eaed; color:var(--text-primary); font-size:13px; line-height:1.5;
+  }
+
+  /* ============================================================
+     BROWSER FRAME (desktop chrome, ~1440px content)
+     ============================================================ */
+  .browser{max-width:1440px; margin:26px auto 60px; border:1px solid #cbd3d6;
+    border-radius:12px; overflow:hidden; background:var(--surface);
+    box-shadow:0 1px 2px rgba(16,28,29,.06), 0 8px 28px rgba(16,28,29,.08)}
+  .chrome{height:38px; background:#f1f3f4; border-bottom:1px solid #dfe3e5;
+    display:flex; align-items:center; gap:8px; padding:0 14px}
+  .chrome .dots{display:flex; gap:7px}
+  .chrome .dots i{width:11px;height:11px;border-radius:50%;display:block}
+  .chrome .dots i:nth-child(1){background:#ed6a5e}
+  .chrome .dots i:nth-child(2){background:#f4be4f}
+  .chrome .dots i:nth-child(3){background:#61c454}
+  .chrome .url{flex:1; max-width:560px; margin:0 auto; height:23px; background:#fff;
+    border:1px solid #dfe3e5; border-radius:6px; display:flex; align-items:center;
+    gap:7px; padding:0 10px; font-size:11.5px; color:var(--text-muted)}
+  .chrome .url .lock{font-size:9px;color:var(--st-done)}
+  .chrome .url b{color:var(--text-primary);font-weight:500}
+
+  /* ============================================================
+     APP SHELL  (REUSED: sidebar + topbar grid)
+     ============================================================ */
+  .app{display:grid; grid-template-columns:var(--sidebar-w) 1fr; min-height:760px; background:var(--background)}
+
+  /* ---------- LEFT SIDEBAR ---------- */
+  .sidebar{background:var(--surface); border-right:1px solid var(--border);
+    display:flex; flex-direction:column; min-height:100%}
+  .sb-brand{display:flex; align-items:center; gap:10px; padding:15px 16px 14px;
+    border-bottom:1px solid var(--border)}
+  .sb-logo{width:28px;height:28px;border-radius:8px;flex:none;position:relative;
+    background:linear-gradient(135deg,var(--primary),var(--ring));}
+  .sb-logo::after{content:"";position:absolute;inset:8px;border-radius:2px;
+    background:#fff;clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%,50% 35%,65% 50%,50% 65%,35% 50%)}
+  .sb-brand .wm{display:flex;flex-direction:column;line-height:1.15}
+  .sb-brand .wm b{font-size:14px;font-weight:650;letter-spacing:-.01em;color:var(--text-primary)}
+  .sb-brand .wm span{font-size:10.5px;color:var(--text-muted)}
+
+  .sb-nav{flex:1; padding:12px 10px 8px; overflow:auto}
+  .sb-cap{font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+    color:#8a939b;padding:14px 8px 6px}
+  .sb-cap:first-child{padding-top:2px}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:7px;
+    font-size:13px;color:var(--text-primary);cursor:pointer;position:relative;text-decoration:none;
+    margin-bottom:1px}
+  .nav-item .ic{width:16px;text-align:center;font-size:13px;color:var(--text-muted);flex:none}
+  .nav-item .lbl{flex:1}
+  .nav-item .tail{font-size:11px;color:var(--text-muted);font-variant-numeric:tabular-nums;
+    background:var(--surface-muted);border:1px solid var(--border);border-radius:20px;padding:0 7px}
+  .nav-item:hover{background:var(--surface-muted)}
+  .nav-item.active{background:color-mix(in srgb,var(--primary) 10%,var(--surface));color:var(--primary);font-weight:600}
+  .nav-item.active .ic{color:var(--primary)}
+  .nav-item.active::before{content:"";position:absolute;left:-10px;top:6px;bottom:6px;width:3px;
+    border-radius:0 3px 3px 0;background:var(--primary)}
+  .nav-item.active .tail{background:color-mix(in srgb,var(--primary) 14%,var(--surface));
+    border-color:color-mix(in srgb,var(--primary) 26%,var(--surface));color:var(--primary)}
+
+  .sb-foot{border-top:1px solid var(--border);padding:8px 10px 10px}
+  .sb-foot .nav-item{font-size:12.5px}
+  .sb-user{display:flex;align-items:center;gap:10px;padding:9px 9px 4px;margin-top:4px;
+    border-top:1px solid var(--surface-muted)}
+  .sb-user .av{width:30px;height:30px;border-radius:50%;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:12px;font-weight:600;color:#fff;
+    background:linear-gradient(135deg,#3a8d9c,#0E7C8E)}
+  .sb-user .who{flex:1;line-height:1.2;min-width:0}
+  .sb-user .who b{font-size:12.5px;font-weight:600;display:block;color:var(--text-primary)}
+  .sb-user .who span{font-size:10.5px;color:var(--text-muted)}
+  .role-badge{font-size:10px;font-weight:700;letter-spacing:.02em;color:var(--primary);
+    background:color-mix(in srgb,var(--primary) 10%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--primary) 26%,var(--surface));
+    border-radius:5px;padding:1px 6px;flex:none}
+
+  /* ---------- MAIN COLUMN ---------- */
+  .main{display:flex;flex-direction:column;min-width:0}
+
+  /* ---------- TOP BAR (REUSED) ---------- */
+  .topbar{height:52px;background:var(--surface);border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:14px;padding:0 18px;flex:none}
+  .tb-toggle{width:30px;height:30px;border:1px solid var(--border);border-radius:7px;background:var(--surface);
+    color:var(--text-muted);cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;flex:none}
+  .tb-toggle:hover{background:var(--surface-muted)}
+  .tb-crumb{font-size:12.5px;color:var(--text-muted);display:flex;align-items:center;gap:7px;white-space:nowrap}
+  .tb-crumb b{color:var(--text-primary);font-weight:600}
+  .tb-crumb .sep{color:var(--text-disabled)}
+
+  .tb-search{flex:1;max-width:380px;height:33px;background:var(--surface-muted);
+    border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;gap:9px;
+    padding:0 10px;color:var(--text-disabled);font-size:12.5px;cursor:text}
+  .tb-search .mag{font-size:13px;color:var(--text-muted)}
+  .tb-search .ph{flex:1;color:var(--text-disabled)}
+  .tb-search .kbd{font-size:10.5px;font-weight:600;color:var(--text-muted);background:var(--surface);
+    border:1px solid var(--border);border-radius:5px;padding:1px 6px;font-variant-numeric:tabular-nums}
+
+  .tb-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+  .tb-clock{font-size:12px;color:var(--text-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .tb-clock b{color:var(--text-primary);font-weight:600}
+  .tb-bell{position:relative;width:32px;height:32px;border:1px solid var(--border);border-radius:8px;
+    background:var(--surface);color:var(--text-muted);display:flex;align-items:center;justify-content:center;
+    font-size:15px;cursor:pointer;flex:none}
+  .tb-bell:hover{background:var(--surface-muted)}
+  .tb-bell .badge{position:absolute;top:-5px;right:-5px;min-width:16px;height:16px;border-radius:9px;
+    background:var(--danger);color:#fff;font-size:9.5px;font-weight:700;display:flex;align-items:center;
+    justify-content:center;padding:0 4px;border:1.5px solid var(--surface);font-variant-numeric:tabular-nums}
+  .tb-av{width:32px;height:32px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-weight:600;color:#fff;background:linear-gradient(135deg,#3a8d9c,#0E7C8E);cursor:pointer}
+
+  /* ============================================================
+     CONTENT
+     ============================================================ */
+  .content{padding:20px 24px 40px;overflow:auto}
+
+  /* ---------- page header row ---------- */
+  .page-header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  .ph-l h1{font-size:20px;font-weight:600;letter-spacing:-.02em;color:var(--text-primary);line-height:1.2}
+  .ph-l .sub{font-size:12.5px;color:var(--text-muted);margin-top:5px;display:flex;align-items:center;gap:7px}
+  .ph-l .sub .sep{color:var(--text-disabled)}
+  .ph-r{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+
+  /* autosave indicator (immediate-apply state) */
+  .autosave{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:var(--text-muted);
+    white-space:nowrap}
+  .autosave .ck{width:15px;height:15px;border-radius:50%;background:var(--st-done);color:#fff;
+    display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex:none}
+  .autosave b{color:var(--text-primary);font-weight:600}
+  .autosave .ts{font-variant-numeric:tabular-nums}
+
+  .btn-secondary{font-family:inherit;font-size:12.5px;font-weight:600;color:var(--text-primary);
+    background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:0 13px;height:32px;
+    cursor:pointer;display:inline-flex;align-items:center;gap:7px}
+  .btn-secondary:hover{background:var(--surface-muted)}
+  .btn-secondary .ic{font-size:12px;line-height:1;color:var(--text-muted)}
+
+  /* ---------- immediate-apply / audit banner ---------- */
+  .apply-note{margin-top:14px;border:1px solid color-mix(in srgb,var(--primary) 26%,var(--border));
+    background:color-mix(in srgb,var(--primary) 6%,var(--surface));border-radius:10px;
+    padding:9px 14px;display:flex;align-items:center;gap:11px;font-size:12.5px;color:var(--text-primary)}
+  .apply-note .glyph{width:26px;height:26px;border-radius:7px;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:13px;color:#fff;background:var(--primary)}
+  .apply-note b{font-weight:650}
+  .apply-note .muted{color:var(--text-muted)}
+
+  /* ---------- legend ---------- */
+  .legend{margin-top:14px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+    font-size:11.5px;color:var(--text-muted)}
+  .legend .lg{display:inline-flex;align-items:center;gap:7px}
+  .legend .lg .demo-on{width:18px;height:18px;border-radius:5px;background:var(--primary);
+    border:1px solid var(--primary-hover);color:#fff;display:inline-flex;align-items:center;
+    justify-content:center;font-size:11px;font-weight:800;flex:none}
+  .legend .lg .demo-off{width:18px;height:18px;border-radius:5px;background:var(--surface);
+    border:1px solid var(--border);flex:none}
+  .legend .lg .demo-lock{width:18px;height:18px;border-radius:5px;
+    background:color-mix(in srgb,var(--primary) 60%,#7d8c8e);
+    border:1px solid var(--primary-hover);color:#fff;display:inline-flex;align-items:center;
+    justify-content:center;font-size:10px;font-weight:800;flex:none}
+  .legend .lg b{color:var(--text-primary);font-weight:600}
+  .legend .sens-pill{font-size:10px;font-weight:700;color:var(--st-checkin-ink);
+    background:color-mix(in srgb,var(--st-checkin) 13%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--st-checkin) 38%,var(--border));
+    border-radius:5px;padding:1px 6px;display:inline-flex;align-items:center;gap:4px}
+  .legend .vline{width:1px;height:16px;background:var(--border)}
+
+  /* ============================================================
+     PANEL + MATRIX (core)
+     ============================================================ */
+  .panel{margin-top:16px;border:1px solid var(--border);background:var(--surface);border-radius:11px;overflow:hidden}
+  .bd-head{display:flex;align-items:center;justify-content:space-between;padding:11px 16px;
+    border-bottom:1px solid var(--border);background:var(--surface)}
+  .bd-head .ttl{font-size:13.5px;font-weight:600;color:var(--text-primary);display:inline-flex;align-items:center;gap:9px}
+  .bd-head .ttl .cnt{font-size:11px;font-weight:500;color:var(--text-muted);background:var(--surface-muted);
+    border:1px solid var(--border);border-radius:20px;padding:1px 9px;font-variant-numeric:tabular-nums}
+  .bd-head .tools{display:flex;align-items:center;gap:8px}
+  .seg{display:inline-flex;border:1px solid var(--border);border-radius:7px;overflow:hidden;font-size:11.5px}
+  .seg span{padding:5px 10px;color:var(--text-muted);cursor:pointer;border-right:1px solid var(--border)}
+  .seg span:last-child{border-right:none}
+  .seg span.on{background:color-mix(in srgb,var(--primary) 10%,var(--surface));color:var(--primary);font-weight:600}
+
+  /* matrix scroll wrapper (sticky needs an overflow container) */
+  .matrix-wrap{max-height:560px;overflow:auto}
+
+  table.matrix{width:100%;border-collapse:separate;border-spacing:0;font-size:13px;table-layout:fixed}
+  table.matrix col.c-perm{width:300px} table.matrix col.c-role{width:auto}
+
+  /* ---- header (sticky top) ---- */
+  table.matrix thead th{position:sticky;top:0;z-index:3;background:var(--background);
+    border-bottom:1px solid var(--border);padding:0;vertical-align:bottom}
+  table.matrix thead th.h-perm{z-index:5;left:0;text-align:left;padding:11px 16px;
+    font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);
+    border-right:1px solid var(--border)}
+  .rolehead{padding:10px 6px 11px;display:flex;flex-direction:column;align-items:center;gap:4px}
+  .rolehead .rname{font-size:12.5px;font-weight:650;color:var(--text-primary);white-space:nowrap}
+  .rolehead .rmeta{font-size:10px;color:var(--text-muted);font-variant-numeric:tabular-nums}
+  .rolehead.is-admin{background:color-mix(in srgb,var(--primary) 8%,var(--surface))}
+  .rolehead.is-admin .rname{color:var(--primary)}
+  .rolehead.is-admin .rmeta{color:var(--primary)}
+  .rolehead .lockchip{font-size:9px;font-weight:700;color:var(--primary);
+    background:color-mix(in srgb,var(--primary) 14%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--primary) 30%,var(--border));border-radius:4px;
+    padding:0 5px;display:inline-flex;align-items:center;gap:3px}
+  table.matrix thead th.is-admin{background:color-mix(in srgb,var(--primary) 8%,var(--surface));
+    border-left:1px solid color-mix(in srgb,var(--primary) 22%,var(--border))}
+
+  /* ---- group header rows ---- */
+  tr.grp td{padding:0;border-bottom:1px solid var(--border)}
+  tr.grp .grp-head{display:flex;align-items:center;gap:9px;padding:8px 16px;
+    background:var(--surface-muted)}
+  tr.grp td.grp-sticky{position:sticky;left:0;z-index:2;background:var(--surface-muted);
+    border-right:1px solid var(--border)}
+  tr.grp td.grp-rest{background:var(--surface-muted)}
+  .grp-head .gtag{width:6px;height:14px;border-radius:3px;background:var(--primary);flex:none;opacity:.8}
+  .grp-head .gname{font-size:11.5px;font-weight:700;letter-spacing:.02em;color:var(--text-primary)}
+  .grp-head .gct{font-size:10px;font-weight:600;color:var(--text-muted);background:var(--surface);
+    border:1px solid var(--border);border-radius:20px;padding:0 7px;font-variant-numeric:tabular-nums}
+
+  /* ---- permission rows ---- */
+  tr.prow:hover td{background:var(--surface-muted)}
+  tr.prow:hover td.is-admin{background:color-mix(in srgb,var(--primary) 11%,var(--surface))}
+  tr.prow td{border-bottom:1px solid var(--border);background:var(--surface);height:42px}
+  tr.prow:last-child td{border-bottom:none}
+
+  /* sticky first column = 권한 이름 */
+  td.perm{position:sticky;left:0;z-index:1;background:var(--surface);border-right:1px solid var(--border);
+    padding:7px 16px;vertical-align:middle}
+  tr.prow:hover td.perm{background:var(--surface-muted)}
+  .perm-name{font-size:13px;font-weight:500;color:var(--text-primary);display:flex;align-items:center;gap:8px}
+  .perm-name .pn{flex:1;min-width:0}
+  .perm-desc{font-size:10.5px;color:var(--text-disabled);margin-top:2px;display:block}
+
+  /* 민감 marker (monitor-robust: color + LABEL) */
+  .sens{font-size:10px;font-weight:700;color:var(--st-checkin-ink);
+    background:color-mix(in srgb,var(--st-checkin) 13%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--st-checkin) 40%,var(--border));
+    border-radius:5px;padding:1px 6px;display:inline-flex;align-items:center;gap:4px;flex:none;white-space:nowrap}
+  .sens .wm{font-size:10px;line-height:1}
+  tr.prow.sensitive td.perm{box-shadow:inset 3px 0 0 color-mix(in srgb,var(--st-checkin) 55%,transparent)}
+
+  /* admin column accent on body cells */
+  td.cell.is-admin{background:color-mix(in srgb,var(--primary) 6%,var(--surface));
+    border-left:1px solid color-mix(in srgb,var(--primary) 18%,var(--border))}
+
+  /* ---- the checkbox cell (core, monitor-robust) ---- */
+  td.cell{text-align:center;vertical-align:middle;padding:6px}
+  .cbx{width:22px;height:22px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;
+    border:1.5px solid var(--border);background:var(--surface);font-size:13px;line-height:1;cursor:pointer;
+    transition:none}
+  /* CHECKED: solid teal fill + white ✓ glyph — unmistakable on a monitor */
+  .cbx.on{background:var(--primary);border-color:var(--primary-hover);color:#fff;font-weight:800}
+  .cbx.on::after{content:"✓"}
+  /* UNCHECKED: empty box, hairline */
+  .cbx.off{background:var(--surface);border-color:#c4d2d2}
+  .cbx.off:hover{border-color:var(--ring);background:color-mix(in srgb,var(--ring) 8%,var(--surface))}
+  /* LOCKED (관리자 = all-on, not editable): teal-grey fill + ✓ + lock hint */
+  .cbx.lock{background:color-mix(in srgb,var(--primary) 60%,#7d8c8e);border-color:var(--primary-hover);
+    color:#fff;font-weight:800;cursor:not-allowed;position:relative}
+  .cbx.lock::after{content:"✓"}
+  .cbx.on:hover{background:var(--primary-hover)}
+
+  /* ---- footer / note ---- */
+  .panel-foot{display:flex;align-items:center;gap:10px;padding:10px 16px;border-top:1px solid var(--border);
+    background:var(--background);font-size:11.5px;color:var(--text-muted)}
+  .panel-foot .audit-ic{width:18px;height:18px;border-radius:5px;background:color-mix(in srgb,var(--primary) 12%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--primary) 30%,var(--border));color:var(--primary);
+    display:inline-flex;align-items:center;justify-content:center;font-size:11px;flex:none}
+  .panel-foot b{color:var(--text-primary);font-weight:600}
+  .panel-foot a{color:var(--primary);text-decoration:none;font-weight:600;margin-left:auto;white-space:nowrap}
+
+  .foot-note{margin-top:18px;font-size:11px;color:var(--text-disabled);line-height:1.7}
+  .foot-note b{color:var(--text-muted);font-weight:600}
+</style>
+</head>
+<body>
+<div class="browser">
+
+  <!-- desktop browser chrome -->
+  <div class="chrome">
+    <span class="dots"><i></i><i></i><i></i></span>
+    <div class="url"><span class="lock">●</span><b>pms.ourclinic.kr</b>/admin/permissions</div>
+  </div>
+
+  <!-- ===================== APP SHELL ===================== -->
+  <div class="app">
+
+    <!-- ---------- LEFT SIDEBAR (관리자 role) ---------- -->
+    <aside class="sidebar">
+      <div class="sb-brand">
+        <div class="sb-logo"></div>
+        <div class="wm"><b>○○의원</b><span>외래 진료 관리</span></div>
+      </div>
+
+      <nav class="sb-nav">
+        <div class="sb-cap">관리</div>
+        <a class="nav-item"><span class="ic">▤</span><span class="lbl">운영 / 대시보드</span></a>
+        <a class="nav-item"><span class="ic">▦</span><span class="lbl">마스터</span></a>
+        <a class="nav-item active"><span class="ic">⛊</span><span class="lbl">권한</span><span class="tail">5</span></a>
+        <a class="nav-item"><span class="ic">▥</span><span class="lbl">근무 스케줄</span></a>
+        <a class="nav-item"><span class="ic">≣</span><span class="lbl">감사 로그</span></a>
+      </nav>
+
+      <div class="sb-foot">
+        <a class="nav-item"><span class="ic">⚙</span><span class="lbl">설정</span></a>
+        <a class="nav-item"><span class="ic">?</span><span class="lbl">도움말</span></a>
+        <div class="sb-user">
+          <div class="av">정</div>
+          <div class="who"><b>정원장</b><span>병원장 · 관리자</span></div>
+          <span class="role-badge">관리자</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ---------- MAIN COLUMN ---------- -->
+    <div class="main">
+
+      <!-- ---------- TOP BAR ---------- -->
+      <header class="topbar">
+        <button class="tb-toggle" title="사이드바 접기">≡</button>
+        <div class="tb-crumb">관리<span class="sep">›</span><b>권한 관리</b></div>
+
+        <div class="tb-search">
+          <span class="mag">⌕</span>
+          <span class="ph">권한 · 역할 · 사용자 검색</span>
+          <span class="kbd">Ctrl K</span>
+        </div>
+
+        <div class="tb-right">
+          <div class="tb-clock">2026-06-19 (목) · <b>14:32</b></div>
+          <button class="tb-bell" title="알림">♢<span class="badge">2</span></button>
+          <div class="tb-av">정</div>
+        </div>
+      </header>
+
+      <!-- ---------- CONTENT ---------- -->
+      <div class="content">
+
+        <!-- page header row -->
+        <div class="page-header">
+          <div class="ph-l">
+            <h1>권한 관리</h1>
+            <div class="sub">역할별 기능 접근 권한<span class="sep">·</span>변경 즉시 적용</div>
+          </div>
+          <div class="ph-r">
+            <div class="autosave"><span class="ck">✓</span><b>변경사항 자동 저장됨</b><span class="sep">·</span><span class="ts">14:32</span></div>
+            <button class="btn-secondary"><span class="ic">＋</span>역할 추가</button>
+          </div>
+        </div>
+
+        <!-- immediate-apply / audit banner -->
+        <div class="apply-note">
+          <div class="glyph">⚡</div>
+          <div><b>변경은 즉시 적용되며 감사 로그에 기록됩니다.</b>
+            <span class="muted">별도 저장 버튼 없이 체크 변경 시 곧바로 반영됩니다.</span></div>
+        </div>
+
+        <!-- legend -->
+        <div class="legend">
+          <span class="lg"><span class="demo-on">✓</span><b>허용</b> (틸 채움 + 체크)</span>
+          <span class="lg"><span class="demo-off"></span><b>차단</b> (빈 칸)</span>
+          <span class="lg"><span class="demo-lock">✓</span><b>고정</b> (관리자 전체 허용 · 변경 불가)</span>
+          <span class="vline"></span>
+          <span class="lg"><span class="sens-pill"><span>⚠</span>민감</span><span>주의가 필요한 권한</span></span>
+        </div>
+
+        <!-- ============ THE ROLE × PERMISSION MATRIX (core) ============ -->
+        <section class="panel">
+          <div class="bd-head">
+            <span class="ttl">역할 × 권한 매트릭스 <span class="cnt">22개 권한 · 5개 역할</span></span>
+            <div class="tools">
+              <span class="seg"><span class="on">전체</span><span>민감만</span><span>변경됨</span></span>
+            </div>
+          </div>
+
+          <div class="matrix-wrap">
+            <table class="matrix">
+              <colgroup>
+                <col class="c-perm"><col class="c-role"><col class="c-role"><col class="c-role"><col class="c-role"><col class="c-role">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th class="h-perm">권한</th>
+                  <th><div class="rolehead"><span class="rname">원무 / 접수</span><span class="rmeta">5명 · 8</span></div></th>
+                  <th><div class="rolehead"><span class="rname">의사</span><span class="rmeta">4명 · 9</span></div></th>
+                  <th><div class="rolehead"><span class="rname">간호사</span><span class="rmeta">6명 · 7</span></div></th>
+                  <th><div class="rolehead"><span class="rname">방사선사</span><span class="rmeta">2명 · 4</span></div></th>
+                  <th class="is-admin"><div class="rolehead is-admin"><span class="rname">관리자</span><span class="lockchip">🔒 전체</span></div></th>
+                </tr>
+              </thead>
+              <tbody>
+
+                <!-- ===== [환자] ===== -->
+                <tr class="grp">
+                  <td class="grp-sticky"><div class="grp-head"><span class="gtag"></span><span class="gname">환자</span><span class="gct">4</span></div></td>
+                  <td class="grp-rest" colspan="5"></td>
+                </tr>
+                <tr class="prow">
+                  <td class="perm"><div class="perm-name"><span class="pn">환자 조회</span></div></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+                <tr class="prow">
+                  <td class="perm"><div class="perm-name"><span class="pn">환자 등록 / 수정</span></div></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+                <tr class="prow sensitive">
+                  <td class="perm"><div class="perm-name"><span class="pn">주민번호 표시</span><span class="sens"><span class="wm">⚠</span>민감</span></div></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+                <tr class="prow sensitive">
+                  <td class="perm"><div class="perm-name"><span class="pn">환자 삭제</span><span class="sens"><span class="wm">⚠</span>민감</span></div></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+
+                <!-- ===== [진료] ===== -->
+                <tr class="grp">
+                  <td class="grp-sticky"><div class="grp-head"><span class="gtag"></span><span class="gname">진료</span><span class="gct">4</span></div></td>
+                  <td class="grp-rest" colspan="5"></td>
+                </tr>
+                <tr class="prow">
+                  <td class="perm"><div class="perm-name"><span class="pn">진료 대기 조회</span></div></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+                <tr class="prow">
+                  <td class="perm"><div class="perm-name"><span class="pn">진료 기록 작성</span></div></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+                <tr class="prow">
+                  <td class="perm"><div class="perm-name"><span class="pn">처방 발행</span></div></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+                <tr class="prow">
+                  <td class="perm"><div class="perm-name"><span class="pn">판독</span></div></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+
+                <!-- ===== [간호 / 처치] ===== -->
+                <tr class="grp">
+                  <td class="grp-sticky"><div class="grp-head"><span class="gtag"></span><span class="gname">간호 / 처치</span><span class="gct">3</span></div></td>
+                  <td class="grp-rest" colspan="5"></td>
+                </tr>
+                <tr class="prow">
+                  <td class="perm"><div class="perm-name"><span class="pn">처치 워크리스트</span></div></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+                <tr class="prow">
+                  <td class="perm"><div class="perm-name"><span class="pn">활력징후 입력</span></div></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+                <tr class="prow">
+                  <td class="perm"><div class="perm-name"><span class="pn">간호기록 작성</span></div></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+
+                <!-- ===== [영상] ===== -->
+                <tr class="grp">
+                  <td class="grp-sticky"><div class="grp-head"><span class="gtag"></span><span class="gname">영상</span><span class="gct">2</span></div></td>
+                  <td class="grp-rest" colspan="5"></td>
+                </tr>
+                <tr class="prow">
+                  <td class="perm"><div class="perm-name"><span class="pn">촬영 워크리스트</span></div></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+                <tr class="prow">
+                  <td class="perm"><div class="perm-name"><span class="pn">영상 업로드</span></div></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+
+                <!-- ===== [수납] ===== -->
+                <tr class="grp">
+                  <td class="grp-sticky"><div class="grp-head"><span class="gtag"></span><span class="gname">수납</span><span class="gct">4</span></div></td>
+                  <td class="grp-rest" colspan="5"></td>
+                </tr>
+                <tr class="prow">
+                  <td class="perm"><div class="perm-name"><span class="pn">수가 조회</span></div></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+                <tr class="prow">
+                  <td class="perm"><div class="perm-name"><span class="pn">수납 처리</span></div></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+                <tr class="prow">
+                  <td class="perm"><div class="perm-name"><span class="pn">문서 출력</span></div></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx on"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+                <tr class="prow sensitive">
+                  <td class="perm"><div class="perm-name"><span class="pn">수가 조정</span><span class="sens"><span class="wm">⚠</span>민감</span></div></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+
+                <!-- ===== [관리] ===== -->
+                <tr class="grp">
+                  <td class="grp-sticky"><div class="grp-head"><span class="gtag"></span><span class="gname">관리</span><span class="gct">4</span></div></td>
+                  <td class="grp-rest" colspan="5"></td>
+                </tr>
+                <tr class="prow">
+                  <td class="perm"><div class="perm-name"><span class="pn">마스터 데이터</span></div></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+                <tr class="prow sensitive">
+                  <td class="perm"><div class="perm-name"><span class="pn">권한 관리</span><span class="sens"><span class="wm">⚠</span>민감</span></div></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+                <tr class="prow">
+                  <td class="perm"><div class="perm-name"><span class="pn">근무 스케줄</span></div></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+                <tr class="prow sensitive">
+                  <td class="perm"><div class="perm-name"><span class="pn">감사 로그 조회</span><span class="sens"><span class="wm">⚠</span>민감</span></div></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell"><span class="cbx off"></span></td>
+                  <td class="cell is-admin"><span class="cbx lock"></span></td>
+                </tr>
+
+              </tbody>
+            </table>
+          </div>
+
+          <!-- immediate-apply + audit footer -->
+          <div class="panel-foot">
+            <span class="audit-ic">≣</span>
+            <span>체크 변경은 <b>즉시 적용</b>되며 누가·언제·무엇을 바꿨는지 <b>감사 로그에 자동 기록</b>됩니다.
+              관리자 역할은 모든 권한이 항상 허용되어 변경할 수 없습니다.</span>
+            <a>감사 로그 보기 →</a>
+          </div>
+        </section>
+
+        <div class="foot-note">
+          <b>이 화면이 정의하는 컴포넌트/패턴:</b> 권한 매트릭스(스티키 헤더 + 스티키 첫 열) ·
+          체크박스 셀(허용/차단/고정, 모니터-강건: 틸 채움 + ✓) · 그룹 헤더 행 · 민감 권한 마커(⚠ + 민감) ·
+          자동 저장 인디케이터 · 즉시 적용 + 감사 로그 상태.
+          <b>재사용 레이어:</b> 좌측 사이드바 + 탑바 쉘(관리자 nav) · 클리니컬 틸-블루 팔레트 · Pretendard 타이포.
+        </div>
+
+      </div><!-- /content -->
+    </div><!-- /main -->
+  </div><!-- /app -->
+</div><!-- /browser -->
+</body>
+</html>

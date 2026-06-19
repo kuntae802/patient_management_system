@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<!--
+  UX Design Validation Report — consolidated synthesis of three reviewer passes
+  (rubric walker + accessibility + clinical-safety/PII). No overall letter grade:
+  per-category verdicts and severity counts carry the picture.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>UX Design Validation: patient_management_system</title>
+<style>
+  :root {
+    --bg: #fafaf9;
+    --surface: #ffffff;
+    --border: #e7e5e4;
+    --text: #1c1917;
+    --muted: #78716c;
+
+    --verdict-strong: #16a34a;
+    --verdict-adequate: #65a30d;
+    --verdict-thin: #d97706;
+    --verdict-broken: #dc2626;
+
+    --sev-low: #64748b;
+    --sev-medium: #ca8a04;
+    --sev-high: #ea580c;
+    --sev-critical: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    font-size: 15px;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 32px 24px 64px; }
+
+  header.report-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+  }
+  .title h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  .title .subtitle { color: var(--muted); font-size: 13px; margin-top: 4px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+  .sev-totals {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .sev-totals .sev-chip {
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  .sev-chip-critical { background: rgba(220, 38, 38, 0.14); color: var(--sev-critical); }
+  .sev-chip-high { background: rgba(234, 88, 12, 0.14); color: var(--sev-high); }
+  .sev-chip-medium { background: rgba(202, 138, 4, 0.14); color: var(--sev-medium); }
+  .sev-chip-low { background: rgba(100, 116, 139, 0.12); color: var(--sev-low); }
+
+  .synthesis {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--muted);
+    border-radius: 8px;
+    padding: 18px 22px;
+    margin-bottom: 24px;
+    font-size: 15.5px;
+  }
+  .synthesis p { margin: 0 0 10px; }
+  .synthesis p:last-child { margin-bottom: 0; }
+
+  .dimension-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+  .dim-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .dim-card .dim-name { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .dim-card .dim-verdict { font-size: 14px; font-weight: 600; }
+
+  section.dimension, section.reviewer-section { margin-bottom: 14px; }
+  section.dimension details, section.reviewer-section details {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  section summary {
+    padding: 14px 20px;
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  section summary::-webkit-details-marker { display: none; }
+  section summary::before {
+    content: "▸";
+    display: inline-block;
+    color: var(--muted);
+    transition: transform 0.15s ease;
+  }
+  section details[open] summary::before { transform: rotate(90deg); }
+  section summary h2 {
+    display: inline;
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    flex: 1;
+  }
+  .verdict-pill {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: white;
+  }
+  .verdict-strong { background: var(--verdict-strong); }
+  .verdict-adequate { background: var(--verdict-adequate); }
+  .verdict-thin { background: var(--verdict-thin); }
+  .verdict-broken { background: var(--verdict-broken); }
+
+  .dim-body { padding: 4px 20px 18px; }
+  .dim-judgment { color: var(--text); font-size: 14.5px; }
+  .dim-judgment p { margin: 0 0 10px; }
+  .dim-judgment p:last-child { margin-bottom: 0; }
+
+  .findings-list { padding: 0 20px 4px; }
+  article.finding {
+    padding: 14px 0;
+    border-top: 1px solid var(--border);
+  }
+  article.finding:first-child { border-top: none; }
+  article.finding header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+  .badge {
+    font-size: 10.5px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    line-height: 1.4;
+  }
+  .badge-sev-low { background: rgba(100, 116, 139, 0.12); color: var(--sev-low); }
+  .badge-sev-medium { background: rgba(202, 138, 4, 0.14); color: var(--sev-medium); }
+  .badge-sev-high { background: rgba(234, 88, 12, 0.14); color: var(--sev-high); }
+  .badge-sev-critical { background: rgba(220, 38, 38, 0.14); color: var(--sev-critical); }
+  .finding-title { margin: 0; font-size: 15px; font-weight: 500; flex: 1; min-width: 200px; }
+  .finding-location { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; color: var(--muted); }
+  .finding-note, .finding-fix { margin-top: 6px; font-size: 14px; }
+  .finding-fix strong { color: var(--muted); font-weight: 500; }
+
+  .reviewer-source {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .reviewer-sev {
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: white;
+  }
+
+  .mechanical {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-top: 24px;
+    font-size: 14px;
+  }
+  .mechanical h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .mechanical ul { margin: 0; padding-left: 20px; }
+  .mechanical li { margin-bottom: 4px; color: var(--text); }
+
+  footer.report-footer {
+    margin-top: 40px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  footer .meta { display: flex; gap: 24px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+  <div class="container">
+
+    <header class="report-header">
+      <div class="title">
+        <h1>patient_management_system — UX Design Validation Report</h1>
+        <div class="subtitle">_bmad-output/planning-artifacts/ux-designs/ux-patient_management_system-2026-06-19/{DESIGN.md, EXPERIENCE.md}</div>
+      </div>
+      <div class="sev-totals">
+        <span class="sev-chip sev-chip-critical">Critical 6</span>
+        <span class="sev-chip sev-chip-high">High 19</span>
+        <span class="sev-chip sev-chip-medium">Medium 23</span>
+        <span class="sev-chip sev-chip-low">Low 23</span>
+      </div>
+    </header>
+
+    <div class="synthesis">
+      <p>A genuinely strong spine pair: flow coverage, component pairing, state coverage, and inheritance discipline are near-airtight, and the spine/source/decision-log trace is exemplary. A consumer can source-extract the clinical surface cleanly — every <code>{components.*}</code> ref in EXPERIENCE.md resolves to a defined DESIGN.md token, every UJ has a named-protagonist flow, every IA surface has its state treatments. Two issues block a <em>clean</em> extract: (1) EXPERIENCE.md defers contrast numbers to DESIGN.md but DESIGN.md states <strong>no</strong> contrast/WCAG target anywhere — a dangling promise on load-bearing color combos; (2) mockup inline-linking is one aggregate nickname reference instead of per-section links to the six filenames, so visual-reference resolution is weak. Everything else, on the rubric axis, is polish.</p>
+      <p>The two additional adversarial reviewers shift the picture materially, and the rubric's "polish" framing does not survive contact with them. <strong>Accessibility is THIN, not done</strong>: the team solved colorblindness and cheap monitors thoroughly and then declared accessibility complete — but there is no screen-reader / ARIA / semantics layer anywhere in the spine or mockups (the safety-critical allergy alert, 409 toasts, and the audited RRN reveal are all unannounced), keyboard operability is asserted but unspecified and contradicted by the mockups, and multiple load-bearing text colors fail WCAG AA. That review carries <strong>4 criticals</strong>. <strong>Clinical-safety is ADEQUATE but with 2 criticals</strong> that must close before build — most damningly, the flagship encounter-hub mock flags 김영희 as 아스피린-allergic while the patient app shows her a completed 아스피린 100mg prescription, and the spine has <em>no</em> allergy-vs-order cross-check (only same-ingredient duplicate warning, FR-052); the flagship artifact demonstrates the exact accident the system is meant to prevent. The second clinical critical is printed-RRN on statutory forms bypassing the decrypt/audit gate with no print-PII policy at all. Net: the contract is extractable, but it is not buildable as a safe, accessible clinical product without closing the six criticals and nineteen highs below.</p>
+    </div>
+
+    <!-- Dimension summary cards — 8 rubric categories, canonical order -->
+    <div class="dimension-summary">
+      <div class="dim-card">
+        <div class="dim-name">1. Flow coverage</div>
+        <div class="dim-verdict" style="color: var(--verdict-strong)">Strong</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">2. Token completeness</div>
+        <div class="dim-verdict" style="color: var(--verdict-adequate)">Adequate</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">3. Component coverage</div>
+        <div class="dim-verdict" style="color: var(--verdict-strong)">Strong</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">4. State coverage</div>
+        <div class="dim-verdict" style="color: var(--verdict-strong)">Strong</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">5. Visual reference coverage</div>
+        <div class="dim-verdict" style="color: var(--verdict-thin)">Thin</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">6. Bloat &amp; overspecification</div>
+        <div class="dim-verdict" style="color: var(--verdict-strong)">Strong</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">7. Inheritance discipline</div>
+        <div class="dim-verdict" style="color: var(--verdict-strong)">Strong</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">8. Shape fit</div>
+        <div class="dim-verdict" style="color: var(--verdict-strong)">Strong</div>
+      </div>
+    </div>
+
+    <!-- ===== RUBRIC CATEGORY 1 ===== -->
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>1. Flow coverage</h2>
+          <span class="verdict-pill verdict-strong">Strong</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Every UJ / named workflow in the PRD + brief extracts (UJ-1 golden path; 예약/접수/진료·오더/수행/수납/결과-확인 sub-workflows; order/billing/booking lifecycles) is present in EXPERIENCE.md Key Flows, with named protagonists matching PRD casting (정해린 원무, 김도현 과장 의사, 이수진 환자, + 한지우 간호·오민재 방사선·최원장 in the Golden Path), numbered steps, explicit Climax beats, and failure paths where applicable.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Patient flow (Flow C) carries no failure path</h3>
+              <span class="finding-location">EXPERIENCE.md:214–222</span>
+            </header>
+            <div class="finding-note">Flow A (정해린) and Flow B (김도현) carry failure paths; Flow C (이수진, patient app) has none. A patient-side failure (슬롯 선점 race → 409 on 예약 확정, or RLS/load failure on 내 기록) would round out the trio — the one place a new-consumer flow lacks a documented error branch.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add a one-line failure to Flow C — e.g., "슬롯 동시 선점 → 409 + '방금 마감된 시간입니다, 다시 선택' inline."</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Nurse / radiographer have no standalone numbered flow</h3>
+              <span class="finding-location">EXPERIENCE.md:224–226</span>
+            </header>
+            <div class="finding-note">한지우 (간호) and 오민재 (방사선) appear only inside the Golden Path summary, never as their own numbered flow with a climax, though their worklist behaviors are load-bearing (FR-090~103, 처치 중복·누락 0 success metric). Defensible — the decision-log marks 워크리스트 as spine-only / pattern-inherited — but a consumer building the nurse worklist has a flow narrative only by inference.</div>
+            <div class="finding-fix"><strong>Fix:</strong> acceptable as-is given the spine-only call; if expanded, one short Flow D (한지우, 처치 수행→재수행 차단 climax) would close it.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <!-- ===== RUBRIC CATEGORY 2 ===== -->
+    <section class="dimension">
+      <details open>
+        <summary>
+          <h2>2. Token completeness</h2>
+          <span class="verdict-pill verdict-adequate">Adequate</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Every frontmatter token and every <code>{path.to.token}</code> reference in both files resolves: all <code>{colors.*}</code> / <code>{rounded.*}</code> / <code>{spacing.*}</code> refs in DESIGN.md resolve to frontmatter; all 11 distinct <code>{components.*}</code> refs in EXPERIENCE.md resolve to DESIGN.md component entries; every color token carries a hex. The one structural gap is a dangling contrast promise on the load-bearing color layer.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Contrast targets absent from the load-bearing color layer</h3>
+              <span class="finding-location">EXPERIENCE.md:143,149 → DESIGN.md Colors</span>
+            </header>
+            <div class="finding-note">EXPERIENCE.md Accessibility Floor explicitly punts ("대비 수치 등 시각값은 DESIGN.md(Colors)", "수치는 DESIGN.md") but DESIGN.md states no WCAG level and no ratio anywhere — <code>grep wcag|대비|contrast|AA|4.5|3:1</code> returns only the elevation/monitor rationale. The reference example commits "WCAG 2.2 AA … brand overrides verified"; here the deferral resolves to nothing. This matters most for non-inherited brand colors on white: amber <code>#BC7E12</code> (status-received) needed a darker ink <code>#8A5D09</code> precisely because of white-background legibility — the team already knows these combos are marginal, but no target/ratio is committed for a consumer or QA to verify against.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add one line to DESIGN.md Colors: "텍스트/상태 라벨은 배경 대비 WCAG 2.2 AA(본문 4.5:1, 큰 텍스트/UI 3:1); 검증 조합 = status-received-ink·text-muted·primary on surface/background."</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">soap-ledger.badge-colors hardcodes hexes that are already tokens</h3>
+              <span class="finding-location">DESIGN.md:137 (restated prose 276)</span>
+            </header>
+            <div class="finding-note"><code>'S=#4F46C7 · O=#0E7C8E · A=#8A5D09 · P=#2C8466'</code> = status-inprogress / primary / status-received-ink / status-done. A consumer flattening via the resolver gets literals here instead of token refs, so a later token edit silently desyncs the SOAP badges.</div>
+            <div class="finding-fix"><strong>Fix:</strong> <code>'S={colors.status-inprogress} · O={colors.primary} · A={colors.status-received-ink} · P={colors.status-done}'</code>.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">danger and status-cancelled share a hex (collide in reverse lookup)</h3>
+              <span class="finding-location">DESIGN.md:30,207</span>
+            </header>
+            <div class="finding-note"><code>danger</code> and <code>status-cancelled</code> share hex <code>#C2433B</code> by deliberate design (documented twice), so they collide in any hex→token reverse lookup. Intentional and well-noted; flagged only so a consumer dedup script doesn't treat it as an error.</div>
+            <div class="finding-fix"><strong>Fix:</strong> none needed; the inline note already covers it.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <!-- ===== RUBRIC CATEGORY 3 ===== -->
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>3. Component coverage</h2>
+          <span class="verdict-pill verdict-strong">Strong</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>All 11 clinical components are paired both ways — a DESIGN.md Components row (visual) AND an EXPERIENCE.md Component Patterns row (behavioral) — with real multi-clause rules: waiting-list-row, status-badge, soap-ledger, diagnosis-block, order-panel, patient-banner, allergy-alert, fee-table, slot-block, permission-cell, patient-app. No one-word rows.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">button-ghost (the #1 next-action pattern) has no behavioral row</h3>
+              <span class="finding-location">EXPERIENCE.md:106 (mention only)</span>
+            </header>
+            <div class="finding-note"><code>button-ghost</code> is defined in DESIGN.md frontmatter + prose (surface/border/hover, <code>.key</code> variant) and is load-bearing behaviorally — it's the 다음-액션 행 버튼, the first-class next-action affordance — yet has no EXPERIENCE.md Component Patterns row. Its behavior is only mentioned in passing inside the waiting-list row. A consumer building the next-action button (the product's #1 pattern) has visual spec but no committed behavioral row (disabled-during-mutation, 1 vs 2 buttons per state, allowed-transition gating). <code>button-primary</code> is similarly behavior-light but lower-stakes.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add a <code>next-action button (다음-액션)</code> row to Component Patterns, or fold the behavioral rules explicitly into one place.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Component names not identical across the two files (3 entries)</h3>
+              <span class="finding-location">DESIGN.md ↔ EXPERIENCE.md row titles</span>
+            </header>
+            <div class="finding-note">Three components carry different names across the two files; the <code>{components.*}</code> token ref in each EXPERIENCE row bridges the gap so resolution still succeeds, but a name-match script flags them. (See Mechanical notes.)</div>
+            <div class="finding-fix"><strong>Fix:</strong> align EXPERIENCE row titles to the DESIGN component name, or append the component name in parentheses.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <!-- ===== RUBRIC CATEGORY 4 ===== -->
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>4. State coverage</h2>
+          <span class="verdict-pill verdict-strong">Strong</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Every IA surface walked against the expected state set. EXPERIENCE.md State Patterns covers 로딩(skeleton, no-spinner), 빈 상태(+single next-action), 실시간 끊김(stale), 검증 422(field-inline + focus move), 권한 거부 403(hidden nav + disabled+tooltip), 잘못된 전이 409(toast+refresh). HTTP mapping committed (409/403/422). Optimistic-update policy scoped to safe surfaces. RRN reveal, audit, RLS scoping all stated.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Generic field-focus state only implied (SOAP focus committed)</h3>
+              <span class="finding-location">EXPERIENCE.md Accessibility Floor</span>
+            </header>
+            <div class="finding-note">Focus/writing state is specified richly for the SOAP ledger (좌측 3px teal + tint) but a generic field-focus state (the shadcn <code>ring</code> token applies) is only implied via "포커스 링 항상 보이게." Adequate — inherited from shadcn — but a consumer gets the SOAP-specific focus committed and the generic one only by inheritance reference.</div>
+            <div class="finding-fix"><strong>Fix:</strong> none required; inheritance is correctly stated.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Empty-state has one concrete example; spine-only surfaces inherit</h3>
+              <span class="finding-location">EXPERIENCE.md:234 (Open Items)</span>
+            </header>
+            <div class="finding-note">Empty-state is given one concrete example (대기판) and a general rule. Surfaces flagged spine-only (워크리스트·마스터 CRUD·대시보드·환자검색) inherit the empty pattern but have no per-surface copy. Explicitly accepted in Open Items.</div>
+            <div class="finding-fix"><strong>Fix:</strong> acceptable; tracked.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <!-- ===== RUBRIC CATEGORY 5 ===== -->
+    <section class="dimension">
+      <details open>
+        <summary>
+          <h2>5. Visual reference coverage</h2>
+          <span class="verdict-pill verdict-thin">Thin</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Six files in <code>mockups/</code> (key-waiting-board, key-encounter-hub, key-patient-app, key-billing, key-appointment-calendar, key-rbac-matrix) checked against inline links in the spines. The reference pattern wants each mockup linked inline at the relevant section, named for what it illustrates. Here the linking is one aggregate nickname reference instead, so a consumer can't deterministically map a component to its illustrating file. No orphan mockups — all six map to a documented surface.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Mockup linking is one aggregate nickname reference, not per-section by filename</h3>
+              <span class="finding-location">EXPERIENCE.md:69; DESIGN.md (none)</span>
+            </header>
+            <div class="finding-note">EXPERIENCE.md has a single IA line: "구성 레퍼런스: mockups/(대기판·진료허브·환자앱·수납·예약캘린더·RBAC매트릭스)." It names six nicknames but zero filenames, and is not placed at each relevant section (the slot-grid row doesn't link key-appointment-calendar.html; the billing row doesn't link key-billing.html). DESIGN.md has no mockup links at all — only prose mentions of "목업" (measured values). A consumer can't deterministically map a component to its illustrating file.</div>
+            <div class="finding-fix"><strong>Fix:</strong> on each EXPERIENCE Component Patterns row, append the filename, e.g. "→ mockups/key-appointment-calendar.html (슬롯 그리드·더블부킹·휴진 빗금)"; add the same to DESIGN.md Components rows.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">"spines-win-on-conflict" rides on the same aggregate line</h3>
+              <span class="finding-location">EXPERIENCE.md:69</span>
+            </header>
+            <div class="finding-note">"충돌 시 이 spine이 우선" is stated exactly once — correct per spec — but it rides on the same aggregate line, so if that line is restructured the precedence rule could be lost.</div>
+            <div class="finding-fix"><strong>Fix:</strong> keep the precedence sentence as a standalone clause when adding per-section links.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <!-- ===== RUBRIC CATEGORY 6 ===== -->
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>6. Bloat &amp; overspecification</h2>
+          <span class="verdict-pill verdict-strong">Strong</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Both files inherit-and-delta cleanly; no source restatement of FR text, no prose where a table serves (IA, Voice, Component Patterns, States, Responsive all tabular). Pixel values appear only where they ARE the decision and aren't covered by a token (pane widths, 132px SOAP min-height, 52px topbar) — and those are promoted to spacing tokens. EXPERIENCE.md prose stays behavioral; editorial voice is confined to Voice &amp; Tone Do/Don't.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">v2→v4 elevation lesson is told in both spines</h3>
+              <span class="finding-location">DESIGN.md:252; EXPERIENCE.md:162</span>
+            </header>
+            <div class="finding-note">The elevation lesson is told in both DESIGN.md (Elevation &amp; Depth) and EXPERIENCE.md (Inspiration &amp; Anti-patterns) plus the decision-log. The DESIGN.md telling is load-bearing (it justifies the KEY RULE); the EXPERIENCE.md repeat is near-duplicate and points back to DESIGN anyway.</div>
+            <div class="finding-fix"><strong>Fix:</strong> the EXPERIENCE.md mention can shrink to its one-line cross-ref ("상세는 DESIGN.md") and drop the restated narrative.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <!-- ===== RUBRIC CATEGORY 7 ===== -->
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>7. Inheritance discipline</h2>
+          <span class="verdict-pill verdict-strong">Strong</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Frontmatter <code>sources:</code> is identical across both files (4 entries, template paths matching the decision-log's confirmed sources). UJ-1 name verbatim from PRD; protagonist casting matches PRD "Journey name" column exactly. Glossary terms (encounter=내원/진료, order=오더, fee_item=수가항목) cited identically to the architecture extract; English-identifier / Korean-copy-layer rule consistent across spines and sources. Every EXPERIENCE.md token ref resolves to a DESIGN.md token by name.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">RRN mask sample value drifted from the decision-log</h3>
+              <span class="finding-location">DESIGN.md / EXPERIENCE.md vs .decision-log.md</span>
+            </header>
+            <div class="finding-note">Decision-log uses <code>900101-1******</code> (PII section); both spines use <code>710314-2******</code>. Both are valid masks and the spines agree with each other, so the contract is consistent; only the decision-log lineage shows the older sample. No downstream impact.</div>
+            <div class="finding-fix"><strong>Fix:</strong> none required (spines are the contract and are self-consistent); optionally align the decision-log sample.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <!-- ===== RUBRIC CATEGORY 8 ===== -->
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>8. Shape fit</h2>
+          <span class="verdict-pill verdict-strong">Strong</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>DESIGN.md body sections are in canonical order (Brand &amp; Style → Colors → Typography → Layout &amp; Spacing → Elevation &amp; Depth → Shapes → Components → Do's and Don'ts); frontmatter has all required keys. EXPERIENCE.md has all required defaults plus correctly-triggered sections (Responsive &amp; Platform — Windows-first/1366×768; Inspiration &amp; Anti-patterns). Invented sections (임상 안전 패턴, PII·감사 패턴, 상태머신 반영, Open Items) each earn their place with domain-load not covered by a default section.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">No material findings</h3>
+              <span class="finding-location">—</span>
+            </header>
+            <div class="finding-note">The three invented domain sections are the right call for a clinical/RBAC product and would be a real loss if folded into generic sections.</div>
+            <div class="finding-fix"><strong>Fix:</strong> none.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <!-- ===== EXTRA REVIEWER: ACCESSIBILITY ===== -->
+    <section class="reviewer-section">
+      <details open>
+        <summary>
+          <h2>Accessibility review (adversarial)</h2>
+          <span class="reviewer-sev verdict-thin">Thin</span>
+          <span class="reviewer-source">review-accessibility.md</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>The team did real, above-average accessibility thinking on exactly one axis — the "no-meaning-by-color/shadow-alone" redundant encoding (color + glyph + weight + pattern), and it largely holds. But that is roughly one of WCAG's ~50 success criteria, and the spine treats it as if it were the whole job. The moment you look past it, the floor drops out: no screen-reader/semantics layer exists at all (zero ARIA roles, labels, live regions, or <code>&lt;label&gt;</code> associations anywhere); the mockups are accessibility-hostile as built (icon-only buttons, controls built from <code>&lt;span&gt;</code>/<code>&lt;div&gt;</code>); concrete contrast failures in load-bearing text; "keyboard-first" is asserted but never specified; reduced-motion, text-scaling floor, and form-error/AT association are entirely unaddressed. The Accessibility Floor section is five bullets, four of which are the color/shadow point restated — accessibility here is a slogan ("음영 비의존"), not a coverage plan. Severity: 4 critical · 9 high · 13 medium · 11 low (37 total).</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-critical">critical</span>
+              <h3 class="finding-title">No ARIA / semantics / AT story anywhere</h3>
+              <span class="finding-location">§5; all 6 mockups; EXPERIENCE.md Accessibility Floor</span>
+            </header>
+            <div class="finding-note">Search of all six mockups: the only <code>aria-*</code> is <code>aria-hidden="true"</code> on decorative sparklines. No <code>role</code>, no <code>aria-label</code>, no <code>aria-live</code>, no <code>aria-checked</code>, no <code>&lt;label for&gt;</code>. EXPERIENCE.md's Accessibility Floor does not mention screen readers, AT, ARIA, or semantics at all. For a legally and clinically sensitive system (RRN, allergies, prescriptions, audit), shipping with no AT story is the highest-impact failure here.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add a screen-reader/semantics layer to the spine; require real roles, labels, and live regions across components before any accessibility claim.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-critical">critical</span>
+              <h3 class="finding-title">Safety-critical allergy alert is not announced</h3>
+              <span class="finding-location">§5; key-encounter-hub.html L626</span>
+            </header>
+            <div class="finding-note">The allergy/safety alert (alert-row) has no <code>role="alert"</code>/<code>aria-live</code> — the single most safety-critical element on the screen is not announced to AT. A3 badges render as a sighted-only <code>&lt;span&gt;&lt;dot/&gt;&lt;lbl&gt;진행중&lt;/lbl&gt;&lt;/span&gt;</code> construct.</div>
+            <div class="finding-fix"><strong>Fix:</strong> allergy/safety alert must be <code>role="alert"</code> or a live region; status changes that matter (realtime row updates) need polite live regions.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-critical">critical</span>
+              <h3 class="finding-title">409 conflict toasts (and autosave) not announced to AT</h3>
+              <span class="finding-location">§5; key-encounter-hub.html L985</span>
+            </header>
+            <div class="finding-note">The transition-conflict toast ("이미 완료된 진료입니다") is a positioned <code>&lt;div&gt;</code> with no <code>role="status"</code>/<code>role="alert"</code>/<code>aria-live</code>. A screen-reader or low-vision user who triggers a 409 gets no feedback — they think their action worked. Same for the autosave indicator.</div>
+            <div class="finding-fix"><strong>Fix:</strong> toasts → live region; spec which politeness level (409 = assertive).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-critical">critical</span>
+              <h3 class="finding-title">Masked RRN reveal: control unlabeled + revealed value + audit event not announced</h3>
+              <span class="finding-location">§5; reveal-btn; key-encounter-hub.html L657</span>
+            </header>
+            <div class="finding-note">The reveal flow is a security/audit centerpiece (권한 게이트 + 감사 로그), but the button has no <code>aria-label</code> explaining it reveals sensitive audited data, the revealed value's appearance is not announced (no live region) so an AT user can't perceive the result or that an audited action occurred, and the second reveal button (연락처) has no audit sub-label at all.</div>
+            <div class="finding-fix"><strong>Fix:</strong> <code>aria-label</code> on the control ("주민번호 표시 — 조회 시 감사 로그 기록됨"); announce the revealed value via live region; keep the audit-warning in the accessible name.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Placeholder &amp; disabled text fails contrast everywhere</h3>
+              <span class="finding-location">§2; --text-disabled #97A9AA</span>
+            </header>
+            <div class="finding-note"><code>#97A9AA</code> on white = 2.45:1 (on surface-muted 2.22:1) — below even the 3:1 large-text floor. Used for global search placeholder, all picker placeholders, the RRN "감사기록" sub-label (8px!), perm-desc, slot "마감" tags, disabled time text, date-chip "off" numerals, caption text. Placeholders state what to type; disabled-control text states why it's disabled — that's information. The SOAP decision already bumped its placeholder to text-muted but the lesson wasn't propagated.</div>
+            <div class="finding-fix"><strong>Fix:</strong> never use <code>#97A9AA</code> for any text conveying meaning; floor placeholders at text-muted <code>#54686A</code> (5.89:1) or darker.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Raw amber #BC7E12 as text/glyph fails at 3.43:1</h3>
+              <span class="finding-location">§2; DESIGN.md status-received token</span>
+            </header>
+            <div class="finding-note">Text AA needs 4.5:1. The mockups mostly remembered to swap to <code>-ink</code> for labels, but the token contract in DESIGN.md is a trap: <code>status-received: '#BC7E12'</code> with a separate <code>status-received-ink</code> "for white-bg legibility" invites an implementer to use the non-ink amber for text and ship a 3.43:1 label.</div>
+            <div class="finding-fix"><strong>Fix:</strong> in DESIGN.md, explicitly forbid <code>#BC7E12</code> as a text/glyph color on light surfaces; document that only <code>-ink</code> may touch text.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Mockups are not keyboard-operable as built</h3>
+              <span class="finding-location">§3; all mockups (nav, RBAC, slots, SOAP)</span>
+            </header>
+            <div class="finding-note">Interactive elements are non-focusable, non-semantic spans/divs: nav items are <code>&lt;a&gt;</code> with no <code>href</code> (not in tab order); RBAC checkboxes are <code>&lt;span class="cbx on"&gt;</code> (matrix is keyboard-dead); calendar slots are <code>&lt;div&gt;</code> (booking is mouse-only); SOAP body rows are <code>&lt;div class="soap-br"&gt;</code> with <code>cursor:text</code> but no <code>contenteditable</code>/<code>&lt;textarea&gt;</code>. These are the 승격된 reference the spine points implementers to, modeling an inaccessible structure.</div>
+            <div class="finding-fix"><strong>Fix:</strong> the spine must state that all of these become real <code>&lt;button&gt;</code>/<code>&lt;input&gt;</code>/role-bearing widgets, and the mockups should not be cited as structural truth for interaction.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">No tab order, no focus-visible spec, no grid keyboard model</h3>
+              <span class="finding-location">§3; EXPERIENCE.md L138</span>
+            </header>
+            <div class="finding-note">EXPERIENCE.md says only "포커스 순서/탭 이동 = 읽기 순서와 일치" and "Esc closes top modal." For a dense clinical app this is nowhere near enough: the RBAC 22×5 matrix needs a 2D arrow-key roving-tabindex model; the slot grid needs arrow nav + Enter-to-book; the SOAP ledger needs a defined order and a way to reach per-section action buttons; the vitals/timeline pane's keyboard reachability is unstated.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add a keyboard-interaction spec per complex component (grid pattern, roving tabindex, arrow keys, Enter/Space activation, Esc).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Icon-only buttons have no accessible name</h3>
+              <span class="finding-location">§5; tb-bell, sidebar toggle, collapsed nav, datepick arrows</span>
+            </header>
+            <div class="finding-note">Bell ("♢"), sidebar toggle ("≡"), collapsed-sidebar nav (icon glyphs + a visual-only <code>.tip</code> tooltip), datepick arrows (◀▶), order-tab counts, dx delete (×). Several have <code>title=</code> (weak/unreliable for AT); many have nothing. The collapsed sidebar's <code>.tip</code> is a hover-only <code>&lt;span&gt;</code> — not an accessible name.</div>
+            <div class="finding-fix"><strong>Fix:</strong> <code>aria-label</code> on every icon-only control; do not rely on <code>title</code> or CSS tooltips.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">RBAC matrix has no table semantics for AT</h3>
+              <span class="finding-location">§5; key-rbac-matrix.html</span>
+            </header>
+            <div class="finding-note">Even if the spans become real checkboxes, the spine doesn't require <code>&lt;th scope&gt;</code>, row/column header association, or accessible names per cell ("의사 — 처방 발행 — 허용"). A 110-cell grid with no header association is unusable with a screen reader.</div>
+            <div class="finding-fix"><strong>Fix:</strong> require proper <code>&lt;table&gt;</code> header scoping + per-checkbox accessible name composed of row+column.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Reduced motion entirely unaddressed and explicitly punted</h3>
+              <span class="finding-location">§6; EXPERIENCE.md L231 [OPEN] 모션</span>
+            </header>
+            <div class="finding-note">Realtime board updates rows live (≤5s), toasts slide, the live-dot glows, skeletons shimmer — none of this references <code>prefers-reduced-motion</code>. For vestibular-sensitive users, live-updating dense tables + motion is a real problem.</div>
+            <div class="finding-fix"><strong>Fix:</strong> commit now to honoring <code>prefers-reduced-motion</code> (no shimmer, no slide, instant state swaps); don't leave it as "fine-tune after v1."</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">422 validation not associated to fields for AT</h3>
+              <span class="finding-location">§6; key-encounter-hub.html L395, L1007</span>
+            </header>
+            <div class="finding-note">EXPERIENCE.md is good on behavior (inline message + focus move to first error field), but there's no <code>aria-invalid</code>, no <code>aria-describedby</code> linking message to field, no <code>aria-required</code>. The mockup shows <code>.field-err</code>/<code>.merr</code> as sibling <code>&lt;div&gt;</code>s with no programmatic association — the error text won't be announced unless wired.</div>
+            <div class="finding-fix"><strong>Fix:</strong> require <code>aria-invalid</code> + <code>aria-describedby</code> on errored fields; announce the summary via live region.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Patient app: no font-size floor, no zoom/OS-large-text honoring</h3>
+              <span class="finding-location">§7; key-patient-app.html L84–87</span>
+            </header>
+            <div class="finding-note">Plain language is genuinely good, but body sets fixed <code>font-size:15px</code> and the phone frame is a fixed 390×812 <code>.phone</code> with <code>height:812px</code> and inner scroll — exactly what breaks when an elderly user cranks OS font size or browser zoom (content won't reflow). No <code>rem</code>/<code>em</code> commitment, no statement of reflow at 200% (WCAG 1.4.4/1.4.10). The 58yo+ persona is named in flows but the one thing that helps them most is unspecified.</div>
+            <div class="finding-fix"><strong>Fix:</strong> commit to relative units, reflow at 200% zoom, respect OS dynamic-type; state a minimum readable body size that scales.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">Selected medium-severity findings (13 total)</h3>
+              <span class="finding-location">§1–§7</span>
+            </header>
+            <div class="finding-note">KPI strip dots are color-only (no glyph) while the same dot shape is load-bearing elsewhere (§1); vitals "flag" abnormal state is color-only on a doctor's primary screen (§1); SOAP placeholder-vs-filled is color-only (§1); green 급여 pay-chip text on tint = 4.08:1 and nav-active teal-on-tint = 4.29:1, both sub-AA (§2); focus ring is weak (3.14:1 vs white, 2.43:1 vs adjacent border) (§2); DESIGN.md states no explicit contrast ratios — circular cross-reference (§2); command palette is the one bright spot but over-leaned-on (§3); reveal/icon-compound controls need keyboard activation + focus-return spec (§3); staff desktop targets genuinely small (~24px and below, WCAG 2.5.8) (§4); required fields marked color-only asterisk, not <code>aria-required</code> (§6); 403 disabled controls hide their reason from AT — <code>disabled</code> not focusable (§6); disabled/마감 slot text fails #97A9AA on patient app (§7); bottom-tab labels are CSS-glyph <code>&lt;div&gt;</code>s, not real tabs (§7).</div>
+            <div class="finding-fix"><strong>Fix:</strong> per-item fixes in review-accessibility.md §1–§7 (add glyph/label to color-only states; darken sub-AA tints; thicken/darken focus ring; add explicit contrast table; floor targets at 24×24px; use <code>aria-disabled</code> for reason-bearing disabled controls; real tab semantics).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Low-severity findings (11 total)</h3>
+              <span class="finding-location">§1–§7</span>
+            </header>
+            <div class="finding-note">Redundant-encoding largely verified across A3/slot/RBAC/allergy/pay-chips (the design's strongest area); patient-app date "휴진" uses opacity .45 + tag (rescued by label); sparklines <code>aria-hidden</code> but are the only trend source (AT users get number not trend); hairline border #D9E5E5 = 1.29:1 (decorative-only acceptable); sidebar caps #8a939b/#9aa3aa (collapsed fails, minor); patient app meets ≥44px except 34px back/avatar buttons; dx/order delete buttons 20×20px (below 24px floor, destructive); <code>lang="ko"</code> set but mixed-language tokens lack pronunciation hints; emoji used as functional icons get announced by unicode name; modal focus-trap/initial-focus/restore assumed but not stated; RRN SOFT-checksum warning should be non-blocking live-region not color-only.</div>
+            <div class="finding-fix"><strong>Fix:</strong> see review-accessibility.md §1–§7; most are confirm/note-level, a few (tiny destructive targets, emoji labeling) deserve a quick pass.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <!-- ===== EXTRA REVIEWER: CLINICAL SAFETY ===== -->
+    <section class="reviewer-section">
+      <details open>
+        <summary>
+          <h2>Clinical-safety + PII/security review (adversarial)</h2>
+          <span class="reviewer-sev verdict-adequate">Adequate</span>
+          <span class="reviewer-source">review-clinical-safety.md</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>The spine has genuinely strong instincts: allergy alert is a defined component with monitor-robust styling, RRN masks by default, reveal is audit-labeled, RBAC is 3-layered, audit is append-only, the state-machine "only-allowed-transitions" rule is stated, and 409/403/422 user-facing behavior is fully specified (a real strength). But almost every patient-safety guarantee is asserted as a principle and demonstrated once in a mockup, with no spec for the failure modes that actually cause harm: allergy overflow, prescribing against a known allergen, order-loss visibility, identity confirmation, and several PII leak surfaces (printed RRN, error/realtime payloads, deep links). The mockups even contain a live contradiction that demonstrates the exact harm the system is supposed to prevent. "Decoration in one mock" vs "systematic pattern" is the recurring weakness. Severity: 2 critical · 8 high · 8 medium · 3 low (~20 distinct).</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-critical">critical</span>
+              <h3 class="finding-title">Mockups prescribe a drug the same patient is flagged allergic to — no allergy↔order cross-check</h3>
+              <span class="finding-location">§1; key-encounter-hub.html L631,746 + key-patient-app.html L540–546</span>
+            </header>
+            <div class="finding-note">김영희 carries 아스피린 알레르기 in the encounter hub, yet the patient app shows her a completed prescription for 아스피린 100mg with cheerful dosing copy. The only drug-safety check the spine names is 동일성분 중복 처방 경고 (FR-052). There is no allergy-vs-order check anywhere in DESIGN.md or EXPERIENCE.md — the "와파린 병용 경고" is hand-placed text in one alert chip, decoration in one mock, not a systematic pattern. The flagship artifact demonstrates the accident.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add an explicit clinical-safety component to order-panel + 임상 안전 패턴: on every order add, evaluate against (a) recorded allergies, (b) current meds for interactions, and surface a hard-stop / override-with-reason dialog. Define it as a spine pattern. Fix the demo data so the golden-path patient isn't prescribed her own allergen.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-critical">critical</span>
+              <h3 class="finding-title">Printed 영수증 shows RRN — statutory print path bypasses the reveal/audit gate; no print-PII policy</h3>
+              <span class="finding-location">§4; key-billing.html L704, L667</span>
+            </header>
+            <div class="finding-note">The legal preview prints 주민등록번호 710314-2******. Two problems: (a) if the statutory form requires the full RRN, printing it is an un-audited reveal outside the "표시 + 감사기록" gate — the entire decrypt/audit discipline is bypassed by the print path; (b) if it stays masked, the document may be non-conformant. Either way the spine never addresses PII on printed output (paper on a desk, "PDF 저장" to a shared drive) — a classic leak vector.</div>
+            <div class="finding-fix"><strong>Fix:</strong> decide and spec the print policy: which fields appear on each statutory form, whether full RRN is required, and that rendering full RRN into a document is itself an audited, permission-gated reveal event. Add a watermark/limited-fields option and warn on "PDF 저장" destination.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Allergy alert has no overflow/truncation behavior — many allergies can hide one</h3>
+              <span class="finding-location">§1; key-encounter-hub.html L634</span>
+            </header>
+            <div class="finding-note">allergy-alert asserts always-visible "can't-miss", but the mockup row is a single horizontal flex of chips with a "상세 · 변경 이력" more-link. With 6–10 allergies the row wraps or pushes content; the guarantee silently degrades to "the first few you can fit." No "+N more" spec, no max, no guarantee the most severe allergen is never collapsed.</div>
+            <div class="finding-fix"><strong>Fix:</strong> never truncate to a "more" link that hides an allergen; wrap-all (banner grows) or show a danger-styled count chip that expands inline. State severity-ranked rendering first; collapsing an allergen is forbidden.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Order → 수행 tracking can lose an order silently — no overdue/unperformed detector</h3>
+              <span class="finding-location">§1; DESIGN.md:277; key-encounter-hub.html L911,920,929</span>
+            </header>
+            <div class="finding-note">The order panel shows a per-item trace, but the spine has no view that answers "which of today's orders are still un-performed?" Worklists are role-scoped and the doctor's panel shows status per item, but nothing flags an order placed and never picked up — invisible until someone notices. "누락 0" needs a detector, not just per-item status text.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add an "outstanding orders / overdue 수행" indicator (encounter hub + worklists) with an age/threshold.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">No identity confirmation before high-risk writes; banner identity is passive</h3>
+              <span class="finding-location">§2; key-encounter-hub.html L980; key-billing.html L636</span>
+            </header>
+            <div class="finding-note">Patient banner is always visible (good), but there is no identity-confirmation step before completing an encounter, issuing a prescription, or taking payment. "진료 완료 → 수납" and "결제" fire with no "you are acting on 김영희, chart 00123 — confirm?" The new-employee persona is precisely the user who finishes documentation in the wrong open tab.</div>
+            <div class="finding-fix"><strong>Fix:</strong> for high-risk irreversible actions (encounter 완료, 처방 발행, 수납, 환자 삭제), require an identity-bearing confirm (name + chart no in the dialog).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Multiple-encounter / stale-tab safety is undefined</h3>
+              <span class="finding-location">§2; EXPERIENCE.md IA L59; key-encounter-hub.html L820,987</span>
+            </header>
+            <div class="finding-note">Nothing stops a clinician opening two encounters in two tabs; autosave writes silently to whichever tab last fired. The 409 handling covers transition conflicts but not silent autosave into a stale-but-still-open SOAP for the wrong patient.</div>
+            <div class="finding-fix"><strong>Fix:</strong> spec the stale-tab/secondary-encounter case — a tab that lost the "active encounter" lock must show a blocking banner and refuse autosave; consider single-active-encounter enforcement per clinician. Add to State Patterns.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Concurrent performance/settlement race under-specified beyond "buttons disable"</h3>
+              <span class="finding-location">§3; EXPERIENCE.md L129</span>
+            </header>
+            <div class="finding-note">"mutation 중 버튼 disable" is the first and only local line. Two nurses on two PCs opening the same 처치오더 both see it actionable until one commits; "optimistic 업데이트는 안전한 곳에만" leaves "safe" undefined. Under realtime lag the second nurse can act on a stale "un-performed" row. The spine never says the worklist must reflect the just-performed state within the ≤5s realtime window.</div>
+            <div class="finding-fix"><strong>Fix:</strong> state that performance/settlement actions are non-optimistic and re-validate server-side on submit, and that the row is locked on realtime receipt; define stale-realtime behavior. Tie explicitly to FR-093.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Stale-realtime + critical action: spine recommends refresh but doesn't enforce it</h3>
+              <span class="finding-location">§3; EXPERIENCE.md L124</span>
+            </header>
+            <div class="finding-note">"호출 등 중요 동작 전 새로고침 권장" / "자동 덮어쓰기 X." "권장" (recommended) is not a guard. A new employee will call/perform off stale data.</div>
+            <div class="finding-fix"><strong>Fix:</strong> when the realtime channel is stale, disable critical mutation buttons (call, perform, complete, settle) until reconnect/refresh, not merely advise.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Phone reveal button has no audit label, unlike RRN — inconsistent PII discipline</h3>
+              <span class="finding-location">§4; key-encounter-hub.html L654,657; key-billing.html L505,508</span>
+            </header>
+            <div class="finding-note">RRN reveal shows "표시 + 감사기록"; the 연락처 reveal right next to it has no "감사기록" label. Phone is PII — either its reveal is audited (then label it) or it isn't (then it's an unlogged PII reveal). The PII pattern names only 주민번호 for audit-on-reveal and says "연락처 등 PII도 부분 마스킹+표시" without an audit requirement.</div>
+            <div class="finding-fix"><strong>Fix:</strong> treat contact/address/보험/보호자 reveals as audited too, and label them consistently. State the rule once in EXPERIENCE.md PII 패턴, not per-field.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">No spec forbids RRN/PII in URLs, deep links, realtime payloads, or PDF filenames</h3>
+              <span class="finding-location">§4; EXPERIENCE.md L78,174</span>
+            </header>
+            <div class="finding-note">The spine forbids raw RRN in "로그·토스트·오류 envelope" but is silent on query strings / deep-link params, <code>postgres_changes</code> realtime payloads (RLS scopes rows not columns — does the streamed row include <code>resident_no_enc</code>/decrypted fields?), TanStack Query cache in memory/devtools, and generated PDF/print filenames.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add an explicit rule — PII (esp. RRN) never travels in URLs, never in realtime broadcast columns (select-list must exclude sensitive cols from subscriptions), document filenames use chart_no + date only. Confirm RLS column-level exclusion on the Supabase-direct read path.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">RBAC matrix applies sensitive permissions immediately with no confirmation</h3>
+              <span class="finding-location">§5; DESIGN.md:280; EXPERIENCE.md L112; rbac mock L418–422,670</span>
+            </header>
+            <div class="finding-note">"즉시 적용(저장 버튼 없음) + 감사 기록." Audit-after-the-fact is good for forensics but bad for prevention: one stray click in the 주민번호 표시 / 환자 삭제 / 권한 관리 / 감사 로그 조회 row instantly grants a sensitive capability to a whole role. The "민감" pill marks the row but does not gate the toggle.</div>
+            <div class="finding-fix"><strong>Fix:</strong> sensitive permissions must require a confirm step (ideally re-auth) before applying — "민감" marking should trigger a confirmation dialog naming the permission and affected role. Immediate-apply is fine for non-sensitive cells.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">Medium-severity findings (8 total)</h3>
+              <span class="finding-location">§1–§6</span>
+            </header>
+            <div class="finding-note">Order re-do lock (FR-093) is stated for the encounter transition but not for individual order 수행 — mockups still show an active "×" delete on every order item (§1); Ctrl-K wrong-patient navigation has no disambiguation guardrail (DOB/masked-RRN-tail/last-visit) and compounds with no identity-confirm (§2); 409/422/403 user-facing behavior is a genuine strength, no change needed (§3); "마스킹 by DEFAULT on every surface" is asserted but only demonstrated on detail banners — list/grid/search masking unverified (§4); patient-portal reads should be scoped by session uid, never a client-supplied patient_id (§4b); 환자 삭제 / 수가 조정 exist as permissions but have no confirm + reason-capture + audit UX defined (§5); 관리자 column locked all-on removes separation-of-duties — confirm admin's own reveals/reads are audited (§5); deterrence ("this is recorded") is inconsistent — only on RRN reveal, not on phone/print/완료/수납/삭제 (§6).</div>
+            <div class="finding-fix"><strong>Fix:</strong> per-item fixes in review-clinical-safety.md §1–§6 (show performed/locked order state and gate delete; add search disambiguators; restate list/grid masking; uid-scoped portal reads; destructive-action pattern with confirm+reason+audit; consistent "recorded" affordance on all sensitive/destructive actions).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Low-severity findings (3 total)</h3>
+              <span class="finding-location">§4b,§5</span>
+            </header>
+            <div class="finding-note">Patient-app lab results use friendly flags (정상/주의) — fine — but "주의 142/90" with no actionable guidance could under-warn a true emergency; define a critical-value tier that escalates copy ("의료진에 연락하세요") rather than reassures (§4b). Admin column all-on (🔒) is reasonable but means an admin can never be denied 감사 로그 조회, removing separation-of-duties — append-only audit mitigates; confirm admin self-reveals are logged (§5).</div>
+            <div class="finding-fix"><strong>Fix:</strong> add a critical-value escalation tier to patient-app copy; confirm admins are not exempt from the audit trail.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <!-- Mechanical notes -->
+    <div class="mechanical">
+      <h3>Mechanical notes</h3>
+      <ul>
+        <li><strong>Name inconsistencies (token ref bridges resolution, name-match fails):</strong> <code>slot-block</code> (DESIGN) vs <code>slot-grid</code> (EXPERIENCE row); <code>waiting-list-row</code> (DESIGN) vs <code>waiting-list</code> (EXPERIENCE) vs <code>waiting-board</code> (DESIGN spacing comment); <code>status-badge</code> (DESIGN) vs <code>status system (A3)</code> (EXPERIENCE); <code>soap-ledger</code> (DESIGN) has no 1:1 EXPERIENCE row — its behavior lives inside the <code>encounter hub</code> row (which bundles soap-ledger + diagnosis-block + patient-banner). Suggested fix: align EXPERIENCE row titles to the DESIGN component name, or add the name in parentheses.</li>
+        <li><strong>Broken / dangling cross-refs:</strong> EXPERIENCE.md → DESIGN.md contrast deferral resolves to nothing (Finding 2-high); no mockup filename links in either spine (Finding 5-high); <code>soap-ledger.badge-colors</code> literal hexes bypass the token resolver (Finding 2-medium).</li>
+        <li><strong>Frontmatter completeness:</strong> DESIGN.md complete — all spec keys present, every color has hex, component tokens use <code>{path}</code> refs (except the badge-colors literals), <code>status: final</code>. EXPERIENCE.md complete — <code>name</code>/<code>status: final</code>/<code>sources</code>/<code>updated</code> present; matches DESIGN.md sources block. Both <code>sources:</code> use <code>{planning_artifacts}</code>/<code>{project-root}</code> templated paths (consumer expands at project level — standard for this skill).</li>
+        <li><strong>Contrast computed by the accessibility reviewer (sRGB, WCAG 2.x):</strong> FAILS — text-disabled #97A9AA 2.45:1 / 2.22:1; raw amber #BC7E12 3.43:1; green 급여 on tint 4.08:1; nav-active teal on tint 4.29:1; focus ring #2C9FB0 3.14:1 vs white / 2.43:1 vs border; border #D9E5E5 1.29:1; collapsed sidebar caps #9aa3aa 2.56:1. PASSES — text-primary 17.46:1; text-muted 5.89:1; amber-ink 5.75:1; indigo 6.92:1; rose 5.05:1; slate 4.72:1; teal-on-white 4.89:1.</li>
+      </ul>
+    </div>
+
+    <footer class="report-footer">
+      <div class="meta">
+        <span>DESIGN: _bmad-output/planning-artifacts/ux-designs/ux-patient_management_system-2026-06-19/DESIGN.md</span>
+        <span>EXPERIENCE: _bmad-output/planning-artifacts/ux-designs/ux-patient_management_system-2026-06-19/EXPERIENCE.md</span>
+        <span>Rubric: review-rubric.md · Reviewers: review-accessibility.md, review-clinical-safety.md</span>
+        <span>Run at: 2026-06-19</span>
+        <span>Aggregate severity: Critical 6 · High 19 · Medium 23 · Low 23</span>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>

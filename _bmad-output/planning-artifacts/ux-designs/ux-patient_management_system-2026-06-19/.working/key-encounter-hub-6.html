@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>진료 허브 — 단일화면 진료 (의사)</title>
+<!--
+================================================================================
+  KEY SCREEN — 진료 허브 (Single-Screen Clinical Encounter)  ·  role: 의사(Doctor)
+  "단일화면 진료": 과거이력·활력·임상프로필을 보면서, 한 화면에서 기록 작성 + 오더 발행.
+  This is the SIGNATURE screen of the product.
+
+  Governs DESIGN.md / EXPERIENCE.md:
+    Components:    patient-banner, allergy-alert, vitals-card(+SVG sparkline),
+                   timeline, SOAP-form, diagnosis-picker, order-panel,
+                   action-bar, sidebar(collapsed-to-icons), topbar, status-badge(A3)
+    State Patterns: validation(422 inline) / permission(403 disabled+tooltip) /
+                    transition(409 toast)
+    Flow:          접수 → 진료(작성·오더) → 완료 → 수납   (first-class "다음 할 일")
+    Accessibility: allergy alert salience (danger color, persistent, can't-miss)
+
+  --------------------------------------------------------------------------------
+  [LOCKED — lifted verbatim from key-waiting-board-1.html / status-sorted-1.html]
+    • Palette 클리니컬 틸-블루:
+        --background #FAFCFC  --surface #FFFFFF  --surface-muted #EFF5F5
+        --border #D9E5E5  --text-primary #0E1C1D  --text-muted #54686A
+        --text-disabled #97A9AA  --primary #0E7C8E  --primary-hover #0A6675
+        --ring #2C9FB0  --danger #C2433B
+    • Aesthetic: Linear-minimal, high-density, LIGHT mode, 1px hairline borders,
+      near-zero shadows, single teal accent. Teal = action/brand ONLY.
+    • Status A3 = ~8px dot + LABEL TEXT in state color. FIXED mapping:
+        예약 슬레이트#64758A○ | 접수 앰버#BC7E12● | 진행중 인디고#4F46C7◐
+        완료 그린#2C8466✓ | 취소 로즈레드#C2433B✕.  This encounter = ◐ 진행중.
+    • Typography: 'Pretendard Variable',Pretendard,'Malgun Gothic','맑은 고딕',
+        'Apple SD Gothic Neo',-apple-system,system-ui,sans-serif. tabular-nums on
+        numbers/dates. shadcn/ui + Tailwind look. 100% Korean UI. KRW integer · KST.
+    • Platform = Windows-first. Keyboard hints use Ctrl (e.g. "Ctrl K").
+    • Icons = thin Unicode/CSS shapes standing in for Lucide. No icon font/network.
+    • Pillar 4 (no free-text where master exists): drug/진단/수가 via search-PICKERS.
+
+  [LAYOUT DECISIONS — to ratify/log]
+    • SIDEBAR shown COLLAPSED-to-icons (~60px) to maximize consult width.
+      Doctor-role nav: [진료] 진료 대기 · 진료(ACTIVE) · 판독 / [환자] 환자 검색 /
+      footer 설정·도움말 + 의사 role badge.
+    • 3-pane work area under a persistent patient banner:
+        ① 좌 컨텍스트 ~280px (읽기전용) | ② 중앙 작성 (flex, 가장 넓게) |
+        ③ 우 오더 ~320px.  Hairline dividers between panes.
+    • ACTION BAR lives at the BOTTOM of the work area (sticky footer), primary
+      action right-aligned: "진료 완료 → 수납".  Also surfaced in banner-right.
+    • 주민번호 reveal("표시") = 권한 게이트 + 감사 로그 대상 (noted on the control).
+    • 1366×768 @150% 환경: 우측 오더 패널을 320→300px로 줄이고 본문 폰트 동일 유지.
+  --------------------------------------------------------------------------------
+  Constraints honored: inline CSS only, NO JS, NO network, fully offline.
+                       SVG sparklines inline. Desktop frame ~1440px content.
+================================================================================
+-->
+<style>
+  /* ============================================================================
+     v5 = v1 base (verbatim). The ONLY change from v1: the SOAP area inside the
+     center 「진료 기록」 section is reformatted from four separate container boxes
+     into a SINGLE-COLUMN TABLE / LEDGER:
+       • full-width horizontal hairline rules separate every header row and body row
+       • each part = HEADER ROW (colored S/O/A/P badge + Korean label + English +
+         short descriptor, with right-aligned ghost action buttons) followed by a
+         BODY ROW (white, the filled clinical text)
+       • header rows carry a very light table-header tint; body rows are white
+     진단(상병) is KEPT in v1's diagnosis-container styling, positioned at the TOP
+     of the section (above the S row). Everything else is identical to v1.
+     ============================================================================ */
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+
+  :root{
+    /* ---- 클리니컬 틸-블루 THEME (LOCKED) ---- */
+    --background:#FAFCFC; --surface:#FFFFFF; --surface-muted:#EFF5F5; --border:#D9E5E5;
+    --text-primary:#0E1C1D; --text-muted:#54686A; --text-disabled:#97A9AA;
+    --primary:#0E7C8E; --primary-foreground:#FFFFFF; --primary-hover:#0A6675; --ring:#2C9FB0;
+    --danger:#C2433B;
+
+    /* ---- 진료상태 colors (FIXED) ---- */
+    --st-reserved:#64758A; --st-checkin:#BC7E12; --st-progress:#4F46C7;
+    --st-done:#2C8466; --st-cancel:#C2433B; --st-checkin-ink:#8A5D09;
+
+    --sidebar-w:60px;
+  }
+
+  body{
+    font-family:'Pretendard Variable',Pretendard,'Malgun Gothic','맑은 고딕','Apple SD Gothic Neo',-apple-system,system-ui,sans-serif;
+    background:#e7eaed; color:var(--text-primary); font-size:13px; line-height:1.5;
+  }
+  .tnum{font-variant-numeric:tabular-nums}
+
+  /* ---- v5 version banner (muted, above the frame) ---- */
+  .v-banner{max-width:1440px;margin:22px auto 0;padding:0 4px;display:flex;align-items:center;gap:8px;
+    font-size:11.5px;color:#7c878b;letter-spacing:.01em}
+  .v-banner .vb-tag{font-size:10px;font-weight:800;letter-spacing:.04em;color:#0A6675;
+    background:#e3eef0;border:1px solid #c6dee2;border-radius:5px;padding:1px 7px}
+  .v-banner .vb-line{flex:1;height:1px;background:#d4dadd}
+
+  /* ============================================================
+     BROWSER FRAME (desktop chrome, ~1440px content)
+     ============================================================ */
+  .browser{max-width:1440px; margin:26px auto 60px; border:1px solid #cbd3d6;
+    border-radius:12px; overflow:hidden; background:var(--surface);
+    box-shadow:0 1px 2px rgba(16,28,29,.06), 0 8px 28px rgba(16,28,29,.08)}
+  .chrome{height:38px; background:#f1f3f4; border-bottom:1px solid #dfe3e5;
+    display:flex; align-items:center; gap:8px; padding:0 14px}
+  .chrome .dots{display:flex; gap:7px}
+  .chrome .dots i{width:11px;height:11px;border-radius:50%;display:block}
+  .chrome .dots i:nth-child(1){background:#ed6a5e}
+  .chrome .dots i:nth-child(2){background:#f4be4f}
+  .chrome .dots i:nth-child(3){background:#61c454}
+  .chrome .url{flex:1; max-width:560px; margin:0 auto; height:23px; background:#fff;
+    border:1px solid #dfe3e5; border-radius:6px; display:flex; align-items:center;
+    gap:7px; padding:0 10px; font-size:11.5px; color:var(--text-muted)}
+  .chrome .url .lock{font-size:9px;color:var(--st-done)}
+  .chrome .url b{color:var(--text-primary);font-weight:500}
+
+  /* ============================================================
+     APP SHELL  (sidebar collapsed-to-icons + topbar)
+     ============================================================ */
+  .app{display:grid; grid-template-columns:var(--sidebar-w) 1fr; min-height:830px; background:var(--background)}
+
+  /* ---------- LEFT SIDEBAR (collapsed-to-icons) ---------- */
+  .sidebar{background:var(--surface); border-right:1px solid var(--border);
+    display:flex; flex-direction:column; min-height:100%}
+  .sb-brand{display:flex; align-items:center; justify-content:center; padding:15px 0 14px;
+    border-bottom:1px solid var(--border)}
+  .sb-logo{width:28px;height:28px;border-radius:8px;flex:none;position:relative;
+    background:linear-gradient(135deg,var(--primary),var(--ring));}
+  .sb-logo::after{content:"";position:absolute;inset:8px;border-radius:2px;
+    background:#fff;clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%,50% 35%,65% 50%,50% 65%,35% 50%)}
+
+  .sb-nav{flex:1; padding:10px 8px 8px; overflow:visible}
+  .sb-cap{font-size:8.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+    color:#9aa3aa;text-align:center;padding:12px 0 6px}
+  .sb-cap:first-child{padding-top:2px}
+  .nav-item{display:flex;align-items:center;justify-content:center;height:38px;border-radius:8px;
+    color:var(--text-primary);cursor:pointer;position:relative;text-decoration:none;margin-bottom:3px}
+  .nav-item .ic{font-size:16px;color:var(--text-muted);line-height:1}
+  .nav-item:hover{background:var(--surface-muted)}
+  .nav-item.active{background:color-mix(in srgb,var(--primary) 10%,var(--surface))}
+  .nav-item.active .ic{color:var(--primary)}
+  .nav-item.active::before{content:"";position:absolute;left:-8px;top:8px;bottom:8px;width:3px;
+    border-radius:0 3px 3px 0;background:var(--primary)}
+  .nav-item .tip{position:absolute;left:calc(100% + 10px);top:50%;transform:translateY(-50%);
+    background:var(--text-primary);color:#fff;font-size:11px;font-weight:500;white-space:nowrap;
+    padding:3px 8px;border-radius:6px;opacity:0;pointer-events:none;transition:opacity .12s;z-index:30}
+  .nav-item .tip::before{content:"";position:absolute;right:100%;top:50%;transform:translateY(-50%);
+    border:4px solid transparent;border-right-color:var(--text-primary)}
+  .nav-item:hover .tip{opacity:1}
+
+  .sb-foot{border-top:1px solid var(--border);padding:8px 8px 12px;display:flex;flex-direction:column;align-items:center;gap:3px}
+  .sb-foot .nav-item{width:100%}
+  .sb-av{width:30px;height:30px;border-radius:50%;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:12px;font-weight:600;color:#fff;margin-top:6px;
+    background:linear-gradient(135deg,#3a8d9c,#0E7C8E);position:relative}
+  .sb-av .rb{position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);font-size:8px;font-weight:700;
+    letter-spacing:.02em;color:var(--primary);background:color-mix(in srgb,var(--primary) 12%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--primary) 30%,var(--surface));border-radius:4px;padding:0 4px;white-space:nowrap}
+
+  /* ---------- MAIN COLUMN ---------- */
+  .main{display:flex;flex-direction:column;min-width:0}
+
+  /* ---------- TOP BAR ---------- */
+  .topbar{height:52px;background:var(--surface);border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:14px;padding:0 18px;flex:none}
+  .tb-toggle{width:30px;height:30px;border:1px solid var(--border);border-radius:7px;background:var(--surface);
+    color:var(--text-muted);cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;flex:none}
+  .tb-toggle:hover{background:var(--surface-muted)}
+  .tb-crumb{font-size:12.5px;color:var(--text-muted);display:flex;align-items:center;gap:7px;white-space:nowrap}
+  .tb-crumb b{color:var(--text-primary);font-weight:600}
+  .tb-crumb .sep{color:var(--text-disabled)}
+  .tb-search{flex:1;max-width:360px;height:33px;background:var(--surface-muted);
+    border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;gap:9px;
+    padding:0 10px;color:var(--text-disabled);font-size:12.5px;cursor:text}
+  .tb-search .mag{font-size:13px;color:var(--text-muted)}
+  .tb-search .ph{flex:1;color:var(--text-disabled)}
+  .tb-search .kbd{font-size:10.5px;font-weight:600;color:var(--text-muted);background:var(--surface);
+    border:1px solid var(--border);border-radius:5px;padding:1px 6px;font-variant-numeric:tabular-nums}
+  .tb-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+  .tb-live{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--text-muted);white-space:nowrap}
+  .tb-live .live-dot{width:7px;height:7px;border-radius:50%;background:var(--st-done);flex:none;
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--st-done) 18%,transparent)}
+  .tb-live b{color:var(--st-done);font-weight:600}
+  .tb-clock{font-size:12px;color:var(--text-muted);font-variant-numeric:tabular-nums;white-space:nowrap;
+    border-left:1px solid var(--border);padding-left:14px}
+  .tb-clock b{color:var(--text-primary);font-weight:600}
+  .tb-bell{position:relative;width:32px;height:32px;border:1px solid var(--border);border-radius:8px;
+    background:var(--surface);color:var(--text-muted);display:flex;align-items:center;justify-content:center;
+    font-size:15px;cursor:pointer;flex:none}
+  .tb-bell:hover{background:var(--surface-muted)}
+  .tb-bell .badge{position:absolute;top:-5px;right:-5px;min-width:16px;height:16px;border-radius:9px;
+    background:var(--danger);color:#fff;font-size:9.5px;font-weight:700;display:flex;align-items:center;
+    justify-content:center;padding:0 4px;border:1.5px solid var(--surface);font-variant-numeric:tabular-nums}
+  .tb-av{width:32px;height:32px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-weight:600;color:#fff;background:linear-gradient(135deg,#3a8d9c,#0E7C8E);cursor:pointer}
+
+  /* ============================================================
+     PATIENT BANNER  (always visible, top of work area)
+     ============================================================ */
+  .pt-banner{background:var(--surface);border-bottom:1px solid var(--border);padding:11px 22px 0;flex:none}
+  .pb-row{display:flex;align-items:center;gap:18px;flex-wrap:wrap;padding-bottom:11px}
+  .pb-id{display:flex;align-items:center;gap:11px;min-width:0}
+  .pb-photo{width:42px;height:42px;border-radius:10px;flex:none;background:var(--surface-muted);
+    border:1px solid var(--border);display:flex;align-items:center;justify-content:center;
+    font-size:16px;font-weight:600;color:var(--text-muted)}
+  .pb-name{line-height:1.25}
+  .pb-name .nm{font-size:18px;font-weight:650;letter-spacing:-.01em;color:var(--text-primary)}
+  .pb-name .nm .ag{font-size:13px;font-weight:500;color:var(--text-muted);margin-left:8px}
+  .pb-name .sub{font-size:12px;color:var(--text-muted);margin-top:2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .pb-name .sub .sep{color:var(--text-disabled)}
+  .pb-name .sub .k{color:var(--text-disabled)}
+  .pb-name .sub b{color:var(--text-primary);font-weight:600}
+
+  /* meta facts (chart no / RRN / phone) */
+  .pb-facts{display:flex;align-items:center;gap:0;border:1px solid var(--border);border-radius:9px;overflow:hidden;background:var(--surface)}
+  .pb-fact{padding:5px 14px;border-right:1px solid var(--border);line-height:1.3}
+  .pb-fact:last-child{border-right:none}
+  .pb-fact .fk{font-size:9.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--text-disabled)}
+  .pb-fact .fv{font-size:12.5px;font-weight:600;color:var(--text-primary);font-variant-numeric:tabular-nums;display:flex;align-items:center;gap:7px;margin-top:1px}
+  .reveal-btn{font-family:inherit;font-size:10px;font-weight:600;color:var(--text-muted);background:var(--surface);
+    border:1px solid var(--border);border-radius:5px;padding:1px 6px;cursor:pointer;display:inline-flex;align-items:center;gap:3px}
+  .reveal-btn:hover{background:var(--surface-muted);color:var(--text-primary)}
+  .reveal-btn .eye{font-size:10px}
+  .reveal-btn .audit{font-size:8px;color:var(--text-disabled);letter-spacing:.02em}
+
+  .pb-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+  .pb-dept{text-align:right;line-height:1.35;font-size:12px;color:var(--text-muted)}
+  .pb-dept b{color:var(--text-primary);font-weight:600}
+  .pb-state{display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:600;
+    border:1px solid color-mix(in srgb,var(--st-progress) 28%,var(--border));
+    background:color-mix(in srgb,var(--st-progress) 8%,var(--surface));color:var(--st-progress);
+    border-radius:8px;padding:6px 11px;white-space:nowrap}
+  .pb-state .dot{width:8px;height:8px;border-radius:50%;background:var(--st-progress);flex:none}
+  .pb-state .el{font-weight:500;font-variant-numeric:tabular-nums;color:var(--st-progress);opacity:.85;font-size:11.5px}
+
+  /* ---------- ALLERGY / CRITICAL ALERT ROW ---------- */
+  .alert-row{display:flex;align-items:center;gap:10px;background:color-mix(in srgb,var(--danger) 8%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--danger) 32%,var(--border));border-bottom:none;
+    border-radius:9px 9px 0 0;padding:8px 14px;margin-bottom:-1px;position:relative;z-index:1}
+  .alert-row .bang{width:22px;height:22px;border-radius:6px;flex:none;display:flex;align-items:center;justify-content:center;
+    background:var(--danger);color:#fff;font-size:13px;font-weight:800}
+  .alert-row .lab{font-size:10.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--danger);flex:none}
+  .alert-chips{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .a-chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--danger);
+    background:var(--surface);border:1px solid color-mix(in srgb,var(--danger) 36%,var(--border));
+    border-radius:20px;padding:3px 11px;white-space:nowrap}
+  .a-chip .ix{font-size:11px;font-weight:800}
+  .a-chip.warn{color:var(--st-checkin-ink);border-color:color-mix(in srgb,var(--st-checkin) 40%,var(--border))}
+  .alert-row .more{font-size:11px;color:var(--danger);text-decoration:underline;text-underline-offset:2px;cursor:pointer;margin-left:auto;white-space:nowrap;font-weight:600}
+
+  /* ============================================================
+     3-PANE WORK AREA
+     ============================================================ */
+  .work{flex:1;display:grid;grid-template-columns:280px 1fr 320px;min-height:0;overflow:hidden}
+  .pane{display:flex;flex-direction:column;min-width:0;overflow:auto;background:var(--background)}
+  .pane.ctx{border-right:1px solid var(--border)}
+  .pane.note{background:var(--surface)}
+  .pane.orders{border-left:1px solid var(--border)}
+
+  .pane-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 16px 9px;
+    position:sticky;top:0;background:inherit;z-index:2;border-bottom:1px solid var(--border)}
+  .pane.note .pane-head{background:var(--surface)}
+  .pane-head .pt{font-size:12.5px;font-weight:700;color:var(--text-primary);display:inline-flex;align-items:center;gap:8px}
+  .pane-head .pt .ic{font-size:13px;color:var(--text-muted)}
+  .pane-head .sub{font-size:11px;color:var(--text-disabled);font-variant-numeric:tabular-nums}
+  .pane-body{padding:14px 16px 18px;display:flex;flex-direction:column;gap:14px}
+
+  /* card primitive */
+  .card{border:1px solid var(--border);background:var(--surface);border-radius:10px;overflow:hidden}
+  .card .c-head{padding:8px 12px;border-bottom:1px solid var(--border);background:var(--background);
+    font-size:11px;font-weight:700;letter-spacing:.02em;color:var(--text-muted);text-transform:uppercase;
+    display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .card .c-head .ts{font-size:10px;font-weight:500;color:var(--text-disabled);text-transform:none;letter-spacing:0;font-variant-numeric:tabular-nums}
+  .card .c-body{padding:11px 12px}
+
+  /* ---------- VITALS CARD (+ sparklines) ---------- */
+  .vitals{display:flex;flex-direction:column}
+  .vrow{display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid var(--surface-muted)}
+  .vrow:last-child{border-bottom:none;padding-bottom:0}
+  .vrow:first-child{padding-top:0}
+  .v-lab{font-size:11px;color:var(--text-muted);width:54px;flex:none}
+  .v-val{font-size:13px;font-weight:650;color:var(--text-primary);font-variant-numeric:tabular-nums;flex:1;white-space:nowrap}
+  .v-val .u{font-size:10px;font-weight:500;color:var(--text-disabled);margin-left:2px}
+  .v-val.flag{color:var(--st-checkin-ink)}
+  .spark{flex:none;width:64px;height:20px;display:block}
+
+  /* ---------- CLINICAL PROFILE ---------- */
+  .prof-grp{padding:8px 0;border-bottom:1px solid var(--surface-muted)}
+  .prof-grp:last-child{border-bottom:none;padding-bottom:0}
+  .prof-grp:first-child{padding-top:0}
+  .prof-k{font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--text-disabled);margin-bottom:5px}
+  .tags{display:flex;flex-wrap:wrap;gap:5px}
+  .tag{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--text-primary);
+    background:var(--surface-muted);border:1px solid var(--border);border-radius:6px;padding:2px 8px}
+  .tag.dx{color:var(--st-progress);background:color-mix(in srgb,var(--st-progress) 7%,var(--surface));
+    border-color:color-mix(in srgb,var(--st-progress) 22%,var(--border))}
+  .tag .cd{font-size:9.5px;color:var(--text-muted);font-variant-numeric:tabular-nums}
+  .tag.dx .cd{color:var(--st-progress);opacity:.7}
+  .prof-line{font-size:12px;color:var(--text-primary)}
+  .prof-line .m{color:var(--text-muted)}
+
+  /* ---------- HISTORY TIMELINE ---------- */
+  .timeline{display:flex;flex-direction:column}
+  .tl-item{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--surface-muted);cursor:pointer;position:relative}
+  .tl-item:last-child{border-bottom:none;padding-bottom:2px}
+  .tl-item:first-child{padding-top:0}
+  .tl-item:hover{background:var(--surface-muted)}
+  .tl-rail{flex:none;width:10px;display:flex;flex-direction:column;align-items:center;padding-top:4px}
+  .tl-rail .nd{width:7px;height:7px;border-radius:50%;background:var(--st-done);flex:none;z-index:1}
+  .tl-rail .ln{flex:1;width:1px;background:var(--border);margin-top:2px}
+  .tl-item:last-child .tl-rail .ln{display:none}
+  .tl-body{min-width:0;flex:1}
+  .tl-date{font-size:10.5px;color:var(--text-muted);font-variant-numeric:tabular-nums;display:flex;align-items:center;gap:7px}
+  .tl-date .dr{color:var(--text-disabled)}
+  .tl-dx{font-size:12.5px;font-weight:600;color:var(--text-primary);margin-top:2px;line-height:1.35}
+  .tl-dx .cd{font-size:10px;color:var(--text-muted);font-weight:500;font-variant-numeric:tabular-nums;margin-left:4px}
+  .tl-ord{font-size:11px;color:var(--text-muted);margin-top:2px;line-height:1.4}
+  .tl-more{text-align:center;font-size:11px;color:var(--primary);font-weight:600;padding:8px 0 2px;cursor:pointer}
+
+  /* ============================================================
+     ② CENTER NOTE PANEL — SOAP + diagnosis
+     ============================================================ */
+  .autosave{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--text-muted);font-variant-numeric:tabular-nums}
+  .autosave .ck{color:var(--st-done);font-size:11px}
+
+  /* diagnosis picker */
+  .dx-block{border:1px solid var(--border);border-radius:10px;background:var(--surface);overflow:hidden}
+  .dx-block .dh{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border);background:var(--background)}
+  .dx-block .dh .t{font-size:12px;font-weight:700;color:var(--text-primary);display:flex;align-items:center;gap:7px}
+  .dx-block .dh .t .req{color:var(--danger);font-size:11px}
+  .picker{display:flex;align-items:center;gap:9px;height:30px;background:var(--surface);
+    border:1px dashed color-mix(in srgb,var(--primary) 40%,var(--border));border-radius:7px;
+    padding:0 11px;color:var(--text-muted);font-size:12px;cursor:text;min-width:200px}
+  .picker .mag{font-size:12px;color:var(--primary)}
+  .picker .ph{flex:1;color:var(--text-disabled)}
+  .picker .kbd{font-size:10px;font-weight:600;color:var(--text-muted);background:var(--surface-muted);
+    border:1px solid var(--border);border-radius:5px;padding:1px 6px;font-variant-numeric:tabular-nums}
+  .dx-list{display:flex;flex-direction:column;gap:7px;padding:11px 12px}
+  .dx-chip{display:flex;align-items:center;gap:10px;padding:7px 10px;border:1px solid var(--border);
+    border-radius:8px;background:var(--surface)}
+  .dx-chip .code{font-size:11px;font-weight:700;color:var(--st-progress);font-variant-numeric:tabular-nums;
+    background:color-mix(in srgb,var(--st-progress) 8%,var(--surface));border:1px solid color-mix(in srgb,var(--st-progress) 24%,var(--border));
+    border-radius:5px;padding:1px 7px;flex:none}
+  .dx-chip .nm{font-size:12.5px;font-weight:550;color:var(--text-primary);flex:1;min-width:0}
+  .dx-toggle{display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;font-size:10.5px;flex:none}
+  .dx-toggle span{padding:2px 8px;color:var(--text-muted);cursor:pointer;border-right:1px solid var(--border);white-space:nowrap}
+  .dx-toggle span:last-child{border-right:none}
+  .dx-toggle span.on{background:color-mix(in srgb,var(--st-progress) 12%,var(--surface));color:var(--st-progress);font-weight:700}
+  .dx-chip .rm{width:20px;height:20px;border-radius:5px;border:1px solid var(--border);background:var(--surface);
+    color:var(--text-muted);cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;flex:none}
+  .dx-chip .rm:hover{background:var(--surface-muted);color:var(--danger);border-color:color-mix(in srgb,var(--danger) 36%,var(--border))}
+
+  /* SOAP — v5: single-column TABLE / LEDGER
+     (replaces v1's four separate .soap-sec boxes; full-width hairline rules
+      demarcate every header row and body row; one shared left/right border frame) */
+  /* v6: 좌우 테두리·둥근 모서리 제거 + full-bleed(-16px) → 진료기록 섹션 폭 전체가 1열 표.
+     가로 rule만 남고 세로 테두리 없음. 진단(dx-block)은 v1 박스 그대로. */
+  .soap{margin:0 -16px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);
+    background:var(--surface)}
+  /* every row is full-bleed inside the ledger frame; the rule sits on the row's top */
+  .soap-row{border-top:1px solid var(--border)}
+  .soap-row:first-child{border-top:none}
+  /* HEADER ROW — light table-header tint, badge + ko + (en) + descriptor + actions */
+  .soap-hr{display:flex;align-items:center;gap:9px;padding:8px 16px;background:var(--background)}
+  .soap-hr .badge{width:22px;height:22px;border-radius:6px;flex:none;display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-weight:800;color:#fff;background:var(--primary)}
+  .soap-hr .badge.s-s{background:#4F46C7}
+  .soap-hr .badge.s-o{background:#0E7C8E}
+  .soap-hr .badge.s-a{background:#8A5D09}
+  .soap-hr .badge.s-p{background:#2C8466}
+  .soap-hr .lab{font-size:12.5px;font-weight:700;color:var(--text-primary)}
+  .soap-hr .en{font-size:10.5px;color:var(--text-disabled);font-weight:500}
+  .soap-hr .dsc{font-size:11px;color:var(--text-muted);position:relative;padding-left:9px}
+  .soap-hr .dsc::before{content:"·";position:absolute;left:1px;color:var(--text-disabled)}
+  .soap-hr .tools{margin-left:auto;display:flex;gap:6px}
+  .soap-hr .tbtn{font-size:10.5px;color:var(--text-muted);background:var(--surface);border:1px solid var(--border);
+    border-radius:5px;padding:2px 7px;cursor:pointer}
+  .soap-hr .tbtn:hover{background:var(--surface-muted)}
+  /* BODY ROW — white, the clinical text (editable in reality) */
+  .soap-br{padding:11px 16px;font-size:13px;line-height:1.7;color:var(--text-primary);
+    white-space:pre-wrap;min-height:48px;background:var(--surface)}
+  .soap-br .caret{display:inline-block;width:1px;height:15px;background:var(--primary);vertical-align:-3px;margin-left:1px}
+  .soap-br.placeholder{color:var(--text-disabled)}
+
+  /* inline validation error (422) */
+  .soap-sec.has-err{border-color:color-mix(in srgb,var(--danger) 50%,var(--border))}
+  .field-err{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--danger);
+    padding:7px 13px;border-top:1px solid color-mix(in srgb,var(--danger) 22%,var(--border));
+    background:color-mix(in srgb,var(--danger) 6%,var(--surface))}
+  .field-err .ix{font-weight:800}
+  .dx-block.has-err{border-color:color-mix(in srgb,var(--danger) 50%,var(--border))}
+
+  /* ============================================================
+     ③ ORDER PANEL
+     ============================================================ */
+  .ord-tabs{display:flex;gap:0;border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:12px}
+  .ord-tabs span{flex:1;text-align:center;padding:7px 0;color:var(--text-muted);cursor:pointer;border-right:1px solid var(--border);white-space:nowrap}
+  .ord-tabs span:last-child{border-right:none}
+  .ord-tabs span.on{background:color-mix(in srgb,var(--primary) 10%,var(--surface));color:var(--primary);font-weight:700}
+  .ord-tabs span .ct{font-size:10px;color:var(--text-disabled);margin-left:3px;font-variant-numeric:tabular-nums}
+  .ord-tabs span.on .ct{color:var(--primary);opacity:.8}
+
+  .ord-list{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+  .ord-item{border:1px solid var(--border);border-radius:9px;background:var(--surface);padding:9px 10px;position:relative}
+  .ord-item .oi-top{display:flex;align-items:center;gap:8px}
+  .ord-item .oi-nm{font-size:12.5px;font-weight:650;color:var(--text-primary);flex:1;min-width:0;line-height:1.3}
+  .ord-item .oi-nm .dose{font-size:11px;font-weight:500;color:var(--text-muted);margin-left:2px}
+  .pay-chip{font-size:9.5px;font-weight:700;letter-spacing:.02em;border-radius:5px;padding:1px 6px;flex:none;white-space:nowrap}
+  .pay-chip.cov{color:var(--st-done);background:color-mix(in srgb,var(--st-done) 9%,var(--surface));border:1px solid color-mix(in srgb,var(--st-done) 26%,var(--border))}
+  .pay-chip.non{color:var(--st-checkin-ink);background:color-mix(in srgb,var(--st-checkin) 9%,var(--surface));border:1px solid color-mix(in srgb,var(--st-checkin) 30%,var(--border))}
+  .ord-item .oi-sig{font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.4;font-variant-numeric:tabular-nums}
+  .ord-item .oi-trace{font-size:10px;color:var(--text-disabled);margin-top:4px;display:flex;align-items:center;gap:5px;border-top:1px solid var(--surface-muted);padding-top:5px}
+  .ord-item .oi-trace .tg{color:var(--text-muted)}
+  .ord-item .rm{position:absolute;top:8px;right:8px;width:20px;height:20px;border-radius:5px;border:1px solid var(--border);
+    background:var(--surface);color:var(--text-muted);cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center}
+  .ord-item .rm:hover{background:var(--surface-muted);color:var(--danger);border-color:color-mix(in srgb,var(--danger) 36%,var(--border))}
+
+  .ord-sub-head{font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--text-disabled);margin:14px 0 7px}
+  .q-chips{display:flex;flex-wrap:wrap;gap:6px}
+  .q-chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-primary);
+    background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:4px 9px}
+  .q-chip .k{font-size:9.5px;font-weight:700;color:var(--text-disabled)}
+  .q-chip .x{color:var(--text-disabled);cursor:pointer;font-size:11px}
+  .q-chip .x:hover{color:var(--danger)}
+
+  /* 수가 subtotal hint */
+  .fee-hint{margin-top:14px;border:1px solid var(--border);border-radius:10px;background:var(--surface-muted);padding:10px 12px}
+  .fee-hint .fh-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .fee-hint .fh-lab{font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:6px}
+  .fee-hint .fh-lab .auto{font-size:9px;font-weight:700;color:var(--primary);background:color-mix(in srgb,var(--primary) 10%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--primary) 26%,var(--surface));border-radius:4px;padding:0 5px;letter-spacing:.02em}
+  .fee-hint .fh-amt{font-size:14px;font-weight:700;color:var(--text-primary);font-variant-numeric:tabular-nums}
+  .fee-hint .fh-amt .won{font-size:11px;font-weight:500;color:var(--text-muted)}
+  .fee-hint .fh-note{font-size:10px;color:var(--text-disabled);margin-top:5px;line-height:1.5}
+
+  /* permission-denied (403) disabled action */
+  .ord-add{display:flex;gap:7px;margin-top:12px}
+  .ord-add .picker{flex:1}
+  .perm-deny{position:relative;display:inline-flex}
+  .btn-disabled{font-family:inherit;font-size:11.5px;font-weight:600;color:var(--text-disabled);
+    background:var(--surface-muted);border:1px solid var(--border);border-radius:7px;padding:0 11px;height:30px;
+    cursor:not-allowed;display:inline-flex;align-items:center;gap:6px}
+  .btn-disabled .lock{font-size:11px}
+  .perm-deny .ptip{position:absolute;bottom:calc(100% + 8px);right:0;background:var(--text-primary);color:#fff;
+    font-size:10.5px;font-weight:500;white-space:nowrap;padding:4px 9px;border-radius:6px;opacity:0;pointer-events:none;transition:opacity .12s;z-index:30}
+  .perm-deny .ptip::after{content:"";position:absolute;top:100%;right:12px;border:4px solid transparent;border-top-color:var(--text-primary)}
+  .perm-deny:hover .ptip{opacity:1}
+
+  /* ============================================================
+     ACTION BAR (sticky footer of work area)
+     ============================================================ */
+  .action-bar{flex:none;background:var(--surface);border-top:1px solid var(--border);
+    display:flex;align-items:center;gap:14px;padding:11px 22px}
+  .ab-left{display:flex;align-items:center;gap:10px;min-width:0}
+  .ab-state{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;color:var(--st-progress)}
+  .ab-state .dot{width:8px;height:8px;border-radius:50%;background:var(--st-progress)}
+  .ab-flow{font-size:11.5px;color:var(--text-muted);display:flex;align-items:center;gap:6px;border-left:1px solid var(--border);padding-left:12px}
+  .ab-flow .step{color:var(--text-disabled)}
+  .ab-flow .step.cur{color:var(--st-progress);font-weight:700}
+  .ab-flow .step.next{color:var(--primary);font-weight:700}
+  .ab-flow .ar{color:var(--text-disabled);font-size:9px}
+  .ab-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .ab-hint{font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:6px;white-space:nowrap}
+  .ab-hint .i{width:14px;height:14px;border-radius:50%;border:1px solid var(--text-disabled);color:var(--text-disabled);
+    font-size:9px;display:flex;align-items:center;justify-content:center;flex:none}
+  .btn-ghost{font-family:inherit;font-size:12.5px;font-weight:550;color:var(--text-muted);
+    background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:0 13px;height:34px;cursor:pointer;
+    display:inline-flex;align-items:center;gap:6px}
+  .btn-ghost:hover{background:var(--surface-muted);color:var(--text-primary)}
+  .btn-primary{font-family:inherit;font-size:13px;font-weight:600;color:var(--primary-foreground);
+    background:var(--primary);border:1px solid var(--primary-hover);border-radius:7px;padding:0 16px;height:34px;
+    cursor:pointer;display:inline-flex;align-items:center;gap:8px}
+  .btn-primary:hover{background:var(--primary-hover)}
+  .btn-primary .ic{font-size:12px;line-height:1}
+
+  /* small banner-right action mirror */
+  .pb-go{font-family:inherit;font-size:11.5px;font-weight:600;color:var(--primary);
+    background:color-mix(in srgb,var(--primary) 8%,var(--surface));border:1px solid color-mix(in srgb,var(--primary) 30%,var(--border));
+    border-radius:7px;padding:5px 11px;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  .pb-go:hover{background:color-mix(in srgb,var(--primary) 13%,var(--surface))}
+
+  /* ============================================================
+     TRANSITION-CONFLICT TOAST (409) — example, anchored
+     ============================================================ */
+  .toast{position:absolute;right:24px;bottom:80px;display:flex;align-items:center;gap:10px;
+    background:var(--text-primary);color:#fff;border-radius:9px;padding:10px 13px;font-size:12px;
+    box-shadow:0 6px 22px rgba(16,28,29,.22);max-width:340px;z-index:25}
+  .toast .ico{width:20px;height:20px;border-radius:5px;flex:none;display:flex;align-items:center;justify-content:center;
+    background:var(--st-checkin);color:#fff;font-size:12px;font-weight:800}
+  .toast b{font-weight:700}
+  .toast .ttxt{line-height:1.4}
+  .toast .ttxt .sub{color:#c9d2d3;font-size:10.5px}
+  .toast .tact{margin-left:auto;font-size:11px;font-weight:700;color:#7fd6e3;cursor:pointer;white-space:nowrap;
+    border-left:1px solid rgba(255,255,255,.18);padding-left:11px}
+
+  /* ============================================================
+     STATE PATTERNS (참고) — bottom strip, reduced scale
+     ============================================================ */
+  .sp-wrap{padding:22px 22px 30px;background:var(--background);border-top:1px solid var(--border)}
+  .sp-head{display:flex;align-items:center;gap:10px}
+  .sp-head h2{font-size:13px;font-weight:600;color:var(--text-muted);letter-spacing:.01em}
+  .sp-head .tag{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#8a939b;
+    background:var(--surface-muted);border:1px solid var(--border);border-radius:5px;padding:1px 7px}
+  .sp-head .line{flex:1;height:1px;background:var(--border)}
+  .sp-grid{margin-top:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .sp-card{border:1px solid var(--border);background:var(--surface);border-radius:10px;overflow:hidden;
+    transform:scale(.985);transform-origin:top left}
+  .sp-card .sp-cap{padding:9px 13px;border-bottom:1px solid var(--border);background:var(--background);
+    font-size:11.5px;font-weight:600;color:var(--text-primary);display:flex;align-items:center;gap:7px}
+  .sp-card .sp-cap .n{font-size:10px;font-weight:700;color:#8a939b}
+  .sp-card .sp-cap .http{margin-left:auto;font-size:9.5px;font-weight:700;color:var(--text-disabled);font-variant-numeric:tabular-nums;
+    background:var(--surface-muted);border:1px solid var(--border);border-radius:4px;padding:0 5px}
+  .sp-body{padding:14px;min-height:120px;display:flex;flex-direction:column;gap:9px;justify-content:center}
+  .sp-note{font-size:10.5px;color:var(--text-muted);line-height:1.5}
+  .sp-note b{color:var(--text-primary);font-weight:600}
+
+  /* mini SOAP/dx error sample */
+  .mini-soap{border:1px solid color-mix(in srgb,var(--danger) 50%,var(--border));border-radius:8px;overflow:hidden}
+  .mini-soap .mh{display:flex;align-items:center;gap:7px;padding:6px 10px;background:var(--background);border-bottom:1px solid var(--border)}
+  .mini-soap .mh .b{width:18px;height:18px;border-radius:5px;background:#8A5D09;color:#fff;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center}
+  .mini-soap .mh .l{font-size:11px;font-weight:700;color:var(--text-primary)}
+  .mini-soap .mbody{padding:8px 10px;font-size:11px;color:var(--text-disabled)}
+  .mini-soap .merr{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--danger);
+    padding:6px 10px;border-top:1px solid color-mix(in srgb,var(--danger) 22%,var(--border));
+    background:color-mix(in srgb,var(--danger) 6%,var(--surface))}
+
+  /* mini disabled order action */
+  .mini-perm{display:flex;align-items:center;gap:9px}
+  .mini-perm .mp-btn{font-size:11px;font-weight:600;color:var(--text-disabled);background:var(--surface-muted);
+    border:1px solid var(--border);border-radius:7px;padding:6px 11px;display:inline-flex;align-items:center;gap:6px;cursor:not-allowed}
+  .mini-perm .mp-tip{flex:1;font-size:10.5px;color:var(--text-muted);background:var(--surface);
+    border:1px solid var(--border);border-radius:6px;padding:5px 9px;line-height:1.4}
+  .mini-perm .mp-tip b{color:var(--text-primary)}
+
+  /* mini toast */
+  .mini-toast{display:flex;align-items:center;gap:9px;background:var(--text-primary);color:#fff;border-radius:8px;padding:8px 11px}
+  .mini-toast .ico{width:18px;height:18px;border-radius:5px;background:var(--st-checkin);color:#fff;font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;flex:none}
+  .mini-toast .mt{line-height:1.35;font-size:11px}
+  .mini-toast .mt .s{color:#c9d2d3;font-size:9.5px}
+  .mini-toast .mr{margin-left:auto;font-size:10px;font-weight:700;color:#7fd6e3;cursor:pointer;white-space:nowrap}
+
+  .foot-note{padding:0 22px 26px;font-size:11px;color:var(--text-disabled);line-height:1.7;background:var(--background)}
+  .foot-note b{color:var(--text-muted);font-weight:600}
+
+  @media (max-width:1320px){
+    :root{--sidebar-w:60px}
+    .work{grid-template-columns:264px 1fr 300px}  /* 1366×768@150% concession: 우 오더 300px */
+  }
+</style>
+</head>
+<body>
+
+<!-- ===== v5 version banner (muted) ===== -->
+<div class="v-banner">
+  <span class="vb-tag">v6</span>
+  v1 그대로 + SOAP 좌우 테두리 제거 → 진료기록 섹션 자체가 1열 표(full-bleed)
+  <span class="vb-line"></span>
+</div>
+
+<div class="browser">
+
+  <!-- desktop browser chrome -->
+  <div class="chrome">
+    <span class="dots"><i></i><i></i><i></i></span>
+    <div class="url"><span class="lock">●</span><b>pms.ourclinic.kr</b>/encounter/2026-06-19/00123</div>
+  </div>
+
+  <!-- ===================== APP SHELL ===================== -->
+  <div class="app">
+
+    <!-- ---------- LEFT SIDEBAR (collapsed-to-icons, 의사 role) ---------- -->
+    <aside class="sidebar">
+      <div class="sb-brand"><div class="sb-logo"></div></div>
+
+      <nav class="sb-nav">
+        <div class="sb-cap">진료</div>
+        <a class="nav-item"><span class="ic">▤</span><span class="tip">진료 대기</span></a>
+        <a class="nav-item active"><span class="ic">✚</span><span class="tip">진료 (작성 중)</span></a>
+        <a class="nav-item"><span class="ic">◫</span><span class="tip">판독</span></a>
+
+        <div class="sb-cap">환자</div>
+        <a class="nav-item"><span class="ic">⌕</span><span class="tip">환자 검색</span></a>
+      </nav>
+
+      <div class="sb-foot">
+        <a class="nav-item"><span class="ic">⚙</span><span class="tip">설정</span></a>
+        <a class="nav-item"><span class="ic">?</span><span class="tip">도움말</span></a>
+        <div class="sb-av">이<span class="rb">의사</span></div>
+      </div>
+    </aside>
+
+    <!-- ---------- MAIN COLUMN ---------- -->
+    <div class="main">
+
+      <!-- ---------- TOP BAR ---------- -->
+      <header class="topbar">
+        <button class="tb-toggle" title="사이드바 펼치기">≡</button>
+        <div class="tb-crumb">진료<span class="sep">›</span><b>진료 허브</b><span class="sep">·</span>김영희</div>
+
+        <div class="tb-search">
+          <span class="mag">⌕</span>
+          <span class="ph">환자명 · 차트번호 · 연락처 검색</span>
+          <span class="kbd">Ctrl K</span>
+        </div>
+
+        <div class="tb-right">
+          <div class="tb-live"><span class="live-dot"></span><b>실시간</b> · 동기화됨</div>
+          <div class="tb-clock">2026-06-19 (목) · <b>14:32</b></div>
+          <button class="tb-bell" title="알림">♢<span class="badge">2</span></button>
+          <div class="tb-av">이</div>
+        </div>
+      </header>
+
+      <!-- ===================== PATIENT BANNER ===================== -->
+      <div class="pt-banner">
+
+        <!-- allergy / critical alert row (can't-miss) -->
+        <div class="alert-row">
+          <span class="bang">!</span>
+          <span class="lab">환자 안전 경고</span>
+          <div class="alert-chips">
+            <span class="a-chip"><span class="ix">✕</span>페니실린 알레르기</span>
+            <span class="a-chip"><span class="ix">✕</span>아스피린 알레르기</span>
+            <span class="a-chip warn"><span class="ix">⚠</span>와파린 복용 중 · 출혈 위험</span>
+          </div>
+          <span class="more">상세 · 변경 이력</span>
+        </div>
+
+        <!-- identity row -->
+        <div class="pb-row">
+          <div class="pb-id">
+            <div class="pb-photo">김</div>
+            <div class="pb-name">
+              <div class="nm">김영희<span class="ag">여 · 54세 (1971-03-14)</span></div>
+              <div class="sub">
+                <span><span class="k">혈액형</span> <b>A+</b></span><span class="sep">·</span>
+                <span><span class="k">보험</span> <b>건강보험 (지역)</b></span><span class="sep">·</span>
+                <span><span class="k">최근 내원</span> <b class="tnum">2026-05-21</b></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="pb-facts">
+            <div class="pb-fact"><div class="fk">차트번호</div><div class="fv tnum">00123</div></div>
+            <div class="pb-fact"><div class="fk">주민번호</div><div class="fv tnum">710314-2******
+              <button class="reveal-btn" title="권한 확인 + 감사 로그 기록 후 표시"><span class="eye">◉</span>표시<span class="audit">감사기록</span></button>
+            </div></div>
+            <div class="pb-fact"><div class="fk">연락처</div><div class="fv tnum">010-****-3082
+              <button class="reveal-btn"><span class="eye">◉</span>표시</button>
+            </div></div>
+          </div>
+
+          <div class="pb-right">
+            <div class="pb-dept">
+              <div>내과 · <b>1진료실</b></div>
+              <div>담당의 <b>이정훈 과장</b></div>
+            </div>
+            <span class="pb-state"><span class="dot"></span>진행중 <span class="el">· 진료 8분</span></span>
+            <button class="pb-go">진료 완료 → 수납 ▸</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== 3-PANE WORK AREA ===================== -->
+      <div class="work">
+
+        <!-- ===== ① 좌측 컨텍스트 패널 (읽기 전용) ===== -->
+        <section class="pane ctx">
+          <div class="pane-head">
+            <span class="pt"><span class="ic">◷</span>컨텍스트</span>
+            <span class="sub">읽기 전용</span>
+          </div>
+          <div class="pane-body">
+
+            <!-- VITALS -->
+            <div class="card">
+              <div class="c-head">활력징후 <span class="ts">측정 14:08 · 간호 박수진</span></div>
+              <div class="c-body vitals">
+                <div class="vrow">
+                  <span class="v-lab">혈압</span>
+                  <span class="v-val flag">128/82 <span class="u">mmHg</span></span>
+                  <svg class="spark" viewBox="0 0 64 20" preserveAspectRatio="none" aria-hidden="true">
+                    <polyline points="0,12 11,10 21,13 32,8 43,10 53,7 64,6" fill="none" stroke="#8A5D09" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                    <circle cx="64" cy="6" r="1.8" fill="#8A5D09"/>
+                  </svg>
+                </div>
+                <div class="vrow">
+                  <span class="v-lab">맥박</span>
+                  <span class="v-val">76 <span class="u">bpm</span></span>
+                  <svg class="spark" viewBox="0 0 64 20" preserveAspectRatio="none" aria-hidden="true">
+                    <polyline points="0,9 11,11 21,8 32,12 43,9 53,10 64,9" fill="none" stroke="#54686A" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                    <circle cx="64" cy="9" r="1.8" fill="#54686A"/>
+                  </svg>
+                </div>
+                <div class="vrow">
+                  <span class="v-lab">체온</span>
+                  <span class="v-val">36.7 <span class="u">℃</span></span>
+                  <svg class="spark" viewBox="0 0 64 20" preserveAspectRatio="none" aria-hidden="true">
+                    <polyline points="0,10 11,10 21,9 32,10 43,8 53,10 64,9" fill="none" stroke="#54686A" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                    <circle cx="64" cy="9" r="1.8" fill="#54686A"/>
+                  </svg>
+                </div>
+                <div class="vrow">
+                  <span class="v-lab">호흡</span>
+                  <span class="v-val">18 <span class="u">/min</span></span>
+                  <svg class="spark" viewBox="0 0 64 20" preserveAspectRatio="none" aria-hidden="true">
+                    <polyline points="0,11 11,9 21,11 32,10 43,11 53,9 64,10" fill="none" stroke="#54686A" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                    <circle cx="64" cy="10" r="1.8" fill="#54686A"/>
+                  </svg>
+                </div>
+                <div class="vrow">
+                  <span class="v-lab">SpO₂</span>
+                  <span class="v-val">98 <span class="u">%</span></span>
+                  <svg class="spark" viewBox="0 0 64 20" preserveAspectRatio="none" aria-hidden="true">
+                    <polyline points="0,7 11,6 21,8 32,6 43,7 53,6 64,6" fill="none" stroke="#2C8466" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                    <circle cx="64" cy="6" r="1.8" fill="#2C8466"/>
+                  </svg>
+                </div>
+                <div class="vrow">
+                  <span class="v-lab">체중</span>
+                  <span class="v-val">64.2 <span class="u">kg</span></span>
+                  <svg class="spark" viewBox="0 0 64 20" preserveAspectRatio="none" aria-hidden="true">
+                    <polyline points="0,7 11,8 21,8 32,9 43,10 53,11 64,12" fill="none" stroke="#54686A" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                    <circle cx="64" cy="12" r="1.8" fill="#54686A"/>
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <!-- CLINICAL PROFILE -->
+            <div class="card">
+              <div class="c-head">임상 프로필</div>
+              <div class="c-body">
+                <div class="prof-grp">
+                  <div class="prof-k">알레르기</div>
+                  <div class="tags">
+                    <span class="tag" style="color:var(--danger);border-color:color-mix(in srgb,var(--danger) 30%,var(--border));background:color-mix(in srgb,var(--danger) 6%,var(--surface))">페니실린</span>
+                    <span class="tag" style="color:var(--danger);border-color:color-mix(in srgb,var(--danger) 30%,var(--border));background:color-mix(in srgb,var(--danger) 6%,var(--surface))">아스피린</span>
+                  </div>
+                </div>
+                <div class="prof-grp">
+                  <div class="prof-k">기저질환</div>
+                  <div class="tags">
+                    <span class="tag dx">본태성 고혈압 <span class="cd">I10</span></span>
+                    <span class="tag dx">제2형 당뇨병 <span class="cd">E11.9</span></span>
+                  </div>
+                </div>
+                <div class="prof-grp">
+                  <div class="prof-k">현재 복약</div>
+                  <div class="tags">
+                    <span class="tag">메트포르민 500mg</span>
+                    <span class="tag">암로디핀 5mg</span>
+                    <span class="tag">와파린 2mg</span>
+                  </div>
+                </div>
+                <div class="prof-grp">
+                  <div class="prof-k">사회력</div>
+                  <div class="prof-line"><span class="m">흡연</span> 비흡연 <span class="m">· 음주</span> 월 1~2회 <span class="m">· 가족력</span> 부 — 고혈압</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- HISTORY TIMELINE -->
+            <div class="card">
+              <div class="c-head">과거 진료 이력 <span class="ts">최근순</span></div>
+              <div class="c-body">
+                <div class="timeline">
+                  <div class="tl-item">
+                    <div class="tl-rail"><span class="nd"></span><span class="ln"></span></div>
+                    <div class="tl-body">
+                      <div class="tl-date"><span class="tnum">2026-05-21</span><span class="dr">· 이정훈</span></div>
+                      <div class="tl-dx">본태성(원발성) 고혈압 <span class="cd">I10</span></div>
+                      <div class="tl-ord">암로디핀 5mg 처방 (30일) · 혈압 추적</div>
+                    </div>
+                  </div>
+                  <div class="tl-item">
+                    <div class="tl-rail"><span class="nd"></span><span class="ln"></span></div>
+                    <div class="tl-body">
+                      <div class="tl-date"><span class="tnum">2026-04-09</span><span class="dr">· 이정훈</span></div>
+                      <div class="tl-dx">제2형 당뇨병 <span class="cd">E11.9</span></div>
+                      <div class="tl-ord">HbA1c 7.1% · 메트포르민 유지 · 당화혈색소 검사</div>
+                    </div>
+                  </div>
+                  <div class="tl-item">
+                    <div class="tl-rail"><span class="nd"></span><span class="ln"></span></div>
+                    <div class="tl-body">
+                      <div class="tl-date"><span class="tnum">2026-02-17</span><span class="dr">· 최민호</span></div>
+                      <div class="tl-dx">급성 상기도감염 <span class="cd">J06.9</span></div>
+                      <div class="tl-ord">대증요법 · 5일 처방 · 경과 양호</div>
+                    </div>
+                  </div>
+                  <div class="tl-item">
+                    <div class="tl-rail"><span class="nd"></span></div>
+                    <div class="tl-body">
+                      <div class="tl-date"><span class="tnum">2025-12-03</span><span class="dr">· 이정훈</span></div>
+                      <div class="tl-dx">정기 검진 · 약 처방 <span class="cd">Z00.0</span></div>
+                      <div class="tl-ord">혈액검사 · 흉부 X선 정상</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="tl-more">전체 이력 보기 (12건) ▾</div>
+              </div>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- ===== ② 중앙 작성 패널 (현재 진료 기록) ===== -->
+        <section class="pane note">
+          <div class="pane-head">
+            <span class="pt"><span class="ic">✎</span>진료 기록 · SOAP</span>
+            <span class="autosave"><span class="ck">✓</span>자동 저장됨 · <span class="tnum">14:32</span></span>
+          </div>
+          <div class="pane-body">
+
+            <!-- DIAGNOSIS PICKER -->
+            <div class="dx-block">
+              <div class="dh">
+                <span class="t">진단 (상병) <span class="req">*</span></span>
+                <span class="picker"><span class="mag">⌕</span><span class="ph">상병코드 검색 (KCD-8)</span><span class="kbd">Ctrl K</span></span>
+              </div>
+              <div class="dx-list">
+                <div class="dx-chip">
+                  <span class="code">I10</span>
+                  <span class="nm">본태성(원발성) 고혈압</span>
+                  <span class="dx-toggle"><span class="on">주상병</span><span>부상병</span></span>
+                  <button class="rm" title="삭제">×</button>
+                </div>
+                <div class="dx-chip">
+                  <span class="code">E11.9</span>
+                  <span class="nm">합병증을 동반하지 않은 제2형 당뇨병</span>
+                  <span class="dx-toggle"><span>주상병</span><span class="on">부상병</span></span>
+                  <button class="rm" title="삭제">×</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- SOAP — v5: single-column TABLE / LEDGER (header row + body row per part,
+                 full-width hairline rules between every row; 진단(상병) is above, kept v1-style) -->
+            <div class="soap">
+
+              <!-- S -->
+              <div class="soap-row soap-hr">
+                <span class="badge s-s">S</span><span class="lab">주관적 (Subjective)</span><span class="dsc">환자 호소</span>
+                <span class="tools"><span class="tbtn">이전 기록</span><span class="tbtn">템플릿</span></span>
+              </div>
+              <div class="soap-row soap-br">아침에 측정한 혈압이 140/90으로 평소보다 높게 나와 내원함. 가끔 뒷목이 뻐근하고 어지러운 느낌이 있으나 두통·흉통은 없음. 복약은 빠짐없이 복용 중. 다리 부종이나 호흡곤란 호소 없음.</div>
+
+              <!-- O -->
+              <div class="soap-row soap-hr">
+                <span class="badge s-o">O</span><span class="lab">객관적 (Objective)</span><span class="dsc">진찰 소견</span>
+                <span class="tools"><span class="tbtn">활력 가져오기</span></span>
+              </div>
+              <div class="soap-row soap-br">BP 128/82 mmHg, HR 76, BT 36.7℃, SpO₂ 98%. 의식 명료, 전신상태 양호. 심음 규칙적, 잡음 없음. 폐음 청명. 하지 함요부종 없음. 최근 공복혈당 124 mg/dL.</div>
+
+              <!-- A -->
+              <div class="soap-row soap-hr">
+                <span class="badge s-a">A</span><span class="lab">평가 (Assessment)</span><span class="dsc">진단·판단</span>
+              </div>
+              <div class="soap-row soap-br">본태성 고혈압 — 약물 조절 중 가정혈압 변동 관찰. 제2형 당뇨병 — 혈당 비교적 안정적. 와파린 병용 중으로 약물 상호작용 및 출혈 위험 모니터링 필요.</div>
+
+              <!-- P -->
+              <div class="soap-row soap-hr">
+                <span class="badge s-p">P</span><span class="lab">계획 (Plan)</span><span class="dsc">처치·처방·교육</span>
+                <span class="tools"><span class="tbtn">오더 연결</span></span>
+              </div>
+              <div class="soap-row soap-br">암로디핀 5mg 1일 1회 30일 유지. 당화혈색소·신기능 검사 시행. 가정혈압 1일 2회 기록 교육. 2주 후 재방문 예약. 와파린 복용 환자 — 비스테로이드 진통제 회피 안내.<span class="caret"></span></div>
+
+            </div>
+
+          </div>
+        </section>
+
+        <!-- ===== ③ 우측 오더 패널 ===== -->
+        <section class="pane orders">
+          <div class="pane-head">
+            <span class="pt"><span class="ic">℞</span>오더</span>
+            <span class="sub">발행 추적</span>
+          </div>
+          <div class="pane-body">
+
+            <div class="ord-tabs">
+              <span class="on">처방<span class="ct">3</span></span>
+              <span>검사<span class="ct">2</span></span>
+              <span>영상<span class="ct">1</span></span>
+              <span>처치<span class="ct">0</span></span>
+            </div>
+
+            <!-- add (drug picker) -->
+            <div class="ord-add">
+              <span class="picker"><span class="mag">⌕</span><span class="ph">약품 검색 (성분·상품명)</span><span class="kbd">Ctrl K</span></span>
+            </div>
+
+            <!-- 처방 list -->
+            <div class="ord-list">
+              <div class="ord-item">
+                <button class="rm" title="삭제">×</button>
+                <div class="oi-top">
+                  <span class="oi-nm">암로디핀 <span class="dose">5mg 정</span></span>
+                  <span class="pay-chip cov">급여</span>
+                </div>
+                <div class="oi-sig">1정 · 1일 1회 · 30일분</div>
+                <div class="oi-trace"><span class="tg">오더</span> 이정훈 · 14:31 <span class="tg">· 수행</span> 약국 대기</div>
+              </div>
+              <div class="ord-item">
+                <button class="rm" title="삭제">×</button>
+                <div class="oi-top">
+                  <span class="oi-nm">메트포르민 <span class="dose">500mg 정</span></span>
+                  <span class="pay-chip cov">급여</span>
+                </div>
+                <div class="oi-sig">1정 · 1일 2회 (조·석) · 30일분</div>
+                <div class="oi-trace"><span class="tg">오더</span> 이정훈 · 14:31 <span class="tg">· 수행</span> 약국 대기</div>
+              </div>
+              <div class="ord-item">
+                <button class="rm" title="삭제">×</button>
+                <div class="oi-top">
+                  <span class="oi-nm">로수바스타틴 <span class="dose">10mg 정</span></span>
+                  <span class="pay-chip non">비급여</span>
+                </div>
+                <div class="oi-sig">1정 · 1일 1회 (취침전) · 30일분</div>
+                <div class="oi-trace"><span class="tg">오더</span> 이정훈 · 14:32 <span class="tg">· 수행</span> 약국 대기</div>
+              </div>
+            </div>
+
+            <!-- queued 검사 / 영상 -->
+            <div class="ord-sub-head">대기 중 — 검사 · 영상</div>
+            <div class="q-chips">
+              <span class="q-chip"><span class="k">검사</span>당화혈색소(HbA1c)<span class="pay-chip cov">급여</span><span class="x">×</span></span>
+              <span class="q-chip"><span class="k">검사</span>신기능(BUN/Cr)<span class="pay-chip cov">급여</span><span class="x">×</span></span>
+              <span class="q-chip"><span class="k">영상</span>흉부 X선 PA<span class="pay-chip cov">급여</span><span class="x">×</span></span>
+            </div>
+
+            <!-- permission-denied (403) example: 마약류 오더 권한 없음 -->
+            <div class="ord-sub-head">마약류 처방 (DUR)</div>
+            <div class="ord-add">
+              <span class="picker" style="opacity:.55;border-style:solid"><span class="mag">⌕</span><span class="ph">향정신성 약품 검색</span></span>
+              <span class="perm-deny">
+                <button class="btn-disabled"><span class="lock">⊘</span>추가</button>
+                <span class="ptip">이 작업 권한이 없습니다</span>
+              </span>
+            </div>
+
+            <!-- 수가 subtotal hint -->
+            <div class="fee-hint">
+              <div class="fh-top">
+                <span class="fh-lab">예상 수가 <span class="auto">자동 산정</span></span>
+                <span class="fh-amt tnum">23,140 <span class="won">원</span></span>
+              </div>
+              <div class="fh-note">진찰료 + 처방·검사·영상 오더 기준 자동 발생. 본인부담금은 수납 단계에서 보험 적용 후 확정됩니다.</div>
+            </div>
+
+          </div>
+        </section>
+
+      </div><!-- /work -->
+
+      <!-- ===================== ACTION BAR (sticky footer) ===================== -->
+      <div class="action-bar">
+        <div class="ab-left">
+          <span class="ab-state"><span class="dot"></span>진행중</span>
+          <span class="ab-flow">
+            <span class="step">접수</span><span class="ar">▸</span>
+            <span class="step cur">진료</span><span class="ar">▸</span>
+            <span class="step next">완료</span><span class="ar">▸</span>
+            <span class="step">수납</span>
+          </span>
+        </div>
+        <div class="ab-right">
+          <span class="ab-hint"><span class="i">i</span>완료 시 <b>수납 대기</b>로 이동합니다 (되돌릴 수 없음)</span>
+          <button class="btn-ghost">임시 저장</button>
+          <button class="btn-ghost">다음 환자 ▸</button>
+          <button class="btn-primary"><span class="ic">✓</span>진료 완료 → 수납</button>
+        </div>
+      </div>
+
+      <!-- transition-conflict toast (409) — illustrative, anchored bottom-right -->
+      <div class="toast">
+        <span class="ico">!</span>
+        <div class="ttxt"><b>이미 완료된 진료입니다</b><div class="sub">다른 단말에서 상태가 변경됨 · 최신 데이터로 새로고침하세요</div></div>
+        <span class="tact">새로고침</span>
+      </div>
+
+      <!-- ===================== STATE PATTERNS (참고) ===================== -->
+      <div class="sp-wrap">
+        <div class="sp-head">
+          <h2>상태 패턴 (참고)</h2>
+          <span class="tag">State Patterns</span>
+          <span class="line"></span>
+        </div>
+        <div class="sp-grid">
+
+          <!-- 1. validation 422 -->
+          <div class="sp-card">
+            <div class="sp-cap"><span class="n">1</span>저장 검증 오류 <span class="http">422</span></div>
+            <div class="sp-body">
+              <div class="mini-soap">
+                <div class="mh"><span class="b">Dx</span><span class="l">진단 (상병)</span></div>
+                <div class="mbody">I10 · E11.9 — 둘 다 부상병</div>
+                <div class="merr"><span style="font-weight:800">⚠</span>주상병을 1개 지정해야 합니다</div>
+              </div>
+              <div class="sp-note">완료 저장 시 서버가 거부. <b>해당 필드로 포커스 이동</b> + 인라인 메시지.</div>
+            </div>
+          </div>
+
+          <!-- 2. permission 403 -->
+          <div class="sp-card">
+            <div class="sp-cap"><span class="n">2</span>권한 거부 <span class="http">403</span></div>
+            <div class="sp-body">
+              <div class="mini-perm">
+                <span class="mp-btn"><span style="font-size:11px">⊘</span>오더 추가</span>
+                <span class="mp-tip"><b>이 작업 권한이 없습니다</b><br>마약류/향정신성 처방은 해당 권한 보유자만 가능</span>
+              </div>
+              <div class="sp-note">버튼은 <b>비활성 + 잠금 아이콘</b>, hover 시 사유 툴팁. 숨기지 않고 보여 학습 유도.</div>
+            </div>
+          </div>
+
+          <!-- 3. transition 409 -->
+          <div class="sp-card">
+            <div class="sp-cap"><span class="n">3</span>잘못된 전이 <span class="http">409</span></div>
+            <div class="sp-body">
+              <div class="mini-toast">
+                <span class="ico">!</span>
+                <div class="mt">이미 완료된 진료입니다<div class="s">상태 변경 충돌 · 새로고침 필요</div></div>
+                <span class="mr">새로고침</span>
+              </div>
+              <div class="sp-note">상태 머신이 허용하지 않는 전이. <b>토스트 + 새로고침 액션</b>, 로컬 변경 보존.</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <div class="foot-note">
+        <b>이 화면이 정의하는 컴포넌트/패턴:</b> 환자 배너 · 알레르기/안전 경고 · 활력 카드(인라인 SVG 스파크라인) ·
+        과거 이력 타임라인 · SOAP 작성 폼 · 진단(상병) 피커 · 오더 패널(처방/검사/영상/처치 · 추적 · 자동 수가) ·
+        액션 바 · 사이드바(아이콘 접힘, 의사 역할).
+        <b>상태 패턴:</b> 검증 오류(422) · 권한 거부(403) · 잘못된 전이(409).
+        <b>흐름:</b> 접수 → 진료(작성·오더) → 완료 → 수납.
+        <b>레이아웃 결정(확인 대기):</b> 사이드바 아이콘 접힘 · 3-pane 280/flex/320 · 액션 바=작업영역 하단 고정 · 주민번호 표시=권한+감사.
+      </div>
+
+    </div><!-- /main -->
+  </div><!-- /app -->
+</div><!-- /browser -->
+</body>
+</html>

@@ -1,0 +1,49 @@
+# ── 로컬 에이전트 도구 (커밋 제외 결정)
+.claude/
+
+# ── 시크릿·환경변수 (절대 커밋 금지)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# ── Node / Next.js (web/)
+node_modules/
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# ── Python / FastAPI (api/)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# ── Supabase (로컬 스택)
+supabase/.branches/
+supabase/.temp/
+**/.supabase/
+
+# ── Flutter (mobile/)
+mobile/.dart_tool/
+mobile/build/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+**/android/.gradle/
+**/android/local.properties
+*.iml
+
+# ── 로그·OS·IDE
+*.log
+.DS_Store
+Thumbs.db
+.idea/

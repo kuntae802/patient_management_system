@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>환자 앱 — 예약하기 / 내 진료내역 (Patient App)</title>
+<!--
+================================================================================
+  KEY SCREEN — 환자 모바일 앱 (Patient Mobile App)
+    · surface: Flutter webview shell loading a responsive Next.js patient portal
+    · the ONLY mobile/responsive surface in the PMS — phone form factor (~390px)
+
+  Governs EXPERIENCE.md:
+    IA:          patient portal (환자 앱) — 3-tab shell: 예약 · 내 기록 · 마이
+    Flows:       예약하기 (진료과 → 의사 → 날짜 → 시간 슬롯 → 예약 확정)
+    Components:  bottom-tab-bar, slot-grid, visit-card, date-chip-rail,
+                 status-badge(A3, patient-facing), pill-select, primary-cta(large)
+    Voice:       patient-facing plain Korean (warm, jargon-free, reassuring)
+
+  --------------------------------------------------------------------------------
+  TOKENS LIFTED from key-waiting-board-1.html (LOCKED palette + typography):
+    --background #FAFCFC  --surface #FFFFFF  --surface-muted #EFF5F5
+    --border #D9E5E5  --text-primary #0E1C1D  --text-muted #54686A
+    --text-disabled #97A9AA  --primary #0E7C8E  --primary-hover #0A6675  --ring #2C9FB0
+    Status A3 (FIXED hex family): 슬레이트#64758A 앰버#BC7E12 인디고#4F46C7
+                                  그린#2C8466 로즈#C2433B  (amber-ink #8A5D09)
+    Typography: 'Pretendard Variable',Pretendard,'Malgun Gothic','맑은 고딕',
+                'Apple SD Gothic Neo',-apple-system,system-ui,sans-serif; tabular-nums.
+
+  PATIENT-FACING TONE DELTA (vs. staff desktop):
+    • WARMER + PLAINER Korean — no clinical jargon ("진단명"→"진단", easy terms first).
+    • LARGER type (body 15–16px vs desktop 13px), bigger headings.
+    • BIGGER touch targets (slots/buttons/tabs ≥44px), generous tap spacing.
+    • CALM/REASSURING — guidance copy, trust note (RLS: 본인 데이터만).
+    • Phone shell (top app bar + bottom tab bar) — NOT the desktop sidebar/topbar.
+    • Same teal/clean brand: teal = action ONLY; monitor-robust (fill+border+weight),
+      no meaning-by-shadow. 100% Korean · KRW integer · KST.
+  --------------------------------------------------------------------------------
+  Constraints honored: inline CSS only, NO JS, NO network, fully offline.
+                       Icons = Unicode / CSS shapes (Lucide-ish). Phone frame ~390px.
+================================================================================
+-->
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+
+  :root{
+    /* ---- 클리니컬 틸-블루 THEME (LOCKED, lifted) ---- */
+    --background:#FAFCFC; --surface:#FFFFFF; --surface-muted:#EFF5F5; --border:#D9E5E5;
+    --text-primary:#0E1C1D; --text-muted:#54686A; --text-disabled:#97A9AA;
+    --primary:#0E7C8E; --primary-foreground:#FFFFFF; --primary-hover:#0A6675; --ring:#2C9FB0;
+    --danger:#C2433B;
+
+    /* ---- 진료/예약 상태 colors (FIXED) ---- */
+    --st-reserved:#64758A;   /* 확정/예약 slate  */
+    --st-confirm:#4F46C7;    /* 확정       indigo */
+    --st-pending:#BC7E12;    /* 노쇼/주의  amber  */
+    --st-done:#2C8466;       /* 완료       green  */
+    --st-cancel:#C2433B;     /* 취소       rose   */
+    --st-amber-ink:#8A5D09;  /* amber label darkened for white-bg legibility */
+  }
+
+  /* Pretendard-led stack (self-hosted bundle → 윈도우 맑은 고딕 → 맥 폴백). NO @font-face / NO network. */
+  body{
+    font-family:'Pretendard Variable',Pretendard,'Malgun Gothic','맑은 고딕','Apple SD Gothic Neo',-apple-system,system-ui,sans-serif;
+    background:#e7eaed; color:var(--text-primary); font-size:15px; line-height:1.55;
+    padding:30px 18px 60px;
+  }
+  .tnum{font-variant-numeric:tabular-nums}
+
+  /* ============================================================
+     PAGE LAYOUT — two labelled phones side by side
+     ============================================================ */
+  .stage{max-width:900px;margin:0 auto;display:flex;flex-wrap:wrap;gap:42px 36px;
+    align-items:flex-start;justify-content:center}
+  .device{width:390px;flex:none}
+  .device-label{display:flex;align-items:center;gap:9px;margin:0 6px 13px;}
+  .device-label .n{width:22px;height:22px;border-radius:7px;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:12px;font-weight:700;color:#fff;background:var(--primary)}
+  .device-label b{font-size:15px;font-weight:700;letter-spacing:-.01em;color:var(--text-primary)}
+  .device-label span{font-size:12.5px;color:var(--text-muted)}
+
+  /* ---- phone frame ---- */
+  .phone{width:390px;height:812px;border-radius:42px;background:#0E1C1D;
+    padding:11px;box-shadow:0 1px 2px rgba(16,28,29,.10),0 16px 40px rgba(16,28,29,.20);position:relative}
+  .screen{width:100%;height:100%;border-radius:32px;overflow:hidden;background:var(--background);
+    display:flex;flex-direction:column;position:relative}
+  /* status bar */
+  .statusbar{height:42px;flex:none;display:flex;align-items:center;justify-content:space-between;
+    padding:0 24px 0 26px;font-size:13px;font-weight:600;color:var(--text-primary);background:var(--surface)}
+  .statusbar .sb-r{display:flex;align-items:center;gap:6px;font-size:11px}
+  .statusbar .bars{display:inline-flex;align-items:flex-end;gap:1.5px;height:11px}
+  .statusbar .bars i{width:3px;background:var(--text-primary);border-radius:1px;display:block}
+  .statusbar .bars i:nth-child(1){height:4px}.statusbar .bars i:nth-child(2){height:6px}
+  .statusbar .bars i:nth-child(3){height:8px}.statusbar .bars i:nth-child(4){height:11px}
+  .statusbar .batt{width:22px;height:11px;border:1.4px solid var(--text-primary);border-radius:3px;
+    position:relative;display:inline-block}
+  .statusbar .batt::before{content:"";position:absolute;left:1.4px;top:1.4px;bottom:1.4px;width:13px;
+    background:var(--text-primary);border-radius:1px}
+  .statusbar .batt::after{content:"";position:absolute;right:-3px;top:3px;height:5px;width:2px;
+    background:var(--text-primary);border-radius:0 1px 1px 0}
+  .notch{position:absolute;top:11px;left:50%;transform:translateX(-50%);width:130px;height:26px;
+    background:#0E1C1D;border-radius:0 0 16px 16px;z-index:20}
+
+  /* ---- top app bar (phone shell) ---- */
+  .appbar{flex:none;background:var(--surface);border-bottom:1px solid var(--border);
+    padding:12px 18px 13px;display:flex;align-items:center;gap:11px}
+  .appbar .logo{width:30px;height:30px;border-radius:9px;flex:none;position:relative;
+    background:linear-gradient(135deg,var(--primary),var(--ring))}
+  .appbar .logo::after{content:"";position:absolute;inset:8px;border-radius:2px;background:#fff;
+    clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%,50% 35%,65% 50%,50% 65%,35% 50%)}
+  .appbar .brand{flex:1;line-height:1.2;min-width:0}
+  .appbar .brand b{font-size:16px;font-weight:700;letter-spacing:-.01em;color:var(--text-primary);display:block}
+  .appbar .brand span{font-size:12px;color:var(--text-muted)}
+  .appbar .back{width:34px;height:34px;border-radius:10px;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:18px;color:var(--text-muted);background:var(--surface-muted);
+    border:1px solid var(--border)}
+  .appbar .av{width:34px;height:34px;border-radius:50%;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:13px;font-weight:700;color:#fff;background:linear-gradient(135deg,#3a8d9c,#0E7C8E)}
+
+  /* ---- scrollable body ---- */
+  .body{flex:1;overflow:auto;padding:18px 18px 24px}
+  .body::-webkit-scrollbar{width:0}
+
+  /* ---- section heading / guide copy ---- */
+  .step-cap{font-size:13px;font-weight:700;color:var(--primary);letter-spacing:.01em;
+    display:flex;align-items:center;gap:7px;margin:20px 2px 10px}
+  .step-cap:first-child{margin-top:2px}
+  .step-cap .num{width:19px;height:19px;border-radius:50%;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:11px;font-weight:700;color:#fff;background:var(--primary)}
+  .lead{font-size:21px;font-weight:700;letter-spacing:-.02em;color:var(--text-primary);line-height:1.3}
+  .lead-sub{font-size:14.5px;color:var(--text-muted);margin-top:6px;line-height:1.5}
+
+  /* ---- pill-select (진료과 / 의사) ---- */
+  .pill{width:100%;min-height:54px;border:1px solid var(--border);background:var(--surface);
+    border-radius:14px;padding:9px 16px;display:flex;align-items:center;gap:13px;cursor:pointer;text-align:left}
+  .pill+.pill{margin-top:10px}
+  .pill .ic{width:36px;height:36px;border-radius:11px;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:17px;background:var(--surface-muted);color:var(--primary)}
+  .pill .col{flex:1;min-width:0;line-height:1.3}
+  .pill .col .k{font-size:12px;color:var(--text-muted)}
+  .pill .col .v{font-size:16px;font-weight:650;color:var(--text-primary)}
+  .pill .car{font-size:13px;color:var(--text-muted);flex:none}
+  .pill.sel{border-color:var(--primary);background:color-mix(in srgb,var(--primary) 6%,var(--surface))}
+  .pill.sel .ic{background:color-mix(in srgb,var(--primary) 14%,var(--surface))}
+
+  /* doctor mini-card variant */
+  .pill .av-doc{width:42px;height:42px;border-radius:50%;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:15px;font-weight:700;color:#fff;background:linear-gradient(135deg,#3a8d9c,#0E7C8E)}
+  .pill .col .meta{font-size:12.5px;color:var(--text-muted);margin-top:1px}
+  .pill .check{width:24px;height:24px;border-radius:50%;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:13px;font-weight:700;color:#fff;background:var(--primary)}
+
+  /* ---- date chip rail (horizontal scroll) ---- */
+  .rail-wrap{margin:0 -18px;padding:2px 18px 6px;overflow-x:auto}
+  .rail{display:flex;gap:10px;min-width:max-content}
+  .dchip{width:62px;min-height:78px;flex:none;border:1px solid var(--border);background:var(--surface);
+    border-radius:15px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+    cursor:pointer;padding:9px 0}
+  .dchip .dow{font-size:12px;color:var(--text-muted);font-weight:600}
+  .dchip .dd{font-size:20px;font-weight:700;color:var(--text-primary);line-height:1.1}
+  .dchip .tag{font-size:10.5px;color:var(--text-muted);font-weight:600}
+  .dchip.today{border-color:var(--primary)}
+  .dchip.today .dow{color:var(--primary)}
+  .dchip.sel{background:var(--primary);border-color:var(--primary-hover)}
+  .dchip.sel .dow,.dchip.sel .dd,.dchip.sel .tag{color:#fff}
+  .dchip.off{opacity:.45}
+  .dchip.off .dd{color:var(--text-disabled)}
+  .dchip .sun{color:var(--danger)}
+
+  /* ---- TIME SLOT GRID ---- */
+  .slot-legend{display:flex;align-items:center;gap:14px;margin:4px 2px 12px;font-size:12.5px;color:var(--text-muted)}
+  .slot-legend .lg{display:inline-flex;align-items:center;gap:6px}
+  .slot-legend .sw{width:16px;height:16px;border-radius:5px;flex:none}
+  .slot-legend .sw.av{border:1.5px solid var(--primary);background:color-mix(in srgb,var(--primary) 5%,var(--surface))}
+  .slot-legend .sw.se{background:var(--primary);border:1.5px solid var(--primary-hover)}
+  .slot-legend .sw.fu{background:var(--surface-muted);border:1.5px solid var(--border)}
+  .slot-period{font-size:12px;font-weight:700;color:var(--text-muted);letter-spacing:.04em;
+    text-transform:uppercase;margin:14px 2px 9px;display:flex;align-items:center;gap:8px}
+  .slot-period::after{content:"";flex:1;height:1px;background:var(--border)}
+  .slot-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+  .slot{height:46px;border-radius:12px;display:flex;align-items:center;justify-content:center;
+    font-size:15px;font-weight:650;cursor:pointer;border:1.5px solid var(--primary);
+    color:var(--primary);background:color-mix(in srgb,var(--primary) 5%,var(--surface))}
+  .slot.sel{background:var(--primary);border-color:var(--primary-hover);color:#fff}
+  .slot.sel::after{content:"✓";font-size:12px;margin-left:6px}
+  .slot.full{border:1.5px solid var(--border);background:var(--surface-muted);
+    color:var(--text-disabled);cursor:not-allowed;position:relative}
+  .slot.full .tag{position:absolute;bottom:5px;font-size:9px;font-weight:600;color:var(--text-disabled)}
+
+  /* ---- selection summary above CTA ---- */
+  .pick-summary{margin-top:18px;border:1px solid color-mix(in srgb,var(--primary) 26%,var(--border));
+    background:color-mix(in srgb,var(--primary) 6%,var(--surface));border-radius:14px;padding:13px 15px;
+    display:flex;align-items:center;gap:12px}
+  .pick-summary .gl{width:34px;height:34px;border-radius:10px;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:16px;color:#fff;background:var(--primary)}
+  .pick-summary .col{flex:1;line-height:1.4;min-width:0}
+  .pick-summary .col .k{font-size:11.5px;font-weight:700;color:var(--primary);letter-spacing:.03em}
+  .pick-summary .col .v{font-size:15px;font-weight:650;color:var(--text-primary)}
+  .pick-summary .col .v b{font-variant-numeric:tabular-nums}
+
+  /* ---- sticky bottom CTA (booking) ---- */
+  .cta-dock{flex:none;background:var(--surface);border-top:1px solid var(--border);padding:13px 18px 16px}
+  .cta-help{font-size:12.5px;color:var(--text-muted);text-align:center;margin-bottom:10px}
+  .btn-cta{width:100%;height:54px;border-radius:15px;border:1px solid var(--primary-hover);
+    background:var(--primary);color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;gap:9px}
+  .btn-cta:hover{background:var(--primary-hover)}
+  .btn-cta .ic{font-size:14px}
+
+  /* ============================================================
+     SCREEN 2 — 내 진료내역
+     ============================================================ */
+  .greet{margin:2px 2px 4px}
+  .greet h1{font-size:22px;font-weight:700;letter-spacing:-.02em;color:var(--text-primary)}
+  .greet p{font-size:14px;color:var(--text-muted);margin-top:5px}
+
+  /* trust note (RLS) */
+  .trust{display:flex;align-items:center;gap:9px;margin:14px 0 4px;padding:11px 13px;
+    border:1px solid var(--border);background:var(--surface-muted);border-radius:12px;
+    font-size:12.5px;color:var(--text-muted);line-height:1.45}
+  .trust .shield{width:24px;height:24px;border-radius:7px;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:13px;color:var(--st-done);
+    background:color-mix(in srgb,var(--st-done) 12%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--st-done) 30%,var(--surface))}
+  .trust b{color:var(--text-primary);font-weight:650}
+
+  .list-cap{font-size:13px;font-weight:700;color:var(--text-muted);letter-spacing:.02em;margin:20px 2px 11px}
+
+  /* A3 status badge — patient facing */
+  .badge{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:650;white-space:nowrap;
+    border-radius:20px;padding:3px 10px 3px 9px;border:1px solid transparent}
+  .badge .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .badge.b-done{color:var(--st-done);background:color-mix(in srgb,var(--st-done) 9%,var(--surface));
+    border-color:color-mix(in srgb,var(--st-done) 28%,var(--surface))}
+  .badge.b-done .dot{background:var(--st-done)}
+  .badge.b-confirm{color:var(--st-confirm);background:color-mix(in srgb,var(--st-confirm) 9%,var(--surface));
+    border-color:color-mix(in srgb,var(--st-confirm) 28%,var(--surface))}
+  .badge.b-confirm .dot{background:var(--st-confirm)}
+  .badge.b-cancel{color:var(--st-cancel);background:color-mix(in srgb,var(--st-cancel) 9%,var(--surface));
+    border-color:color-mix(in srgb,var(--st-cancel) 28%,var(--surface))}
+  .badge.b-cancel .dot{background:var(--st-cancel)}
+  .badge.b-cancel .lbl{text-decoration:line-through;text-decoration-thickness:1px}
+  .badge.b-noshow{color:var(--st-amber-ink);background:color-mix(in srgb,var(--st-pending) 11%,var(--surface));
+    border-color:color-mix(in srgb,var(--st-pending) 30%,var(--surface))}
+  .badge.b-noshow .dot{background:var(--st-pending)}
+
+  /* visit card */
+  .vcard{border:1px solid var(--border);background:var(--surface);border-radius:16px;
+    padding:15px 16px;margin-bottom:12px}
+  .vcard .v-top{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .vcard .v-date{font-size:13.5px;font-weight:700;color:var(--text-primary);font-variant-numeric:tabular-nums}
+  .vcard .v-mid{display:flex;align-items:center;gap:10px;margin-top:11px}
+  .vcard .v-mid .dav{width:38px;height:38px;border-radius:50%;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:13px;font-weight:700;color:#fff;background:linear-gradient(135deg,#3a8d9c,#0E7C8E)}
+  .vcard .v-mid .who{flex:1;line-height:1.3;min-width:0}
+  .vcard .v-mid .who b{font-size:15px;font-weight:650;color:var(--text-primary)}
+  .vcard .v-mid .who span{font-size:12.5px;color:var(--text-muted);display:block}
+  .vcard .v-mid .chev{font-size:18px;color:var(--text-disabled);flex:none}
+  .vcard .v-dx{margin-top:13px;padding-top:13px;border-top:1px solid var(--border);
+    display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .vcard .v-dx .k{font-size:12px;color:var(--text-muted)}
+  .vcard .v-dx .dx{font-size:15px;font-weight:700;color:var(--text-primary)}
+  .vcard .v-dx .dx .lay{font-size:12px;font-weight:500;color:var(--text-muted);margin-left:5px}
+  .vcard.open{border-color:color-mix(in srgb,var(--primary) 32%,var(--border));
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 7%,transparent)}
+
+  /* expanded detail: 처방 / 검사 */
+  .v-detail{margin-top:14px;border-top:1px dashed var(--border);padding-top:14px;display:flex;flex-direction:column;gap:15px}
+  .detail-blk .d-head{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;color:var(--text-muted);
+    letter-spacing:.02em;margin-bottom:9px}
+  .detail-blk .d-head .di{width:22px;height:22px;border-radius:7px;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:12px;color:var(--primary);background:var(--surface-muted)}
+  /* 처방 row */
+  .rx{display:flex;align-items:flex-start;gap:11px;padding:10px 12px;border:1px solid var(--border);
+    border-radius:12px;background:var(--surface-muted)}
+  .rx+.rx{margin-top:8px}
+  .rx .pill-ic{width:30px;height:30px;border-radius:9px;flex:none;display:flex;align-items:center;justify-content:center;
+    font-size:14px;color:var(--primary);background:var(--surface);border:1px solid var(--border)}
+  .rx .rx-col{flex:1;min-width:0;line-height:1.4}
+  .rx .rx-col .nm{font-size:14.5px;font-weight:650;color:var(--text-primary)}
+  .rx .rx-col .dose{font-size:13px;color:var(--text-muted);margin-top:1px}
+  .rx .rx-col .dose b{color:var(--text-primary);font-weight:600}
+  .rx .days{font-size:12px;font-weight:650;color:var(--primary);background:color-mix(in srgb,var(--primary) 8%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--primary) 24%,var(--surface));border-radius:8px;padding:3px 8px;flex:none}
+  /* 검사 결과 */
+  .lab{display:flex;align-items:center;gap:11px;padding:10px 12px;border:1px solid var(--border);border-radius:12px}
+  .lab+.lab{margin-top:8px}
+  .lab .lab-col{flex:1;min-width:0}
+  .lab .lab-col .nm{font-size:14px;font-weight:600;color:var(--text-primary)}
+  .lab .lab-col .sum{font-size:12.5px;color:var(--text-muted);margin-top:1px}
+  .lab .val{font-size:15px;font-weight:700;color:var(--text-primary);font-variant-numeric:tabular-nums;flex:none}
+  .lab .flag{font-size:11px;font-weight:700;border-radius:7px;padding:2px 7px;flex:none}
+  .lab .flag.ok{color:var(--st-done);background:color-mix(in srgb,var(--st-done) 10%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--st-done) 28%,var(--surface))}
+  .lab .flag.watch{color:var(--st-amber-ink);background:color-mix(in srgb,var(--st-pending) 11%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--st-pending) 30%,var(--surface))}
+
+  .v-detail-note{font-size:12px;color:var(--text-disabled);line-height:1.5}
+
+  /* ---- bottom tab bar (phone shell) ---- */
+  .tabbar{flex:none;background:var(--surface);border-top:1px solid var(--border);
+    display:flex;padding:8px 8px 16px}
+  .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;padding:6px 0;cursor:pointer}
+  .tab .ti{width:26px;height:26px;display:flex;align-items:center;justify-content:center;color:var(--text-muted)}
+  .tab .tl{font-size:11.5px;font-weight:600;color:var(--text-muted)}
+  .tab.on .tl{color:var(--primary)}
+  .tab.on .ti{color:var(--primary)}
+  /* Lucide-ish CSS glyphs */
+  .gl-cal{width:18px;height:16px;border:2px solid currentColor;border-radius:4px;position:relative}
+  .gl-cal::before{content:"";position:absolute;top:-5px;left:3px;right:3px;height:4px;border-left:2px solid currentColor;border-right:2px solid currentColor}
+  .gl-cal::after{content:"";position:absolute;top:4px;left:2px;right:2px;height:2px;background:currentColor}
+  .gl-doc{width:15px;height:19px;border:2px solid currentColor;border-radius:3px;position:relative}
+  .gl-doc::before{content:"";position:absolute;top:4px;left:3px;width:7px;height:2px;background:currentColor;
+    box-shadow:0 4px 0 currentColor,0 8px 0 currentColor}
+  .gl-user{position:relative;width:20px;height:20px}
+  .gl-user::before{content:"";position:absolute;top:0;left:6px;width:8px;height:8px;border:2px solid currentColor;border-radius:50%}
+  .gl-user::after{content:"";position:absolute;bottom:0;left:1px;width:18px;height:9px;border:2px solid currentColor;
+    border-bottom:none;border-radius:9px 9px 0 0}
+
+  /* badge on tab */
+  .tab .ti{position:relative}
+  .tab .ti .bdg{position:absolute;top:-3px;right:-7px;min-width:15px;height:15px;border-radius:8px;
+    background:var(--danger);color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;
+    justify-content:center;padding:0 3px;border:1.5px solid var(--surface)}
+
+  /* footer caption under stage */
+  .pagenote{max-width:760px;margin:34px auto 0;font-size:12px;color:var(--text-disabled);line-height:1.8;text-align:center}
+  .pagenote b{color:var(--text-muted);font-weight:650}
+</style>
+</head>
+<body>
+
+<div class="stage">
+
+  <!-- ============================================================
+       SCREEN 1 — 예약하기 (booking)
+       ============================================================ -->
+  <div class="device">
+    <div class="device-label">
+      <span class="n">1</span><b>예약하기</b><span>· 진료과 → 의사 → 날짜 → 시간 선택</span>
+    </div>
+
+    <div class="phone">
+      <div class="notch"></div>
+      <div class="screen">
+
+        <!-- status bar -->
+        <div class="statusbar">
+          <span class="tnum">9:41</span>
+          <span class="sb-r">
+            <span class="bars"><i></i><i></i><i></i><i></i></span>
+            <span style="font-weight:700">5G</span>
+            <span class="batt"></span>
+          </span>
+        </div>
+
+        <!-- top app bar -->
+        <div class="appbar">
+          <button class="back">‹</button>
+          <div class="brand"><b>○○의원</b><span>진료 예약</span></div>
+          <div class="av">김</div>
+        </div>
+
+        <!-- scroll body -->
+        <div class="body">
+
+          <div class="lead">원하시는 시간을<br>선택해 주세요</div>
+          <div class="lead-sub">진료과와 의사 선생님을 고른 뒤, 편한 날짜와 시간을 눌러 주세요.</div>
+
+          <!-- step 1: 진료과 -->
+          <div class="step-cap"><span class="num">1</span>진료과 선택</div>
+          <button class="pill sel">
+            <span class="ic">🩺</span>
+            <span class="col"><span class="k">진료과</span><span class="v">내과</span></span>
+            <span class="car">▾</span>
+          </button>
+
+          <!-- step 2: 의사 -->
+          <div class="step-cap"><span class="num">2</span>의사 선택</div>
+          <button class="pill sel">
+            <span class="av-doc">이</span>
+            <span class="col"><span class="v">이정훈 과장</span><span class="meta">내과 · 고혈압·당뇨 진료</span></span>
+            <span class="check">✓</span>
+          </button>
+
+          <!-- step 3: 날짜 -->
+          <div class="step-cap"><span class="num">3</span>날짜 선택</div>
+          <div class="rail-wrap">
+            <div class="rail">
+              <div class="dchip sel">
+                <span class="dow">오늘</span><span class="dd tnum">19</span><span class="tag">금</span>
+              </div>
+              <div class="dchip today">
+                <span class="dow">내일</span><span class="dd tnum">20</span><span class="tag">토</span>
+              </div>
+              <div class="dchip off">
+                <span class="dow sun">일</span><span class="dd tnum">21</span><span class="tag">휴진</span>
+              </div>
+              <div class="dchip">
+                <span class="dow">월</span><span class="dd tnum">22</span><span class="tag">　</span>
+              </div>
+              <div class="dchip">
+                <span class="dow">화</span><span class="dd tnum">23</span><span class="tag">　</span>
+              </div>
+              <div class="dchip">
+                <span class="dow">수</span><span class="dd tnum">24</span><span class="tag">　</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- step 4: 시간 슬롯 그리드 -->
+          <div class="step-cap"><span class="num">4</span>시간 선택</div>
+          <div class="slot-legend">
+            <span class="lg"><span class="sw av"></span>가능</span>
+            <span class="lg"><span class="sw se"></span>선택됨</span>
+            <span class="lg"><span class="sw fu"></span>마감</span>
+          </div>
+
+          <div class="slot-period">오전</div>
+          <div class="slot-grid">
+            <div class="slot full">09:00<span class="tag">마감</span></div>
+            <div class="slot">09:30</div>
+            <div class="slot">10:00</div>
+            <div class="slot full">10:30<span class="tag">마감</span></div>
+            <div class="slot">11:00</div>
+            <div class="slot">11:30</div>
+          </div>
+
+          <div class="slot-period">오후</div>
+          <div class="slot-grid">
+            <div class="slot">14:00</div>
+            <div class="slot sel">14:30</div>
+            <div class="slot">15:00</div>
+            <div class="slot full">15:30<span class="tag">마감</span></div>
+            <div class="slot">16:00</div>
+            <div class="slot">16:30</div>
+            <div class="slot">17:00</div>
+            <div class="slot">17:30</div>
+            <div class="slot full">18:00<span class="tag">마감</span></div>
+          </div>
+
+          <!-- selection summary -->
+          <div class="pick-summary">
+            <span class="gl">📅</span>
+            <span class="col">
+              <span class="k">선택한 예약</span>
+              <span class="v"><b>6월 19일 (금) 오후 2:30</b> · 이정훈 과장</span>
+            </span>
+          </div>
+
+        </div><!-- /body -->
+
+        <!-- sticky CTA -->
+        <div class="cta-dock">
+          <div class="cta-help">예약 후 변경·취소는 마이 메뉴에서 하실 수 있어요.</div>
+          <button class="btn-cta"><span class="ic">✓</span>예약 확정하기</button>
+        </div>
+
+      </div><!-- /screen -->
+    </div><!-- /phone -->
+  </div>
+
+  <!-- ============================================================
+       SCREEN 2 — 내 진료내역 (records)
+       ============================================================ -->
+  <div class="device">
+    <div class="device-label">
+      <span class="n">2</span><b>내 진료내역</b><span>· 지난 진료 · 처방 · 검사 결과</span>
+    </div>
+
+    <div class="phone">
+      <div class="notch"></div>
+      <div class="screen">
+
+        <!-- status bar -->
+        <div class="statusbar">
+          <span class="tnum">9:41</span>
+          <span class="sb-r">
+            <span class="bars"><i></i><i></i><i></i><i></i></span>
+            <span style="font-weight:700">5G</span>
+            <span class="batt"></span>
+          </span>
+        </div>
+
+        <!-- top app bar -->
+        <div class="appbar">
+          <div class="logo"></div>
+          <div class="brand"><b>내 기록</b><span>김영희 님</span></div>
+          <div class="av">김</div>
+        </div>
+
+        <!-- scroll body -->
+        <div class="body">
+
+          <div class="greet">
+            <h1>지난 진료 내역</h1>
+            <p>최근 진료부터 차례대로 보여 드려요.</p>
+          </div>
+
+          <!-- trust note (RLS) -->
+          <div class="trust">
+            <span class="shield">🔒</span>
+            <span><b>김영희 님 본인</b>의 정보만 안전하게 표시됩니다. 다른 사람은 볼 수 없어요.</span>
+          </div>
+
+          <div class="list-cap">2026년</div>
+
+          <!-- VISIT CARD 1 — expanded (완료) -->
+          <div class="vcard open">
+            <div class="v-top">
+              <span class="v-date">2026. 6. 19. (금)</span>
+              <span class="badge b-done"><span class="dot"></span>완료</span>
+            </div>
+            <div class="v-mid">
+              <span class="dav">이</span>
+              <span class="who"><b>이정훈 과장</b><span>내과 · 오후 2:30 진료</span></span>
+              <span class="chev">⌄</span>
+            </div>
+            <div class="v-dx">
+              <span class="k">진단</span>
+              <span class="dx">고혈압<span class="lay">(혈압이 높은 상태)</span></span>
+            </div>
+
+            <!-- expanded detail -->
+            <div class="v-detail">
+
+              <!-- 처방 내역 -->
+              <div class="detail-blk">
+                <div class="d-head"><span class="di">💊</span>처방받은 약</div>
+                <div class="rx">
+                  <span class="pill-ic">💊</span>
+                  <span class="rx-col">
+                    <span class="nm">암로디핀 5mg</span>
+                    <span class="dose">하루 <b>1번</b>, <b>아침 식사 후</b> 한 알 드세요</span>
+                  </span>
+                  <span class="days">28일분</span>
+                </div>
+                <div class="rx">
+                  <span class="pill-ic">💊</span>
+                  <span class="rx-col">
+                    <span class="nm">아토르바스타틴 10mg</span>
+                    <span class="dose">하루 <b>1번</b>, <b>저녁 식사 후</b> 한 알 드세요</span>
+                  </span>
+                  <span class="days">28일분</span>
+                </div>
+              </div>
+
+              <!-- 검사 결과 -->
+              <div class="detail-blk">
+                <div class="d-head"><span class="di">🧪</span>검사 결과 요약</div>
+                <div class="lab">
+                  <span class="lab-col">
+                    <span class="nm">혈압</span>
+                    <span class="sum">조금 높은 편이에요. 약을 꾸준히 드셔 주세요.</span>
+                  </span>
+                  <span class="val tnum">142/90</span>
+                  <span class="flag watch">주의</span>
+                </div>
+                <div class="lab">
+                  <span class="lab-col">
+                    <span class="nm">콜레스테롤</span>
+                    <span class="sum">정상 범위 안에 있어요.</span>
+                  </span>
+                  <span class="val tnum">185</span>
+                  <span class="flag ok">정상</span>
+                </div>
+              </div>
+
+              <div class="v-detail-note">자세한 검사 수치와 진료 기록은 진료받으신 의원에 보관되어 있어요.</div>
+
+            </div>
+          </div>
+
+          <!-- VISIT CARD 2 — collapsed (완료) -->
+          <div class="vcard">
+            <div class="v-top">
+              <span class="v-date">2026. 3. 12. (수)</span>
+              <span class="badge b-done"><span class="dot"></span>완료</span>
+            </div>
+            <div class="v-mid">
+              <span class="dav">이</span>
+              <span class="who"><b>이정훈 과장</b><span>내과 · 오전 10:00 진료</span></span>
+              <span class="chev">›</span>
+            </div>
+            <div class="v-dx">
+              <span class="k">진단</span>
+              <span class="dx">고혈압 정기 진료<span class="lay">(혈압 약 처방)</span></span>
+            </div>
+          </div>
+
+          <!-- VISIT CARD 3 — collapsed (취소) -->
+          <div class="vcard">
+            <div class="v-top">
+              <span class="v-date">2026. 2. 5. (목)</span>
+              <span class="badge b-cancel"><span class="dot"></span><span class="lbl">취소</span></span>
+            </div>
+            <div class="v-mid">
+              <span class="dav" style="background:linear-gradient(135deg,#9aa7ab,#64758A)">박</span>
+              <span class="who"><b>박서윤 과장</b><span>이비인후과 · 오후 4:00 예약</span></span>
+              <span class="chev">›</span>
+            </div>
+            <div class="v-dx">
+              <span class="k">사유</span>
+              <span class="dx" style="font-size:13.5px;font-weight:500;color:var(--text-muted)">본인 사정으로 예약을 취소했어요</span>
+            </div>
+          </div>
+
+          <div class="list-cap">2025년</div>
+
+          <!-- VISIT CARD 4 — collapsed (완료) -->
+          <div class="vcard">
+            <div class="v-top">
+              <span class="v-date">2025. 12. 18. (목)</span>
+              <span class="badge b-done"><span class="dot"></span>완료</span>
+            </div>
+            <div class="v-mid">
+              <span class="dav">이</span>
+              <span class="who"><b>이정훈 과장</b><span>내과 · 오전 11:30 진료</span></span>
+              <span class="chev">›</span>
+            </div>
+            <div class="v-dx">
+              <span class="k">진단</span>
+              <span class="dx">감기<span class="lay">(목감기·기침)</span></span>
+            </div>
+          </div>
+
+        </div><!-- /body -->
+
+        <!-- bottom tab bar -->
+        <div class="tabbar">
+          <div class="tab">
+            <span class="ti"><span class="gl-cal"></span></span>
+            <span class="tl">예약</span>
+          </div>
+          <div class="tab on">
+            <span class="ti"><span class="gl-doc"></span></span>
+            <span class="tl">내 기록</span>
+          </div>
+          <div class="tab">
+            <span class="ti"><span class="gl-user"></span><span class="bdg">1</span></span>
+            <span class="tl">마이</span>
+          </div>
+        </div>
+
+      </div><!-- /screen -->
+    </div><!-- /phone -->
+  </div>
+
+</div><!-- /stage -->
+
+<div class="pagenote">
+  <b>환자 앱 (Flutter webview · 반응형 Next.js)</b> — PMS의 유일한 모바일 표면. 직원용 데스크톱 셸(사이드바·탑바)을 상속하지 않고
+  자체 폰 셸(상단 앱바 + 하단 탭바)을 사용합니다.<br>
+  <b>새 환자용 컴포넌트:</b> 시간 슬롯 그리드 · 진료내역 카드(visit card) · 하단 탭바 · 날짜 칩 레일 · 환자용 A3 상태 배지.
+  <b>토큰:</b> 대기 현황판에서 틸-블루 팔레트·타이포 상속, 환자 톤(따뜻·쉬운 말·큰 터치)으로 조정.
+</div>
+
+</body>
+</html>

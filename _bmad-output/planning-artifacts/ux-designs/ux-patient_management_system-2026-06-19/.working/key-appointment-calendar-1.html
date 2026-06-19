@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>예약 캘린더 — 원무/접수 (예약 관리)</title>
+<!--
+================================================================================
+  KEY SCREEN — 예약 캘린더 / 슬롯 그리드 (Appointment Calendar · Slot Grid)  ·  role: 원무/접수
+  Governs DESIGN.md / EXPERIENCE.md:
+    Flow:        예약 생성 → 더블부킹 차단 → 노쇼 처리 → 휴진/차단  (예약 lifecycle)
+    Components:  time-grid, slot-block, slot-legend, booking-peek (slide-over)
+                 + reused: sidebar, topbar, page-header, button(primary/ghost), select, datepick
+    State:       예약상태 (A3 dot + colored label)
+
+  --------------------------------------------------------------------------------
+  [REUSED VERBATIM from key-waiting-board-1.html — do NOT redesign]
+    • Global shell: left sidebar (~240px, 원무/접수 role) + top bar (~52px).
+        nav active item swapped to "예약 관리".
+    • Full palette / typography / button / badge / select / datepick tokens lifted.
+    • Palette 클리니컬 틸-블루:
+        --background #FAFCFC  --surface #FFFFFF  --surface-muted #EFF5F5
+        --border #D9E5E5  --text-primary #0E1C1D  --text-muted #54686A
+        --primary #0E7C8E (teal = action/brand ONLY)  --ring #2C9FB0
+    • Pretendard Windows-first stack. tabular-nums for times/numbers. Ctrl hints.
+      Lucide-style Unicode glyphs only, NO network / NO @font-face / NO images.
+
+  [NEW LAYER — this screen introduces]
+    • TIME-GRID: rows = 30분 단위 시간대 (09:00~17:30), columns = 의사 (3 doctors).
+        Time labels left rail, tabular-nums. Survives ~1280px (grid stays dense).
+    • SLOT-BLOCK states — MONITOR-ROBUST, encoded by FILL + BORDER + PATTERN, never
+      shadow alone (so states read on cheap/low-gamut clinic monitors):
+        · 확정(예약됨) : indigo-tinted fill + solid indigo left-bar + A3 dot ◐ + 환자명
+        · 가능(빈슬롯) : transparent, dashed-on-hover affordance "+ 예약"
+        · 노쇼        : amber-tinted fill + amber left-bar + 노쇼 badge ●
+        · 취소        : rose-tinted fill + rose left-bar + 취소선(line-through) ✕
+        · 휴진/차단   : grey + repeating-linear-gradient diagonal stripes (PATTERN), non-interactive
+        · 점심시간    : muted band spanning all columns (non-bookable), label "점심"
+    • 예약상태 A3 mapping (this screen): 확정=인디고#4F46C7◐ / 완료=그린#2C8466✓ /
+        취소=로즈#C2433B✕ / 노쇼=앰버#BC7E12●
+    • DOUBLE-BOOKING block: an attempted overlap renders an inline warning chip
+        "더블부킹 차단 — 동일 시간대 예약 불가" (non-savable), demonstrating the invariant.
+    • SLOT-LEGEND: compact key mapping each slot state to fill/border/pattern.
+    • BOOKING-PEEK: static right slide-over stub for 예약 생성/수정
+        (진료과 · 의사 · 환자 검색 · 날짜/시간 · 메모 · SMS 발송 체크 · 저장/취소).
+
+  Constraints honored: inline CSS only, NO JS, NO network, fully offline.
+                       Logo = text + CSS shape. Desktop frame ~1440px content.
+================================================================================
+-->
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+
+  :root{
+    /* ---- 클리니컬 틸-블루 THEME (LOCKED, lifted) ---- */
+    --background:#FAFCFC; --surface:#FFFFFF; --surface-muted:#EFF5F5; --border:#D9E5E5;
+    --text-primary:#0E1C1D; --text-muted:#54686A; --text-disabled:#97A9AA;
+    --primary:#0E7C8E; --primary-foreground:#FFFFFF; --primary-hover:#0A6675; --ring:#2C9FB0;
+    --danger:#C2433B;
+
+    /* ---- 예약상태 colors (A3, FIXED for this screen) ---- */
+    --st-confirm:#4F46C7;   /* 확정 indigo  ◐ */
+    --st-done:#2C8466;      /* 완료 green   ✓ */
+    --st-cancel:#C2433B;    /* 취소 rose    ✕ */
+    --st-noshow:#BC7E12;    /* 노쇼 amber   ● */
+    --st-noshow-ink:#8A5D09;  /* amber label darkened for white-bg legibility */
+    --st-block:#8A939B;     /* 휴진/차단 grey (pattern carrier) */
+
+    --sidebar-w:240px;
+  }
+
+  /* Pretendard Windows-first → 맑은 고딕 → 맥 폴백. NO @font-face / NO network. */
+  body{
+    font-family:'Pretendard Variable',Pretendard,'Malgun Gothic','맑은 고딕','Apple SD Gothic Neo',-apple-system,system-ui,sans-serif;
+    background:#e7eaed; color:var(--text-primary); font-size:13px; line-height:1.5;
+  }
+
+  /* ============================================================
+     BROWSER FRAME (desktop chrome, ~1440px content)  [reused]
+     ============================================================ */
+  .browser{max-width:1440px; margin:26px auto 60px; border:1px solid #cbd3d6;
+    border-radius:12px; overflow:hidden; background:var(--surface);
+    box-shadow:0 1px 2px rgba(16,28,29,.06), 0 8px 28px rgba(16,28,29,.08)}
+  .chrome{height:38px; background:#f1f3f4; border-bottom:1px solid #dfe3e5;
+    display:flex; align-items:center; gap:8px; padding:0 14px}
+  .chrome .dots{display:flex; gap:7px}
+  .chrome .dots i{width:11px;height:11px;border-radius:50%;display:block}
+  .chrome .dots i:nth-child(1){background:#ed6a5e}
+  .chrome .dots i:nth-child(2){background:#f4be4f}
+  .chrome .dots i:nth-child(3){background:#61c454}
+  .chrome .url{flex:1; max-width:560px; margin:0 auto; height:23px; background:#fff;
+    border:1px solid #dfe3e5; border-radius:6px; display:flex; align-items:center;
+    gap:7px; padding:0 10px; font-size:11.5px; color:var(--text-muted)}
+  .chrome .url .lock{font-size:9px;color:var(--st-done)}
+  .chrome .url b{color:var(--text-primary);font-weight:500}
+
+  /* ============================================================
+     APP SHELL  (sidebar + topbar grid)  [reused]
+     ============================================================ */
+  .app{display:grid; grid-template-columns:var(--sidebar-w) 1fr; min-height:760px; background:var(--background)}
+
+  /* ---------- LEFT SIDEBAR ---------- */
+  .sidebar{background:var(--surface); border-right:1px solid var(--border);
+    display:flex; flex-direction:column; min-height:100%}
+  .sb-brand{display:flex; align-items:center; gap:10px; padding:15px 16px 14px;
+    border-bottom:1px solid var(--border)}
+  .sb-logo{width:28px;height:28px;border-radius:8px;flex:none;position:relative;
+    background:linear-gradient(135deg,var(--primary),var(--ring));}
+  .sb-logo::after{content:"";position:absolute;inset:8px;border-radius:2px;
+    background:#fff;clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%,50% 35%,65% 50%,50% 65%,35% 50%)}
+  .sb-brand .wm{display:flex;flex-direction:column;line-height:1.15}
+  .sb-brand .wm b{font-size:14px;font-weight:650;letter-spacing:-.01em;color:var(--text-primary)}
+  .sb-brand .wm span{font-size:10.5px;color:var(--text-muted)}
+
+  .sb-nav{flex:1; padding:12px 10px 8px; overflow:auto}
+  .sb-cap{font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+    color:#8a939b;padding:14px 8px 6px}
+  .sb-cap:first-child{padding-top:2px}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:7px;
+    font-size:13px;color:var(--text-primary);cursor:pointer;position:relative;text-decoration:none;
+    margin-bottom:1px}
+  .nav-item .ic{width:16px;text-align:center;font-size:13px;color:var(--text-muted);flex:none}
+  .nav-item .lbl{flex:1}
+  .nav-item .tail{font-size:11px;color:var(--text-muted);font-variant-numeric:tabular-nums;
+    background:var(--surface-muted);border:1px solid var(--border);border-radius:20px;padding:0 7px}
+  .nav-item:hover{background:var(--surface-muted)}
+  .nav-item.active{background:color-mix(in srgb,var(--primary) 10%,var(--surface));color:var(--primary);font-weight:600}
+  .nav-item.active .ic{color:var(--primary)}
+  .nav-item.active::before{content:"";position:absolute;left:-10px;top:6px;bottom:6px;width:3px;
+    border-radius:0 3px 3px 0;background:var(--primary)}
+  .nav-item.active .tail{background:color-mix(in srgb,var(--primary) 14%,var(--surface));
+    border-color:color-mix(in srgb,var(--primary) 26%,var(--surface));color:var(--primary)}
+
+  .sb-foot{border-top:1px solid var(--border);padding:8px 10px 10px}
+  .sb-foot .nav-item{font-size:12.5px}
+  .sb-user{display:flex;align-items:center;gap:10px;padding:9px 9px 4px;margin-top:4px;
+    border-top:1px solid var(--surface-muted)}
+  .sb-user .av{width:30px;height:30px;border-radius:50%;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:12px;font-weight:600;color:#fff;
+    background:linear-gradient(135deg,#3a8d9c,#0E7C8E)}
+  .sb-user .who{flex:1;line-height:1.2;min-width:0}
+  .sb-user .who b{font-size:12.5px;font-weight:600;display:block;color:var(--text-primary)}
+  .sb-user .who span{font-size:10.5px;color:var(--text-muted)}
+  .role-badge{font-size:10px;font-weight:700;letter-spacing:.02em;color:var(--primary);
+    background:color-mix(in srgb,var(--primary) 10%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--primary) 26%,var(--surface));
+    border-radius:5px;padding:1px 6px;flex:none}
+
+  /* ---------- MAIN COLUMN ---------- */
+  .main{display:flex;flex-direction:column;min-width:0}
+
+  /* ---------- TOP BAR ---------- */
+  .topbar{height:52px;background:var(--surface);border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:14px;padding:0 18px;flex:none}
+  .tb-toggle{width:30px;height:30px;border:1px solid var(--border);border-radius:7px;background:var(--surface);
+    color:var(--text-muted);cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;flex:none}
+  .tb-toggle:hover{background:var(--surface-muted)}
+  .tb-crumb{font-size:12.5px;color:var(--text-muted);display:flex;align-items:center;gap:7px;white-space:nowrap}
+  .tb-crumb b{color:var(--text-primary);font-weight:600}
+  .tb-crumb .sep{color:var(--text-disabled)}
+
+  .tb-search{flex:1;max-width:380px;height:33px;background:var(--surface-muted);
+    border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;gap:9px;
+    padding:0 10px;color:var(--text-disabled);font-size:12.5px;cursor:text}
+  .tb-search .mag{font-size:13px;color:var(--text-muted)}
+  .tb-search .ph{flex:1;color:var(--text-disabled)}
+  .tb-search .kbd{font-size:10.5px;font-weight:600;color:var(--text-muted);background:var(--surface);
+    border:1px solid var(--border);border-radius:5px;padding:1px 6px;font-variant-numeric:tabular-nums}
+
+  .tb-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+  .tb-live{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--text-muted);white-space:nowrap}
+  .tb-live .live-dot{width:7px;height:7px;border-radius:50%;background:var(--st-done);flex:none;
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--st-done) 18%,transparent)}
+  .tb-live b{color:var(--st-done);font-weight:600}
+  .tb-clock{font-size:12px;color:var(--text-muted);font-variant-numeric:tabular-nums;white-space:nowrap;
+    border-left:1px solid var(--border);padding-left:14px}
+  .tb-clock b{color:var(--text-primary);font-weight:600}
+  .tb-bell{position:relative;width:32px;height:32px;border:1px solid var(--border);border-radius:8px;
+    background:var(--surface);color:var(--text-muted);display:flex;align-items:center;justify-content:center;
+    font-size:15px;cursor:pointer;flex:none}
+  .tb-bell:hover{background:var(--surface-muted)}
+  .tb-bell .badge{position:absolute;top:-5px;right:-5px;min-width:16px;height:16px;border-radius:9px;
+    background:var(--danger);color:#fff;font-size:9.5px;font-weight:700;display:flex;align-items:center;
+    justify-content:center;padding:0 4px;border:1.5px solid var(--surface);font-variant-numeric:tabular-nums}
+  .tb-av{width:32px;height:32px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-weight:600;color:#fff;background:linear-gradient(135deg,#3a8d9c,#0E7C8E);cursor:pointer}
+
+  /* ============================================================
+     CONTENT  — split: calendar (flex) + booking peek (static)
+     ============================================================ */
+  .content{padding:20px 24px 40px;overflow:auto}
+
+  /* ---------- page header row  [reused tokens] ---------- */
+  .page-header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  .ph-l h1{font-size:20px;font-weight:600;letter-spacing:-.02em;color:var(--text-primary);line-height:1.2}
+  .ph-l .sub{font-size:12.5px;color:var(--text-muted);margin-top:5px;display:flex;align-items:center;gap:7px}
+  .ph-l .sub .sep{color:var(--text-disabled)}
+  .ph-r{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+
+  .sel{height:32px;border:1px solid var(--border);background:var(--surface);border-radius:7px;
+    padding:0 10px;font-size:12.5px;color:var(--text-primary);display:inline-flex;align-items:center;gap:8px;
+    cursor:pointer;font-family:inherit}
+  .sel .k{font-size:10px;color:var(--text-disabled)}
+  .sel .v{font-weight:500}
+  .sel .car{font-size:9px;color:var(--text-muted)}
+  .sel:hover{background:var(--surface-muted)}
+  .datepick{height:32px;border:1px solid var(--border);background:var(--surface);border-radius:7px;
+    display:inline-flex;align-items:center;overflow:hidden}
+  .datepick .arw{width:28px;height:100%;display:flex;align-items:center;justify-content:center;
+    color:var(--text-muted);cursor:pointer;font-size:11px}
+  .datepick .arw:hover{background:var(--surface-muted)}
+  .datepick .day{padding:0 11px;font-size:12.5px;font-weight:600;color:var(--text-primary);
+    border-left:1px solid var(--border);border-right:1px solid var(--border);font-variant-numeric:tabular-nums}
+  .today-btn{height:32px;border:1px solid var(--border);background:var(--surface);border-radius:7px;
+    padding:0 11px;font-size:12.5px;font-weight:500;color:var(--text-primary);cursor:pointer;font-family:inherit}
+  .today-btn:hover{background:var(--surface-muted)}
+
+  /* view toggle (일/주) — uses seg token family */
+  .seg{display:inline-flex;border:1px solid var(--border);border-radius:7px;overflow:hidden;font-size:12px;height:32px}
+  .seg span{padding:0 13px;display:inline-flex;align-items:center;color:var(--text-muted);cursor:pointer;border-right:1px solid var(--border)}
+  .seg span:last-child{border-right:none}
+  .seg span.on{background:color-mix(in srgb,var(--primary) 10%,var(--surface));color:var(--primary);font-weight:600}
+
+  .btn-primary{font-family:inherit;font-size:13px;font-weight:550;color:var(--primary-foreground);
+    background:var(--primary);border:1px solid var(--primary-hover);border-radius:7px;padding:0 14px;height:32px;
+    cursor:pointer;display:inline-flex;align-items:center;gap:7px}
+  .btn-primary:hover{background:var(--primary-hover)}
+  .btn-primary .ic{font-size:11px;line-height:1}
+  .btn-ghost{font-family:inherit;font-size:11.5px;font-weight:550;color:var(--text-muted);
+    background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:4px 9px;cursor:pointer;
+    display:inline-flex;align-items:center;gap:5px}
+  .btn-ghost:hover{background:var(--surface-muted);color:var(--text-primary)}
+  .btn-ghost.key{color:var(--primary);border-color:color-mix(in srgb,var(--primary) 38%,var(--border));
+    background:color-mix(in srgb,var(--primary) 7%,var(--surface));font-weight:600}
+  .btn-ghost.key:hover{background:color-mix(in srgb,var(--primary) 12%,var(--surface))}
+
+  /* ---------- legend strip (NEW: slot-legend) ---------- */
+  .legend{margin-top:14px;display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+    border:1px solid var(--border);background:var(--surface);border-radius:9px;padding:9px 12px}
+  .legend .lg-cap{font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#8a939b;margin-right:2px}
+  .lg{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--text-primary);font-weight:500}
+  .lg .sw{width:22px;height:15px;border-radius:4px;flex:none;border:1px solid var(--border)}
+  .lg .sw.confirm{background:color-mix(in srgb,var(--st-confirm) 12%,#fff);border-color:color-mix(in srgb,var(--st-confirm) 40%,var(--border));
+    border-left:3px solid var(--st-confirm)}
+  .lg .sw.free{background:var(--surface);border:1px dashed var(--text-disabled)}
+  .lg .sw.noshow{background:color-mix(in srgb,var(--st-noshow) 14%,#fff);border-color:color-mix(in srgb,var(--st-noshow) 42%,var(--border));
+    border-left:3px solid var(--st-noshow)}
+  .lg .sw.cancel{background:color-mix(in srgb,var(--st-cancel) 11%,#fff);border-color:color-mix(in srgb,var(--st-cancel) 40%,var(--border));
+    border-left:3px solid var(--st-cancel)}
+  .lg .sw.block{border-color:#c7cdd0;
+    background:repeating-linear-gradient(135deg,#eceef0 0 5px,#d7dbde 5px 10px)}
+  .lg .sw.lunch{background:var(--surface-muted);border-color:var(--border)}
+  .legend .lg-note{margin-left:auto;font-size:11px;color:var(--text-muted)}
+
+  /* layout: calendar + peek side by side */
+  .work{margin-top:14px;display:grid;grid-template-columns:1fr 318px;gap:16px;align-items:start}
+
+  /* ============================================================
+     TIME-GRID (NEW core component)
+     rows = 30분 slots · cols = time-rail + 3 doctor columns
+     ============================================================ */
+  .cal{border:1px solid var(--border);background:var(--surface);border-radius:11px;overflow:hidden;min-width:0}
+  .cal-head{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;
+    border-bottom:1px solid var(--border)}
+  .cal-head .ttl{font-size:13.5px;font-weight:600;color:var(--text-primary);display:inline-flex;align-items:center;gap:9px}
+  .cal-head .ttl .cnt{font-size:11px;font-weight:500;color:var(--text-muted);background:var(--surface-muted);
+    border:1px solid var(--border);border-radius:20px;padding:1px 9px;font-variant-numeric:tabular-nums}
+  .cal-head .hint{font-size:11px;color:var(--text-muted)}
+
+  /* column header row (doctors) */
+  .grid{--rail:62px;display:grid;grid-template-columns:var(--rail) repeat(3,1fr)}
+  .col-h{padding:9px 10px;border-bottom:1px solid var(--border);background:var(--background);
+    border-right:1px solid var(--border);text-align:left}
+  .col-h.rail{display:flex;align-items:flex-end;justify-content:flex-end;
+    font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-disabled)}
+  .col-h .doc{font-size:12.5px;font-weight:600;color:var(--text-primary)}
+  .col-h .meta{font-size:10.5px;color:var(--text-muted);margin-top:2px;display:flex;align-items:center;gap:6px}
+  .col-h .meta .room{color:var(--text-primary);font-weight:500}
+  .col-h:last-child{border-right:none}
+
+  /* time rail cell */
+  .t-rail{border-right:1px solid var(--border);border-bottom:1px solid var(--border);
+    background:var(--background);font-size:11px;font-variant-numeric:tabular-nums;color:var(--text-muted);
+    padding:5px 8px 0;text-align:right;min-height:46px;font-weight:500}
+  .t-rail.half{color:var(--text-disabled);font-weight:400}
+
+  /* a generic grid cell wrapper (one slot) */
+  .cell{border-right:1px solid var(--border);border-bottom:1px solid var(--border);min-height:46px;
+    position:relative;padding:3px}
+  .cell:nth-child(4n+1){} /* rail handled separately */
+  .grid > .cell:last-child{border-right:none}
+
+  /* free slot affordance */
+  .slot-free{position:absolute;inset:3px;border-radius:6px;display:flex;align-items:center;justify-content:center;
+    font-size:11px;color:var(--text-disabled);cursor:pointer;border:1px dashed transparent}
+  .slot-free .plus{opacity:0;transition:none;font-weight:600;color:var(--primary)}
+  .slot-free:hover{border-color:color-mix(in srgb,var(--primary) 45%,var(--border));
+    background:color-mix(in srgb,var(--primary) 5%,var(--surface))}
+  .slot-free:hover .plus{opacity:1}
+
+  /* slot-block (NEW): base — fill + border + left-bar, never shadow-only */
+  .slot{position:absolute;inset:3px;border-radius:6px;padding:5px 7px 5px 8px;cursor:pointer;
+    border:1px solid var(--border);display:flex;flex-direction:column;gap:3px;overflow:hidden;
+    border-left-width:3px}
+  .slot .who{font-size:12px;font-weight:600;color:var(--text-primary);line-height:1.2;display:flex;align-items:center;gap:5px}
+  .slot .who .dot{width:7px;height:7px;border-radius:50%;flex:none}
+  .slot .sub{font-size:10.5px;color:var(--text-muted);display:flex;align-items:center;gap:5px;line-height:1.2}
+  .slot .sub .gl{font-size:9px;font-weight:700}
+  .slot.span2{height:auto;bottom:3px}
+
+  /* confirmed (확정) — indigo */
+  .slot.s-confirm{background:color-mix(in srgb,var(--st-confirm) 9%,var(--surface));
+    border-color:color-mix(in srgb,var(--st-confirm) 32%,var(--border));border-left-color:var(--st-confirm)}
+  .slot.s-confirm .who .dot{background:var(--st-confirm)}
+  .slot.s-confirm:hover{background:color-mix(in srgb,var(--st-confirm) 14%,var(--surface))}
+
+  /* completed (완료) — green (past appts that arrived) */
+  .slot.s-done{background:color-mix(in srgb,var(--st-done) 9%,var(--surface));
+    border-color:color-mix(in srgb,var(--st-done) 30%,var(--border));border-left-color:var(--st-done)}
+  .slot.s-done .who .dot{background:var(--st-done)}
+  .slot.s-done .who{color:var(--text-muted)}
+  .slot.s-done:hover{background:color-mix(in srgb,var(--st-done) 13%,var(--surface))}
+
+  /* no-show (노쇼) — amber */
+  .slot.s-noshow{background:color-mix(in srgb,var(--st-noshow) 13%,var(--surface));
+    border-color:color-mix(in srgb,var(--st-noshow) 40%,var(--border));border-left-color:var(--st-noshow)}
+  .slot.s-noshow .who .dot{background:var(--st-noshow)}
+  .slot.s-noshow:hover{background:color-mix(in srgb,var(--st-noshow) 18%,var(--surface))}
+  .slot .noshow-tag{font-size:9.5px;font-weight:700;color:#fff;background:var(--st-noshow);
+    border-radius:4px;padding:0 5px;letter-spacing:.02em}
+
+  /* cancelled (취소) — rose + strikethrough */
+  .slot.s-cancel{background:color-mix(in srgb,var(--st-cancel) 8%,var(--surface));
+    border-color:color-mix(in srgb,var(--st-cancel) 32%,var(--border));border-left-color:var(--st-cancel)}
+  .slot.s-cancel .who .dot{background:var(--st-cancel)}
+  .slot.s-cancel .who .nm{text-decoration:line-through;text-decoration-thickness:1px;color:var(--text-muted)}
+  .slot.s-cancel .cancel-gl{color:var(--st-cancel);font-weight:700}
+
+  /* 휴진 / 차단 — diagonal stripe PATTERN (not shadow), non-interactive */
+  .slot-block{position:absolute;inset:3px;border-radius:6px;border:1px solid #c7cdd0;cursor:not-allowed;
+    background:repeating-linear-gradient(135deg,#eceef0 0 7px,#dde1e3 7px 14px);
+    display:flex;align-items:center;justify-content:center}
+  .slot-block .lbl{font-size:11px;font-weight:700;letter-spacing:.04em;color:#6c757a;
+    background:color-mix(in srgb,#fff 78%,transparent);border-radius:5px;padding:2px 8px;border:1px solid #d2d7d9}
+
+  /* 점심시간 band — spans all 3 doctor columns */
+  .lunch-band{grid-column:2 / span 3;border-bottom:1px solid var(--border);min-height:34px;
+    background:repeating-linear-gradient(90deg,var(--surface-muted) 0 14px,#e7eded 14px 16px);
+    display:flex;align-items:center;justify-content:center;gap:9px;color:var(--text-muted)}
+  .lunch-band .lbl{font-size:11.5px;font-weight:600;letter-spacing:.06em}
+  .lunch-band .rng{font-size:10.5px;font-variant-numeric:tabular-nums;color:var(--text-disabled)}
+  .lunch-rail{border-right:1px solid var(--border);border-bottom:1px solid var(--border);
+    background:var(--background);font-size:11px;font-variant-numeric:tabular-nums;color:var(--text-disabled);
+    padding:5px 8px 0;text-align:right;min-height:34px}
+
+  /* double-booking inline warning (NEW) — overlap attempt blocked */
+  .slot.s-warn{background:color-mix(in srgb,var(--danger) 8%,var(--surface));
+    border:1px dashed var(--danger);border-left:3px solid var(--danger)}
+  .slot .warn-chip{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:600;color:var(--danger);line-height:1.25}
+  .slot .warn-chip .gl{font-size:11px}
+
+  /* ============================================================
+     BOOKING-PEEK (NEW: static slide-over stub on the right)
+     ============================================================ */
+  .peek{border:1px solid var(--border);background:var(--surface);border-radius:11px;overflow:hidden;
+    position:sticky;top:0}
+  .peek-head{display:flex;align-items:center;gap:9px;padding:12px 14px;border-bottom:1px solid var(--border);background:var(--background)}
+  .peek-head .pk-ttl{font-size:13.5px;font-weight:600;color:var(--text-primary)}
+  .peek-head .pk-sub{font-size:11px;color:var(--text-muted)}
+  .peek-head .x{margin-left:auto;width:24px;height:24px;border:1px solid var(--border);border-radius:6px;background:var(--surface);
+    color:var(--text-muted);font-size:13px;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .peek-head .x:hover{background:var(--surface-muted)}
+  .peek-body{padding:13px 14px;display:flex;flex-direction:column;gap:12px}
+  .fld{display:flex;flex-direction:column;gap:5px}
+  .fld > label{font-size:11px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:5px}
+  .fld > label .req{color:var(--danger)}
+  .ctl{height:33px;border:1px solid var(--border);background:var(--surface);border-radius:7px;
+    padding:0 10px;font-size:12.5px;color:var(--text-primary);display:flex;align-items:center;gap:8px;font-family:inherit}
+  .ctl.placeholder{color:var(--text-disabled)}
+  .ctl .car{margin-left:auto;font-size:9px;color:var(--text-muted)}
+  .ctl .mag{font-size:12px;color:var(--text-muted)}
+  .ctl.search{cursor:text}
+  .ctl.picked{border-color:color-mix(in srgb,var(--primary) 38%,var(--border));
+    background:color-mix(in srgb,var(--primary) 5%,var(--surface))}
+  .ctl.picked b{font-weight:600}
+  .ctl.picked .chart{font-size:11px;color:var(--text-muted);font-variant-numeric:tabular-nums;margin-left:auto}
+  .fld-row{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+  .seg-row{display:flex;border:1px solid var(--border);border-radius:7px;overflow:hidden}
+  .seg-row span{flex:1;text-align:center;padding:6px 0;font-size:11.5px;color:var(--text-muted);cursor:pointer;border-right:1px solid var(--border)}
+  .seg-row span:last-child{border-right:none}
+  .seg-row span.on{background:color-mix(in srgb,var(--primary) 10%,var(--surface));color:var(--primary);font-weight:600}
+  textarea.ctl{height:auto;min-height:54px;padding:8px 10px;line-height:1.5;resize:none;font-family:inherit;align-items:flex-start}
+  .chk{display:flex;align-items:flex-start;gap:9px;border:1px solid var(--border);border-radius:8px;padding:9px 11px;
+    background:var(--surface-muted)}
+  .chk .box{width:16px;height:16px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);
+    color:#fff;font-size:10px;display:flex;align-items:center;justify-content:center;flex:none;margin-top:1px}
+  .chk .txt{line-height:1.4}
+  .chk .txt b{font-size:12px;font-weight:600;color:var(--text-primary);display:block}
+  .chk .txt span{font-size:10.5px;color:var(--text-muted)}
+  .peek-foot{padding:11px 14px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;background:var(--background)}
+  .peek-foot .btn-ghost{height:33px;padding:0 14px;font-size:12.5px}
+  .peek-foot .btn-primary{flex:1;justify-content:center}
+
+  .foot-note{margin-top:18px;font-size:11px;color:var(--text-disabled);line-height:1.7}
+  .foot-note b{color:var(--text-muted);font-weight:600}
+
+  /* density survival ~1280px: tighten rail + slot text */
+  @media (max-width:1340px){
+    .work{grid-template-columns:1fr 300px}
+  }
+</style>
+</head>
+<body>
+<div class="browser">
+
+  <!-- desktop browser chrome -->
+  <div class="chrome">
+    <span class="dots"><i></i><i></i><i></i></span>
+    <div class="url"><span class="lock">●</span><b>pms.ourclinic.kr</b>/operations/appointments</div>
+  </div>
+
+  <!-- ===================== APP SHELL ===================== -->
+  <div class="app">
+
+    <!-- ---------- LEFT SIDEBAR (예약 관리 active) ---------- -->
+    <aside class="sidebar">
+      <div class="sb-brand">
+        <div class="sb-logo"></div>
+        <div class="wm"><b>○○의원</b><span>외래 진료 관리</span></div>
+      </div>
+
+      <nav class="sb-nav">
+        <div class="sb-cap">운영</div>
+        <a class="nav-item"><span class="ic">▦</span><span class="lbl">대기 현황</span><span class="tail">11</span></a>
+        <a class="nav-item"><span class="ic">＋</span><span class="lbl">접수</span></a>
+        <a class="nav-item active"><span class="ic">▤</span><span class="lbl">예약 관리</span><span class="tail">38</span></a>
+
+        <div class="sb-cap">환자</div>
+        <a class="nav-item"><span class="ic">⊕</span><span class="lbl">환자 등록</span></a>
+        <a class="nav-item"><span class="ic">⌕</span><span class="lbl">환자 검색</span></a>
+
+        <div class="sb-cap">정산</div>
+        <a class="nav-item"><span class="ic">₩</span><span class="lbl">수납</span></a>
+        <a class="nav-item"><span class="ic">🖶</span><span class="lbl">문서 출력</span></a>
+      </nav>
+
+      <div class="sb-foot">
+        <a class="nav-item"><span class="ic">⚙</span><span class="lbl">설정</span></a>
+        <a class="nav-item"><span class="ic">?</span><span class="lbl">도움말</span></a>
+        <div class="sb-user">
+          <div class="av">김</div>
+          <div class="who"><b>김원무</b><span>접수 데스크 1</span></div>
+          <span class="role-badge">원무</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ---------- MAIN COLUMN ---------- -->
+    <div class="main">
+
+      <!-- ---------- TOP BAR ---------- -->
+      <header class="topbar">
+        <button class="tb-toggle" title="사이드바 접기">≡</button>
+        <div class="tb-crumb">운영<span class="sep">›</span><b>예약 관리</b></div>
+
+        <div class="tb-search">
+          <span class="mag">⌕</span>
+          <span class="ph">환자명 · 차트번호 · 연락처 검색</span>
+          <span class="kbd">Ctrl K</span>
+        </div>
+
+        <div class="tb-right">
+          <div class="tb-live"><span class="live-dot"></span><b>실시간</b> · 방금 동기화</div>
+          <div class="tb-clock">2026-06-19 (목) · <b>14:32</b></div>
+          <button class="tb-bell" title="알림">♢<span class="badge">3</span></button>
+          <div class="tb-av">김</div>
+        </div>
+      </header>
+
+      <!-- ---------- CONTENT ---------- -->
+      <div class="content">
+
+        <!-- page header row -->
+        <div class="page-header">
+          <div class="ph-l">
+            <h1>예약 캘린더</h1>
+            <div class="sub">내과<span class="sep">·</span>2026-06-19 (목)<span class="sep">·</span>확정 28 · 노쇼 2 · 취소 3</div>
+          </div>
+          <div class="ph-r">
+            <span class="seg" title="보기 전환"><span>일</span><span class="on">주</span></span>
+            <span class="sel"><span class="k">진료과</span><span class="v">내과</span><span class="car">▾</span></span>
+            <span class="sel"><span class="k">의사</span><span class="v">전체</span><span class="car">▾</span></span>
+            <button class="today-btn">오늘</button>
+            <span class="datepick"><span class="arw">◀</span><span class="day">2026-06-19 (목)</span><span class="arw">▶</span></span>
+            <button class="btn-primary"><span class="ic">＋</span>예약 추가</button>
+          </div>
+        </div>
+
+        <!-- ===== slot-legend (NEW) ===== -->
+        <div class="legend">
+          <span class="lg-cap">슬롯 상태</span>
+          <span class="lg"><span class="sw confirm"></span>확정 ◐</span>
+          <span class="lg"><span class="sw free"></span>가능(빈 슬롯)</span>
+          <span class="lg"><span class="sw noshow"></span>노쇼 ●</span>
+          <span class="lg"><span class="sw cancel"></span>취소 ✕</span>
+          <span class="lg"><span class="sw block"></span>휴진/차단</span>
+          <span class="lg"><span class="sw lunch"></span>점심시간</span>
+          <span class="lg-note">상태 = 채움 + 테두리 + 패턴 (그림자 의존 없음)</span>
+        </div>
+
+        <!-- ===== work area: calendar + booking peek ===== -->
+        <div class="work">
+
+          <!-- ====================================================
+               TIME-GRID (core)  — cols: time-rail + 3 doctors
+               rows: 09:00 ~ 17:30, 30분 단위
+               ==================================================== -->
+          <section class="cal">
+            <div class="cal-head">
+              <span class="ttl">2026-06-19 (목) · 일별 예약 <span class="cnt">표시 33건</span></span>
+              <span class="hint">슬롯 클릭 → 예약 생성 · 09:00–17:30 · 30분 단위</span>
+            </div>
+
+            <div class="grid">
+
+              <!-- ===== column header row ===== -->
+              <div class="col-h rail">시간</div>
+              <div class="col-h">
+                <div class="doc">이정훈 과장</div>
+                <div class="meta">내과<span class="room">1진료실</span></div>
+              </div>
+              <div class="col-h">
+                <div class="doc">박서연 원장</div>
+                <div class="meta">내과<span class="room">2진료실</span></div>
+              </div>
+              <div class="col-h">
+                <div class="doc">김민수 과장</div>
+                <div class="meta">내과<span class="room">3진료실</span></div>
+              </div>
+
+              <!-- ===== 09:00 ===== -->
+              <div class="t-rail">09:00</div>
+              <div class="cell">
+                <div class="slot s-done"><div class="who"><span class="dot"></span><span class="nm">김영희</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-done)">✓</span>완료 · 초진</div></div>
+              </div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">박철수</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+              <div class="cell"><div class="slot-free"><span class="plus">＋ 예약</span></div></div>
+
+              <!-- ===== 09:30 ===== -->
+              <div class="t-rail half">09:30</div>
+              <div class="cell">
+                <div class="slot s-noshow"><div class="who"><span class="dot"></span><span class="nm">이민준</span><span class="noshow-tag">노쇼</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-noshow-ink)">●</span>미내원 · 재진</div></div>
+              </div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">정수아</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 초진</div></div>
+              </div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">한지우</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+
+              <!-- ===== 10:00 ===== -->
+              <div class="t-rail">10:00</div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">오세훈</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+              <div class="cell"><div class="slot-free"><span class="plus">＋ 예약</span></div></div>
+              <div class="cell">
+                <div class="slot s-cancel"><div class="who"><span class="dot"></span><span class="nm">김영희</span> <span class="cancel-gl">✕</span></div>
+                  <div class="sub" style="color:var(--st-cancel)">취소 · 환자 요청</div></div>
+              </div>
+
+              <!-- ===== 10:30 ===== -->
+              <div class="t-rail half">10:30</div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">박철수</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">이민준</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 초진</div></div>
+              </div>
+              <div class="cell"><div class="slot-free"><span class="plus">＋ 예약</span></div></div>
+
+              <!-- ===== 11:00 ===== -->
+              <div class="t-rail">11:00</div>
+              <div class="cell">
+                <!-- DOUBLE-BOOKING attempt blocked (inline warning) -->
+                <div class="slot s-warn"><div class="who" style="color:var(--danger)">정수아 (충돌)</div>
+                  <div class="warn-chip"><span class="gl">⚠</span>더블부킹 차단 — 11:00 이정훈 과장 이미 예약</div></div>
+              </div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">한지우</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">오세훈</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+
+              <!-- ===== 11:30 ===== -->
+              <div class="t-rail half">11:30</div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">김영희</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+              <div class="cell"><div class="slot-free"><span class="plus">＋ 예약</span></div></div>
+              <div class="cell">
+                <!-- 휴진/차단 single slot: 김민수 과장 외부 일정 -->
+                <div class="slot-block"><span class="lbl">▦ 차단 · 외부일정</span></div>
+              </div>
+
+              <!-- ===== 12:00 — 점심시간 band across all doctor cols ===== -->
+              <div class="lunch-rail">12:00</div>
+              <div class="lunch-band"><span class="lbl">점심시간</span><span class="rng">12:00 – 13:00 · 예약 불가</span></div>
+
+              <!-- ===== 12:30 (still lunch, band continues visually) ===== -->
+              <div class="lunch-rail half">12:30</div>
+              <div class="lunch-band"><span class="rng">— 점심시간 —</span></div>
+
+              <!-- ===== 13:00 ===== -->
+              <div class="t-rail">13:00</div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">박철수</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">정수아</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+              <div class="cell"><div class="slot-free"><span class="plus">＋ 예약</span></div></div>
+
+              <!-- ===== 13:30 ===== -->
+              <div class="t-rail half">13:30</div>
+              <div class="cell">
+                <div class="slot s-noshow"><div class="who"><span class="dot"></span><span class="nm">한지우</span><span class="noshow-tag">노쇼</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-noshow-ink)">●</span>미내원 · 재진</div></div>
+              </div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">이민준</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 초진</div></div>
+              </div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">오세훈</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+
+              <!-- ===== 14:00 ===== -->
+              <div class="t-rail">14:00</div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">김영희</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+              <div class="cell"><div class="slot-free"><span class="plus">＋ 예약</span></div></div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">정수아</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 초진</div></div>
+              </div>
+
+              <!-- ===== 14:30 ===== -->
+              <div class="t-rail half">14:30</div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">박철수</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+              <div class="cell">
+                <div class="slot s-cancel"><div class="who"><span class="dot"></span><span class="nm">한지우</span> <span class="cancel-gl">✕</span></div>
+                  <div class="sub" style="color:var(--st-cancel)">취소 · 일정 변경</div></div>
+              </div>
+              <div class="cell"><div class="slot-free"><span class="plus">＋ 예약</span></div></div>
+
+              <!-- ===== 15:00 ===== -->
+              <div class="t-rail">15:00</div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">이민준</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">오세훈</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">김영희</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+
+              <!-- ===== 15:30 ===== -->
+              <div class="t-rail half">15:30</div>
+              <div class="cell">
+                <!-- 휴진: 이정훈 과장 오후 학회 (single-slot block) -->
+                <div class="slot-block"><span class="lbl">▦ 휴진 · 학회</span></div>
+              </div>
+              <div class="cell"><div class="slot-free"><span class="plus">＋ 예약</span></div></div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">정수아</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 초진</div></div>
+              </div>
+
+              <!-- ===== 16:00 ===== -->
+              <div class="t-rail">16:00</div>
+              <div class="cell">
+                <div class="slot-block"><span class="lbl">▦ 휴진 · 학회</span></div>
+              </div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">박철수</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+              <div class="cell"><div class="slot-free"><span class="plus">＋ 예약</span></div></div>
+
+              <!-- ===== 16:30 ===== -->
+              <div class="t-rail half">16:30</div>
+              <div class="cell">
+                <div class="slot-block"><span class="lbl">▦ 휴진 · 학회</span></div>
+              </div>
+              <div class="cell"><div class="slot-free"><span class="plus">＋ 예약</span></div></div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">한지우</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 재진</div></div>
+              </div>
+
+              <!-- ===== 17:00 ===== -->
+              <div class="t-rail">17:00</div>
+              <div class="cell">
+                <div class="slot-block"><span class="lbl">▦ 휴진 · 학회</span></div>
+              </div>
+              <div class="cell">
+                <div class="slot s-confirm"><div class="who"><span class="dot"></span><span class="nm">이민준</span></div>
+                  <div class="sub"><span class="gl" style="color:var(--st-confirm)">◐</span>확정 · 초진</div></div>
+              </div>
+              <div class="cell"><div class="slot-free"><span class="plus">＋ 예약</span></div></div>
+
+              <!-- ===== 17:30 ===== -->
+              <div class="t-rail half">17:30</div>
+              <div class="cell">
+                <div class="slot-block"><span class="lbl">▦ 휴진 · 학회</span></div>
+              </div>
+              <div class="cell"><div class="slot-free"><span class="plus">＋ 예약</span></div></div>
+              <div class="cell"><div class="slot-free"><span class="plus">＋ 예약</span></div></div>
+
+            </div><!-- /grid -->
+          </section>
+
+          <!-- ====================================================
+               BOOKING-PEEK (static slide-over stub)
+               예약 생성 — 진료과·의사·환자·시간·메모·SMS
+               ==================================================== -->
+          <aside class="peek">
+            <div class="peek-head">
+              <div>
+                <div class="pk-ttl">예약 생성</div>
+                <div class="pk-sub">14:30 · 박서연 원장 슬롯에서 열림</div>
+              </div>
+              <button class="x" title="닫기">✕</button>
+            </div>
+
+            <div class="peek-body">
+
+              <div class="fld">
+                <label>진료과 <span class="req">*</span></label>
+                <div class="ctl"><span>내과</span><span class="car">▾</span></div>
+              </div>
+
+              <div class="fld">
+                <label>담당의 <span class="req">*</span></label>
+                <div class="ctl picked"><b>박서연 원장</b><span class="car">▾</span></div>
+              </div>
+
+              <div class="fld">
+                <label>환자 <span class="req">*</span></label>
+                <div class="ctl picked"><b>정수아</b><span class="chart">차트 00187</span></div>
+                <div class="ctl search placeholder" style="margin-top:6px"><span class="mag">⌕</span><span>다른 환자 검색 (이름·차트·연락처)</span></div>
+              </div>
+
+              <div class="fld-row">
+                <div class="fld">
+                  <label>날짜 <span class="req">*</span></label>
+                  <div class="ctl"><span style="font-variant-numeric:tabular-nums">2026-06-19</span><span class="car">▾</span></div>
+                </div>
+                <div class="fld">
+                  <label>시간 <span class="req">*</span></label>
+                  <div class="ctl picked"><b style="font-variant-numeric:tabular-nums">14:30</b><span class="car">▾</span></div>
+                </div>
+              </div>
+
+              <div class="fld">
+                <label>진료 유형</label>
+                <div class="seg-row"><span class="on">초진</span><span>재진</span></div>
+              </div>
+
+              <div class="fld">
+                <label>메모</label>
+                <textarea class="ctl placeholder">고혈압 추적 관찰 · 공복 채혈 안내함</textarea>
+              </div>
+
+              <div class="chk">
+                <span class="box">✓</span>
+                <span class="txt">
+                  <b>예약 확정 SMS 발송</b>
+                  <span>010-****-1234 · 예약 1일 전 자동 리마인드 포함</span>
+                </span>
+              </div>
+
+            </div>
+
+            <div class="peek-foot">
+              <button class="btn-ghost">취소</button>
+              <button class="btn-primary"><span class="ic">✓</span>예약 저장</button>
+            </div>
+          </aside>
+
+        </div><!-- /work -->
+
+        <div class="foot-note">
+          <b>이 화면이 정의하는 컴포넌트/패턴:</b> 타임그리드(time-grid) · 슬롯블록(slot-block: 확정/완료/노쇼/취소/휴진·차단/점심) ·
+          슬롯 범례(slot-legend) · 예약 생성 패널(booking-peek). <b>흐름:</b> 예약 생성 → 더블부킹 차단 → 노쇼 → 휴진/차단.
+          <b>상태:</b> 예약상태 A3 (확정 인디고◐ · 완료 그린✓ · 취소 로즈✕ · 노쇼 앰버●). 슬롯 상태는 채움+테두리+패턴으로 인코딩(모니터-로버스트, 그림자 비의존).
+          <b>재사용:</b> 사이드바·탑바 쉘 · 팔레트/타이포/버튼/셀렉트 토큰 (대기 현황판에서 이월).
+        </div>
+
+      </div><!-- /content -->
+    </div><!-- /main -->
+  </div><!-- /app -->
+</div><!-- /browser -->
+</body>
+</html>

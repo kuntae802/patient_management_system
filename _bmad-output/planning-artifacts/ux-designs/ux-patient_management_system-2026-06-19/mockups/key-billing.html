@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>수납 + 문서 출력 — 원무/접수 (Billing & Document Output)</title>
+<!--
+================================================================================
+  KEY SCREEN — 수납 + 문서 출력 (Billing & Document Output)  ·  role: 원무/접수
+  TWO INTENTIONAL HALVES on one screen:
+    Part 1 = 수납 work screen  → the calm Linear-minimal APP UI (lifted shell/tokens)
+    Part 2 = 문서 출력(법정 문서 미리보기) → a DELIBERATELY FORMAL / LEGAL printed-form
+             layout. White paper, bordered tables, black text, hospital header.
+             This is NOT the app aesthetic — the visible contrast is the point.
+
+  Governs DESIGN.md / EXPERIENCE.md:
+    Flow:        수납 → 문서 출력  (결제 완료 시 → 문서 출력 가능; first-class "다음 할 일")
+    Components:  patient-banner, fee-table(수가 항목 내역), amount-summary(금액 요약),
+                 document-preview(진료비 계산서·영수증 / 세부산정내역서),
+                 print-actions(인쇄·PDF 저장), payment-controls, sidebar, topbar
+    State:       결제상태 (A3) — 미수납 / 부분수납 / 완료
+
+  --------------------------------------------------------------------------------
+  [LOCKED — lifted verbatim from key-waiting-board-1.html / key-encounter-hub-8.html]
+    • Palette 클리니컬 틸-블루:
+        --background #FAFCFC  --surface #FFFFFF  --surface-muted #EFF5F5
+        --border #D9E5E5  --text-primary #0E1C1D  --text-muted #54686A
+        --text-disabled #97A9AA  --primary #0E7C8E  --primary-hover #0A6675
+        --ring #2C9FB0  --danger #C2433B
+    • Shell: left sidebar (240px) + top bar (52px), 원무 role view, 수납 nav ACTIVE.
+    • Patient banner = encounter-hub pattern (이름/나이/성별, 차트번호,
+        주민번호 마스킹 + 표시 버튼, 진료과/담당의).  Lifted verbatim.
+    • Aesthetic (Part 1 only): Linear-minimal, high-density, LIGHT, 1px hairlines,
+        near-zero shadows, single teal accent. Teal = action/brand ONLY.
+    • Typography: 'Pretendard Variable',Pretendard,'Malgun Gothic','맑은 고딕',
+        'Apple SD Gothic Neo',-apple-system,system-ui,sans-serif. tabular-nums on
+        all money/numbers (KRW integer, e.g. 23,140원). 100% Korean UI · KST.
+    • Platform = Windows-first. Keyboard hints use Ctrl (e.g. "Ctrl P"). NOT ⌘.
+    • Icons = thin Unicode/CSS shapes (Lucide-style). No icon font / no network.
+    • MONITOR-ROBUST: status carries dot + LABEL TEXT in color, never shadow alone.
+
+  [결제상태 A3 mapping — NEW for this screen, color-disciplined to the palette]
+        미수납  로즈   #C2433B ●  |  부분수납 앰버 #BC7E12 ◐  |  완료 그린 #2C8466 ✓
+  [급여구분 chips]  급여 (cov) / 비급여 (non) / 전액본인 (self)
+
+  [Part 2 — LEGAL DOCUMENT PREVIEW — deliberately NOT Linear-minimal]
+    • Rendered as a formal printed form on white "paper": serif-ish formal headings,
+      pure-black text, sharp 1px black bordered tables, hospital info header,
+      표준 진료비 계산서·영수증 항목구조(급여/비급여 · 본인부담금/공단부담금 ·
+      선택진료료 등), 합계, 납부 정보, 발급일. The contrast vs Part 1 is intentional.
+  --------------------------------------------------------------------------------
+  Constraints honored: inline CSS only, NO JS, NO network, fully offline.
+                       Desktop frame ~1440px content.
+================================================================================
+-->
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+
+  :root{
+    /* ---- 클리니컬 틸-블루 THEME (LOCKED) ---- */
+    --background:#FAFCFC; --surface:#FFFFFF; --surface-muted:#EFF5F5; --border:#D9E5E5;
+    --text-primary:#0E1C1D; --text-muted:#54686A; --text-disabled:#97A9AA;
+    --primary:#0E7C8E; --primary-foreground:#FFFFFF; --primary-hover:#0A6675; --ring:#2C9FB0;
+    --danger:#C2433B;
+
+    /* ---- 결제상태 colors (A3, FIXED for billing) ---- */
+    --pay-unpaid:#C2433B;   /* 미수납   rose  */
+    --pay-partial:#BC7E12;  /* 부분수납 amber */
+    --pay-done:#2C8466;     /* 완료     green */
+    --pay-amber-ink:#8A5D09;/* amber label darkened for white-bg legibility */
+
+    --sidebar-w:240px;
+  }
+
+  body{
+    font-family:'Pretendard Variable',Pretendard,'Malgun Gothic','맑은 고딕','Apple SD Gothic Neo',-apple-system,system-ui,sans-serif;
+    background:#e7eaed; color:var(--text-primary); font-size:13px; line-height:1.5;
+  }
+  .tnum{font-variant-numeric:tabular-nums}
+
+  /* ============================================================
+     BROWSER FRAME (desktop chrome, ~1440px content)
+     ============================================================ */
+  .browser{max-width:1440px; margin:26px auto 60px; border:1px solid #cbd3d6;
+    border-radius:12px; overflow:hidden; background:var(--surface);
+    box-shadow:0 1px 2px rgba(16,28,29,.06), 0 8px 28px rgba(16,28,29,.08)}
+  .chrome{height:38px; background:#f1f3f4; border-bottom:1px solid #dfe3e5;
+    display:flex; align-items:center; gap:8px; padding:0 14px}
+  .chrome .dots{display:flex; gap:7px}
+  .chrome .dots i{width:11px;height:11px;border-radius:50%;display:block}
+  .chrome .dots i:nth-child(1){background:#ed6a5e}
+  .chrome .dots i:nth-child(2){background:#f4be4f}
+  .chrome .dots i:nth-child(3){background:#61c454}
+  .chrome .url{flex:1; max-width:560px; margin:0 auto; height:23px; background:#fff;
+    border:1px solid #dfe3e5; border-radius:6px; display:flex; align-items:center;
+    gap:7px; padding:0 10px; font-size:11.5px; color:var(--text-muted)}
+  .chrome .url .lock{font-size:9px;color:var(--pay-done)}
+  .chrome .url b{color:var(--text-primary);font-weight:500}
+
+  /* ============================================================
+     APP SHELL  (sidebar + topbar grid)
+     ============================================================ */
+  .app{display:grid; grid-template-columns:var(--sidebar-w) 1fr; min-height:830px; background:var(--background)}
+
+  /* ---------- LEFT SIDEBAR ---------- */
+  .sidebar{background:var(--surface); border-right:1px solid var(--border);
+    display:flex; flex-direction:column; min-height:100%}
+  .sb-brand{display:flex; align-items:center; gap:10px; padding:15px 16px 14px;
+    border-bottom:1px solid var(--border)}
+  .sb-logo{width:28px;height:28px;border-radius:8px;flex:none;position:relative;
+    background:linear-gradient(135deg,var(--primary),var(--ring));}
+  .sb-logo::after{content:"";position:absolute;inset:8px;border-radius:2px;
+    background:#fff;clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%,50% 35%,65% 50%,50% 65%,35% 50%)}
+  .sb-brand .wm{display:flex;flex-direction:column;line-height:1.15}
+  .sb-brand .wm b{font-size:14px;font-weight:650;letter-spacing:-.01em;color:var(--text-primary)}
+  .sb-brand .wm span{font-size:10.5px;color:var(--text-muted)}
+
+  .sb-nav{flex:1; padding:12px 10px 8px; overflow:auto}
+  .sb-cap{font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+    color:#8a939b;padding:14px 8px 6px}
+  .sb-cap:first-child{padding-top:2px}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:7px;
+    font-size:13px;color:var(--text-primary);cursor:pointer;position:relative;text-decoration:none;
+    margin-bottom:1px}
+  .nav-item .ic{width:16px;text-align:center;font-size:13px;color:var(--text-muted);flex:none}
+  .nav-item .lbl{flex:1}
+  .nav-item .tail{font-size:11px;color:var(--text-muted);font-variant-numeric:tabular-nums;
+    background:var(--surface-muted);border:1px solid var(--border);border-radius:20px;padding:0 7px}
+  .nav-item:hover{background:var(--surface-muted)}
+  .nav-item.active{background:color-mix(in srgb,var(--primary) 10%,var(--surface));color:var(--primary);font-weight:600}
+  .nav-item.active .ic{color:var(--primary)}
+  .nav-item.active::before{content:"";position:absolute;left:-10px;top:6px;bottom:6px;width:3px;
+    border-radius:0 3px 3px 0;background:var(--primary)}
+  .nav-item.active .tail{background:color-mix(in srgb,var(--primary) 14%,var(--surface));
+    border-color:color-mix(in srgb,var(--primary) 26%,var(--surface));color:var(--primary)}
+
+  .sb-foot{border-top:1px solid var(--border);padding:8px 10px 10px}
+  .sb-foot .nav-item{font-size:12.5px}
+  .sb-user{display:flex;align-items:center;gap:10px;padding:9px 9px 4px;margin-top:4px;
+    border-top:1px solid var(--surface-muted)}
+  .sb-user .av{width:30px;height:30px;border-radius:50%;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:12px;font-weight:600;color:#fff;
+    background:linear-gradient(135deg,#3a8d9c,#0E7C8E)}
+  .sb-user .who{flex:1;line-height:1.2;min-width:0}
+  .sb-user .who b{font-size:12.5px;font-weight:600;display:block;color:var(--text-primary)}
+  .sb-user .who span{font-size:10.5px;color:var(--text-muted)}
+  .role-badge{font-size:10px;font-weight:700;letter-spacing:.02em;color:var(--primary);
+    background:color-mix(in srgb,var(--primary) 10%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--primary) 26%,var(--surface));
+    border-radius:5px;padding:1px 6px;flex:none}
+
+  /* ---------- MAIN COLUMN ---------- */
+  .main{display:flex;flex-direction:column;min-width:0}
+
+  /* ---------- TOP BAR ---------- */
+  .topbar{height:52px;background:var(--surface);border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:14px;padding:0 18px;flex:none}
+  .tb-toggle{width:30px;height:30px;border:1px solid var(--border);border-radius:7px;background:var(--surface);
+    color:var(--text-muted);cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;flex:none}
+  .tb-toggle:hover{background:var(--surface-muted)}
+  .tb-crumb{font-size:12.5px;color:var(--text-muted);display:flex;align-items:center;gap:7px;white-space:nowrap}
+  .tb-crumb b{color:var(--text-primary);font-weight:600}
+  .tb-crumb .sep{color:var(--text-disabled)}
+
+  .tb-search{flex:1;max-width:380px;height:33px;background:var(--surface-muted);
+    border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;gap:9px;
+    padding:0 10px;color:var(--text-disabled);font-size:12.5px;cursor:text}
+  .tb-search .mag{font-size:13px;color:var(--text-muted)}
+  .tb-search .ph{flex:1;color:var(--text-disabled)}
+  .tb-search .kbd{font-size:10.5px;font-weight:600;color:var(--text-muted);background:var(--surface);
+    border:1px solid var(--border);border-radius:5px;padding:1px 6px;font-variant-numeric:tabular-nums}
+
+  .tb-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+  .tb-live{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--text-muted);white-space:nowrap}
+  .tb-live .live-dot{width:7px;height:7px;border-radius:50%;background:var(--pay-done);flex:none;
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--pay-done) 18%,transparent)}
+  .tb-live b{color:var(--pay-done);font-weight:600}
+  .tb-clock{font-size:12px;color:var(--text-muted);font-variant-numeric:tabular-nums;white-space:nowrap;
+    border-left:1px solid var(--border);padding-left:14px}
+  .tb-clock b{color:var(--text-primary);font-weight:600}
+  .tb-bell{position:relative;width:32px;height:32px;border:1px solid var(--border);border-radius:8px;
+    background:var(--surface);color:var(--text-muted);display:flex;align-items:center;justify-content:center;
+    font-size:15px;cursor:pointer;flex:none}
+  .tb-bell:hover{background:var(--surface-muted)}
+  .tb-bell .badge{position:absolute;top:-5px;right:-5px;min-width:16px;height:16px;border-radius:9px;
+    background:var(--danger);color:#fff;font-size:9.5px;font-weight:700;display:flex;align-items:center;
+    justify-content:center;padding:0 4px;border:1.5px solid var(--surface);font-variant-numeric:tabular-nums}
+  .tb-av{width:32px;height:32px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-weight:600;color:#fff;background:linear-gradient(135deg,#3a8d9c,#0E7C8E);cursor:pointer}
+
+  /* ============================================================
+     PATIENT BANNER  (encounter-hub pattern, lifted)
+     ============================================================ */
+  .pt-banner{background:var(--surface);border-bottom:1px solid var(--border);padding:11px 22px;flex:none}
+  .pb-row{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  .pb-id{display:flex;align-items:center;gap:11px;min-width:0}
+  .pb-photo{width:42px;height:42px;border-radius:10px;flex:none;background:var(--surface-muted);
+    border:1px solid var(--border);display:flex;align-items:center;justify-content:center;
+    font-size:16px;font-weight:600;color:var(--text-muted)}
+  .pb-name{line-height:1.25}
+  .pb-name .nm{font-size:18px;font-weight:650;letter-spacing:-.01em;color:var(--text-primary)}
+  .pb-name .nm .ag{font-size:13px;font-weight:500;color:var(--text-muted);margin-left:8px}
+  .pb-name .sub{font-size:12px;color:var(--text-muted);margin-top:2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .pb-name .sub .sep{color:var(--text-disabled)}
+  .pb-name .sub .k{color:var(--text-disabled)}
+  .pb-name .sub b{color:var(--text-primary);font-weight:600}
+
+  .pb-facts{display:flex;align-items:center;gap:0;border:1px solid var(--border);border-radius:9px;overflow:hidden;background:var(--surface)}
+  .pb-fact{padding:5px 14px;border-right:1px solid var(--border);line-height:1.3}
+  .pb-fact:last-child{border-right:none}
+  .pb-fact .fk{font-size:9.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--text-disabled)}
+  .pb-fact .fv{font-size:12.5px;font-weight:600;color:var(--text-primary);font-variant-numeric:tabular-nums;display:flex;align-items:center;gap:7px;margin-top:1px}
+  .reveal-btn{font-family:inherit;font-size:10px;font-weight:600;color:var(--text-muted);background:var(--surface);
+    border:1px solid var(--border);border-radius:5px;padding:1px 6px;cursor:pointer;display:inline-flex;align-items:center;gap:3px}
+  .reveal-btn:hover{background:var(--surface-muted);color:var(--text-primary)}
+  .reveal-btn .eye{font-size:10px}
+  .reveal-btn .audit{font-size:8px;color:var(--text-disabled);letter-spacing:.02em}
+
+  .pb-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+  .pb-dept{text-align:right;line-height:1.35;font-size:12px;color:var(--text-muted)}
+  .pb-dept b{color:var(--text-primary);font-weight:600}
+
+  /* 결제상태 banner pill (A3, MONITOR-ROBUST: dot + label text) */
+  .pay-state{display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:600;
+    border-radius:8px;padding:6px 11px;white-space:nowrap}
+  .pay-state .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .pay-state.unpaid{color:var(--pay-unpaid);border:1px solid color-mix(in srgb,var(--pay-unpaid) 30%,var(--border));
+    background:color-mix(in srgb,var(--pay-unpaid) 8%,var(--surface))}
+  .pay-state.unpaid .dot{background:var(--pay-unpaid)}
+  .pay-state .amt{font-weight:500;font-variant-numeric:tabular-nums;opacity:.88;font-size:11.5px}
+
+  /* ============================================================
+     PART 1 — 수납 WORK AREA (app UI)
+     ============================================================ */
+  .work{display:grid;grid-template-columns:1fr 360px;gap:0;align-items:start}
+  .work-l{padding:18px 20px 24px;min-width:0;border-right:1px solid var(--border)}
+  .work-r{padding:18px 20px 24px;min-width:0;background:var(--background)}
+
+  .sec-title{font-size:13.5px;font-weight:600;color:var(--text-primary);display:flex;align-items:center;gap:9px}
+  .sec-title .cnt{font-size:11px;font-weight:500;color:var(--text-muted);background:var(--surface-muted);
+    border:1px solid var(--border);border-radius:20px;padding:1px 9px;font-variant-numeric:tabular-nums}
+  .auto-tag{font-size:9.5px;font-weight:700;letter-spacing:.02em;color:var(--primary);
+    background:color-mix(in srgb,var(--primary) 10%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--primary) 26%,var(--surface));border-radius:5px;padding:1px 7px}
+  .sec-sub{font-size:11px;color:var(--text-muted);margin-top:4px}
+
+  /* ---------- FEE TABLE (수가 항목 내역) ---------- */
+  .panel{margin-top:11px;border:1px solid var(--border);background:var(--surface);border-radius:11px;overflow:hidden}
+  table.fee{width:100%;border-collapse:collapse;font-size:12.5px;table-layout:fixed}
+  table.fee col.c-item{width:34%} table.fee col.c-cls{width:16%}
+  table.fee col.c-unit{width:17%} table.fee col.c-qty{width:11%} table.fee col.c-amt{width:22%}
+  table.fee thead th{text-align:left;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;
+    color:var(--text-muted);padding:8px 13px;border-bottom:1px solid var(--border);background:var(--background);white-space:nowrap}
+  table.fee thead th.r{text-align:right}
+  table.fee tbody td{padding:9px 13px;border-bottom:1px solid var(--border);color:var(--text-primary);vertical-align:middle}
+  table.fee tbody tr:hover{background:var(--surface-muted)}
+  table.fee .it{font-weight:550;line-height:1.35}
+  table.fee .it .code{display:block;font-size:10.5px;color:var(--text-muted);font-weight:400;font-variant-numeric:tabular-nums;margin-top:2px}
+  table.fee td.r{text-align:right;font-variant-numeric:tabular-nums}
+  table.fee .unit{color:var(--text-muted)}
+  table.fee .qty{color:var(--text-primary)}
+  table.fee .amt{font-weight:600}
+  table.fee tfoot td{padding:9px 13px;border-top:1px solid var(--border);background:var(--background);
+    font-size:12.5px;color:var(--text-primary);font-variant-numeric:tabular-nums}
+  table.fee tfoot td.lab{color:var(--text-muted);font-weight:500}
+  table.fee tfoot td.r{text-align:right;font-weight:700}
+
+  /* 급여구분 chips */
+  .cls-chip{display:inline-flex;align-items:center;font-size:10.5px;font-weight:700;border-radius:5px;padding:1px 7px;white-space:nowrap;letter-spacing:.01em}
+  .cls-chip.cov{color:var(--pay-done);background:color-mix(in srgb,var(--pay-done) 9%,var(--surface));border:1px solid color-mix(in srgb,var(--pay-done) 26%,var(--border))}
+  .cls-chip.non{color:var(--pay-amber-ink);background:color-mix(in srgb,var(--pay-partial) 9%,var(--surface));border:1px solid color-mix(in srgb,var(--pay-partial) 30%,var(--border))}
+  .cls-chip.self{color:var(--text-muted);background:var(--surface-muted);border:1px solid var(--border)}
+
+  /* ---------- AMOUNT SUMMARY (금액 요약) ---------- */
+  .summary{border:1px solid var(--border);background:var(--surface);border-radius:11px;overflow:hidden}
+  .sum-head{padding:10px 14px;border-bottom:1px solid var(--border);background:var(--background);
+    font-size:12px;font-weight:700;color:var(--text-primary);display:flex;align-items:center;justify-content:space-between}
+  .sum-head .src{font-size:9.5px;font-weight:600;color:var(--text-muted)}
+  .sum-body{padding:6px 14px 4px}
+  .sum-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid var(--surface-muted);font-size:12.5px}
+  .sum-row .sk{color:var(--text-muted);display:flex;align-items:center;gap:7px}
+  .sum-row .sk .pip{width:7px;height:7px;border-radius:2px;flex:none}
+  .sum-row .sk .pip.cov{background:var(--pay-done)} .sum-row .sk .pip.non{background:var(--pay-partial)}
+  .sum-row .sv{font-variant-numeric:tabular-nums;font-weight:600;color:var(--text-primary)}
+  .sum-row.sub .sk{padding-left:14px;color:var(--text-disabled);font-size:11.5px}
+  .sum-row.sub .sv{font-weight:500;color:var(--text-muted)}
+  .sum-total{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;padding:13px 14px 14px;
+    border-top:1px solid var(--border);background:color-mix(in srgb,var(--primary) 5%,var(--surface))}
+  .sum-total .tk{font-size:12.5px;font-weight:700;color:var(--text-primary)}
+  .sum-total .tk .h{display:block;font-size:10px;font-weight:600;color:var(--text-muted);margin-top:2px}
+  .sum-total .tv{font-size:24px;font-weight:750;color:var(--primary);font-variant-numeric:tabular-nums;line-height:1}
+  .sum-total .tv .won{font-size:14px;font-weight:600;color:var(--text-muted);margin-left:3px}
+
+  /* ---------- PAYMENT CONTROLS ---------- */
+  .pay-box{margin-top:14px;border:1px solid var(--border);background:var(--surface);border-radius:11px;padding:13px 14px}
+  .pay-box .pl{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--text-disabled);margin-bottom:8px}
+  .seg{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:12.5px}
+  .seg span{text-align:center;padding:8px 0;color:var(--text-muted);cursor:pointer;border-right:1px solid var(--border)}
+  .seg span:last-child{border-right:none}
+  .seg span.on{background:color-mix(in srgb,var(--primary) 10%,var(--surface));color:var(--primary);font-weight:700}
+  .pay-amt-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;
+    padding:9px 11px;border:1px solid var(--border);border-radius:8px;background:var(--background)}
+  .pay-amt-row .l{font-size:12px;color:var(--text-muted)}
+  .pay-amt-row .v{font-size:16px;font-weight:700;color:var(--text-primary);font-variant-numeric:tabular-nums}
+  .pay-amt-row .v .won{font-size:11px;font-weight:500;color:var(--text-muted)}
+  .btn-primary{font-family:inherit;font-size:13.5px;font-weight:650;color:var(--primary-foreground);
+    background:var(--primary);border:1px solid var(--primary-hover);border-radius:8px;padding:0 16px;height:40px;
+    cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;width:100%;margin-top:12px}
+  .btn-primary:hover{background:var(--primary-hover)}
+  .btn-primary .ic{font-size:13px;line-height:1}
+  .pay-ghost-row{display:flex;gap:8px;margin-top:8px}
+  .btn-ghost{font-family:inherit;font-size:12px;font-weight:550;color:var(--text-muted);background:var(--surface);
+    border:1px solid var(--border);border-radius:7px;padding:0 12px;height:34px;cursor:pointer;flex:1;
+    display:inline-flex;align-items:center;justify-content:center;gap:6px}
+  .btn-ghost:hover{background:var(--surface-muted);color:var(--text-primary)}
+
+  /* ---------- NEXT-STEP HINT (다음에 할 일) ---------- */
+  .next-hint{margin-top:14px;border:1px solid color-mix(in srgb,var(--primary) 28%,var(--border));
+    background:color-mix(in srgb,var(--primary) 6%,var(--surface));border-radius:10px;padding:11px 13px;
+    display:flex;align-items:center;gap:11px}
+  .next-hint .glyph{width:28px;height:28px;border-radius:8px;flex:none;display:flex;align-items:center;justify-content:center;
+    font-size:13px;color:#fff;background:var(--primary)}
+  .next-hint .txt{flex:1;line-height:1.45;min-width:0}
+  .next-hint .txt .k{font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--primary)}
+  .next-hint .txt .m{font-size:12.5px;color:var(--text-primary)}
+  .next-hint .txt .m b{font-weight:650}
+
+  /* ============================================================
+     PART 2 — 문서 출력 (LEGAL DOCUMENT PREVIEW) — FORMAL LAYOUT
+     This block is DELIBERATELY a different, formal aesthetic.
+     ============================================================ */
+  .doc-zone{background:#e8ebed;border-top:1px solid var(--border);padding:0}
+  /* app-style header strip controlling the formal preview below */
+  .doc-bar{background:var(--surface);border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:14px;padding:12px 22px;flex-wrap:wrap}
+  .doc-bar .dt{font-size:13.5px;font-weight:650;color:var(--text-primary);display:flex;align-items:center;gap:9px}
+  .doc-bar .dt .ic{font-size:14px;color:var(--primary)}
+  .doc-bar .dt .formal{font-size:9.5px;font-weight:700;letter-spacing:.03em;color:var(--text-muted);
+    background:var(--surface-muted);border:1px solid var(--border);border-radius:5px;padding:1px 7px}
+  .doc-tabs{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:12px}
+  .doc-tabs span{padding:6px 13px;color:var(--text-muted);cursor:pointer;border-right:1px solid var(--border);white-space:nowrap}
+  .doc-tabs span:last-child{border-right:none}
+  .doc-tabs span.on{background:color-mix(in srgb,var(--primary) 10%,var(--surface));color:var(--primary);font-weight:700}
+  .doc-actions{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .btn-doc{font-family:inherit;font-size:12.5px;font-weight:600;color:var(--text-primary);background:var(--surface);
+    border:1px solid var(--border);border-radius:7px;padding:0 13px;height:34px;cursor:pointer;
+    display:inline-flex;align-items:center;gap:7px}
+  .btn-doc:hover{background:var(--surface-muted)}
+  .btn-doc.key{color:var(--primary-foreground);background:var(--primary);border-color:var(--primary-hover)}
+  .btn-doc.key:hover{background:var(--primary-hover)}
+  .btn-doc .kbd{font-size:10px;font-weight:600;color:var(--text-muted);background:var(--surface-muted);
+    border:1px solid var(--border);border-radius:4px;padding:0 5px;font-variant-numeric:tabular-nums}
+  .btn-doc.key .kbd{color:#dff3f6;background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.28)}
+
+  /* the "paper" — formal printed form. Black ink, serif headings, hard borders. */
+  .paper-stage{padding:26px 22px 38px;display:flex;justify-content:center}
+  .paper{width:760px;max-width:100%;background:#fff;border:1px solid #b9c0c3;
+    box-shadow:0 2px 4px rgba(0,0,0,.10),0 12px 30px rgba(0,0,0,.12);
+    padding:34px 38px 30px;
+    /* FORMAL TYPOGRAPHY — intentionally NOT the app stack */
+    font-family:'Batang','바탕','Gulim','굴림','Malgun Gothic','맑은 고딕',serif;
+    color:#111;line-height:1.55}
+  .doc-title{text-align:center;font-size:21px;font-weight:800;letter-spacing:.18em;color:#000;
+    padding-bottom:6px;border-bottom:2.5px solid #000}
+  .doc-title .en{display:block;font-size:10.5px;font-weight:600;letter-spacing:.06em;color:#444;margin-top:5px}
+  .doc-meta{display:flex;justify-content:space-between;font-size:11px;color:#333;margin-top:7px}
+  .doc-meta .tnum{font-variant-numeric:tabular-nums}
+
+  /* hospital info header */
+  .hosp{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-top:14px;
+    border:1px solid #000;padding:11px 14px}
+  .hosp .h-name{font-size:15px;font-weight:800;color:#000;letter-spacing:.02em}
+  .hosp .h-line{font-size:11px;color:#222;margin-top:3px;line-height:1.6}
+  .hosp .h-line .tnum{font-variant-numeric:tabular-nums}
+  .hosp .h-seal{width:62px;height:62px;border:1.5px solid #b03a30;border-radius:50%;flex:none;
+    display:flex;align-items:center;justify-content:center;text-align:center;color:#b03a30;
+    font-size:10px;font-weight:800;letter-spacing:.04em;line-height:1.35;transform:rotate(-9deg)}
+
+  /* formal tables — sharp black grid */
+  table.form{width:100%;border-collapse:collapse;margin-top:12px;font-size:11.5px;color:#111}
+  table.form th,table.form td{border:1px solid #000;padding:5px 8px;vertical-align:middle}
+  table.form th{background:#eceff0;font-weight:700;color:#000;text-align:center;font-size:11px}
+  table.form td.lab{background:#f4f6f6;font-weight:700;text-align:center;width:96px;color:#000}
+  table.form td.num{text-align:right;font-variant-numeric:tabular-nums}
+  table.form td.ctr{text-align:center}
+  .form-cap{font-size:11.5px;font-weight:800;color:#000;margin:16px 0 5px;letter-spacing:.02em;
+    border-left:4px solid #000;padding-left:8px}
+
+  /* the standard 항목별 금액표: 급여/비급여 × 본인부담/공단부담 */
+  table.amt th,table.amt td{font-size:11px}
+  table.amt .grp{background:#f4f6f6;font-weight:700;text-align:center}
+  table.amt tfoot td{font-weight:800;background:#eceff0}
+  table.amt tfoot td.big{font-size:13px;color:#000}
+
+  /* 납부 정보 + 발급 */
+  .pay-info{display:grid;grid-template-columns:1fr 1fr;gap:0;margin-top:14px;border:1px solid #000}
+  .pay-info .pi-cell{border-right:1px solid #000;padding:8px 12px;font-size:11.5px}
+  .pay-info .pi-cell:last-child{border-right:none}
+  .pay-info .pi-cell .pk{font-size:10px;font-weight:700;color:#444}
+  .pay-info .pi-cell .pv{font-size:13px;font-weight:800;color:#000;font-variant-numeric:tabular-nums;margin-top:2px}
+  .pay-info .pi-cell .pv.due{color:#b03a30}
+  .doc-foot{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-top:18px}
+  .doc-foot .issue{font-size:11px;color:#222;line-height:1.7}
+  .doc-foot .issue .tnum{font-variant-numeric:tabular-nums}
+  .doc-foot .sign{text-align:right;font-size:12px;color:#000;line-height:1.8}
+  .doc-foot .sign b{font-size:14px;font-weight:800;letter-spacing:.04em}
+  .doc-foot .sign .stamp{display:inline-block;border:1.5px solid #b03a30;color:#b03a30;border-radius:5px;
+    font-size:10px;font-weight:800;padding:1px 6px;margin-left:7px;transform:rotate(-4deg)}
+  .doc-legal{margin-top:16px;border-top:1px dashed #999;padding-top:9px;font-size:9.5px;color:#555;line-height:1.65}
+
+  .foot-note{padding:0 22px 26px;font-size:11px;color:var(--text-disabled);line-height:1.7;background:var(--background)}
+  .foot-note b{color:var(--text-muted);font-weight:600}
+
+  @media (max-width:1280px){
+    .work{grid-template-columns:1fr 320px}
+  }
+</style>
+</head>
+<body>
+<div class="browser">
+
+  <!-- desktop browser chrome -->
+  <div class="chrome">
+    <span class="dots"><i></i><i></i><i></i></span>
+    <div class="url"><span class="lock">●</span><b>pms.ourclinic.kr</b>/billing/2026-06-19/00123</div>
+  </div>
+
+  <!-- ===================== APP SHELL ===================== -->
+  <div class="app">
+
+    <!-- ---------- LEFT SIDEBAR (원무 role) ---------- -->
+    <aside class="sidebar">
+      <div class="sb-brand">
+        <div class="sb-logo"></div>
+        <div class="wm"><b>○○의원</b><span>외래 진료 관리</span></div>
+      </div>
+
+      <nav class="sb-nav">
+        <div class="sb-cap">운영</div>
+        <a class="nav-item"><span class="ic">▦</span><span class="lbl">대기 현황</span><span class="tail">11</span></a>
+        <a class="nav-item"><span class="ic">＋</span><span class="lbl">접수</span></a>
+        <a class="nav-item"><span class="ic">▤</span><span class="lbl">예약 관리</span></a>
+
+        <div class="sb-cap">환자</div>
+        <a class="nav-item"><span class="ic">⊕</span><span class="lbl">환자 등록</span></a>
+        <a class="nav-item"><span class="ic">⌕</span><span class="lbl">환자 검색</span></a>
+
+        <div class="sb-cap">정산</div>
+        <a class="nav-item active"><span class="ic">₩</span><span class="lbl">수납</span><span class="tail">3</span></a>
+        <a class="nav-item"><span class="ic">🖶</span><span class="lbl">문서 출력</span></a>
+      </nav>
+
+      <div class="sb-foot">
+        <a class="nav-item"><span class="ic">⚙</span><span class="lbl">설정</span></a>
+        <a class="nav-item"><span class="ic">?</span><span class="lbl">도움말</span></a>
+        <div class="sb-user">
+          <div class="av">김</div>
+          <div class="who"><b>김원무</b><span>접수 데스크 1</span></div>
+          <span class="role-badge">원무</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ---------- MAIN COLUMN ---------- -->
+    <div class="main">
+
+      <!-- ---------- TOP BAR ---------- -->
+      <header class="topbar">
+        <button class="tb-toggle" title="사이드바 접기">≡</button>
+        <div class="tb-crumb">정산<span class="sep">›</span><b>수납</b><span class="sep">·</span>김영희</div>
+
+        <div class="tb-search">
+          <span class="mag">⌕</span>
+          <span class="ph">환자명 · 차트번호 · 연락처 검색</span>
+          <span class="kbd">Ctrl K</span>
+        </div>
+
+        <div class="tb-right">
+          <div class="tb-live"><span class="live-dot"></span><b>실시간</b> · 동기화됨</div>
+          <div class="tb-clock">2026-06-19 (목) · <b>14:38</b></div>
+          <button class="tb-bell" title="알림">♢<span class="badge">3</span></button>
+          <div class="tb-av">김</div>
+        </div>
+      </header>
+
+      <!-- ===================== PATIENT BANNER (encounter-hub pattern) ===================== -->
+      <div class="pt-banner">
+        <div class="pb-row">
+          <div class="pb-id">
+            <div class="pb-photo">김</div>
+            <div class="pb-name">
+              <div class="nm">김영희<span class="ag">여 · 54세 (1971-03-14)</span></div>
+              <div class="sub">
+                <span><span class="k">보험</span> <b>건강보험 (지역)</b></span><span class="sep">·</span>
+                <span><span class="k">진료일</span> <b class="tnum">2026-06-19</b></span><span class="sep">·</span>
+                <span><span class="k">진료번호</span> <b class="tnum">E-20260619-0123</b></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="pb-facts">
+            <div class="pb-fact"><div class="fk">차트번호</div><div class="fv tnum">00123</div></div>
+            <div class="pb-fact"><div class="fk">주민번호</div><div class="fv tnum">710314-2******
+              <button class="reveal-btn" title="권한 확인 + 감사 로그 기록 후 표시"><span class="eye">◉</span>표시<span class="audit">감사기록</span></button>
+            </div></div>
+            <div class="pb-fact"><div class="fk">연락처</div><div class="fv tnum">010-****-3082
+              <button class="reveal-btn"><span class="eye">◉</span>표시</button>
+            </div></div>
+          </div>
+
+          <div class="pb-right">
+            <div class="pb-dept">
+              <div>내과 · <b>1진료실</b></div>
+              <div>담당의 <b>이정훈 과장</b></div>
+            </div>
+            <span class="pay-state unpaid"><span class="dot"></span>미수납 <span class="amt">· 청구액 23,140원</span></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== PART 1 — 수납 WORK AREA ===================== -->
+      <div class="work">
+
+        <!-- ===== 좌: 수가 항목 내역 (fee-table) ===== -->
+        <section class="work-l">
+          <div class="sec-title">수가 항목 내역 <span class="cnt">5건</span> <span class="auto-tag">수가 자동발생</span></div>
+          <div class="sec-sub">진료 내용에서 자동 산정 — 진단·오더·처방을 근거로 수가가 자동으로 발생합니다. (담당의 이정훈 과장)</div>
+
+          <div class="panel">
+            <table class="fee">
+              <colgroup><col class="c-item"><col class="c-cls"><col class="c-unit"><col class="c-qty"><col class="c-amt"></colgroup>
+              <thead><tr>
+                <th>항목 · 수가코드</th><th>분류</th><th class="r">단가</th><th class="r">수량</th><th class="r">금액</th>
+              </tr></thead>
+              <tbody>
+                <tr>
+                  <td class="it">진찰료 (재진)<span class="code">AA254 · 의원 재진 진찰료</span></td>
+                  <td><span class="cls-chip cov">급여</span></td>
+                  <td class="r unit">11,300</td>
+                  <td class="r qty">1</td>
+                  <td class="r amt">11,300</td>
+                </tr>
+                <tr>
+                  <td class="it">검사료 — 공복혈당 (FBS)<span class="code">C3811 · 정량, 자동분석</span></td>
+                  <td><span class="cls-chip cov">급여</span></td>
+                  <td class="r unit">1,830</td>
+                  <td class="r qty">1</td>
+                  <td class="r amt">1,830</td>
+                </tr>
+                <tr>
+                  <td class="it">검사료 — 당화혈색소 (HbA1c)<span class="code">C3852 · 정량</span></td>
+                  <td><span class="cls-chip cov">급여</span></td>
+                  <td class="r unit">8,210</td>
+                  <td class="r qty">1</td>
+                  <td class="r amt">8,210</td>
+                </tr>
+                <tr>
+                  <td class="it">처방료 — 원외처방전 발행<span class="code">AH150 · 원외 처방료</span></td>
+                  <td><span class="cls-chip cov">급여</span></td>
+                  <td class="r unit">10,860</td>
+                  <td class="r qty">1</td>
+                  <td class="r amt">10,860</td>
+                </tr>
+                <tr>
+                  <td class="it">처치료 — 정맥 채혈<span class="code">EB015 · 채혈 행위료 (비급여)</span></td>
+                  <td><span class="cls-chip non">비급여</span></td>
+                  <td class="r unit">3,000</td>
+                  <td class="r qty">1</td>
+                  <td class="r amt">3,000</td>
+                </tr>
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td class="lab" colspan="4">급여 대상액 소계 <span style="color:var(--text-disabled);font-weight:400">(공단부담 + 본인부담)</span></td>
+                  <td class="r">32,200</td>
+                </tr>
+                <tr>
+                  <td class="lab" colspan="4">비급여 소계 <span style="color:var(--text-disabled);font-weight:400">(전액 본인부담)</span></td>
+                  <td class="r">3,000</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          <div class="sec-sub" style="margin-top:10px">
+            ※ 급여 항목은 진료내역 확정 시 자동 산정됩니다. 항목을 수정하려면 진료 기록(의사)에서 변경해야 하며,
+            원무 단계에서는 <b style="color:var(--text-muted)">조회·수납</b>만 가능합니다.
+          </div>
+        </section>
+
+        <!-- ===== 우: 금액 요약 + 결제 + 다음 할 일 ===== -->
+        <aside class="work-r">
+
+          <!-- 금액 요약 패널 (amount-summary) -->
+          <div class="summary">
+            <div class="sum-head"><span>금액 요약</span><span class="src">건강보험 본인부담 30%</span></div>
+            <div class="sum-body">
+              <div class="sum-row">
+                <span class="sk"><span class="pip cov"></span>급여 대상액</span>
+                <span class="sv">32,200원</span>
+              </div>
+              <div class="sum-row sub">
+                <span class="sk">└ 공단부담금</span>
+                <span class="sv">22,540원</span>
+              </div>
+              <div class="sum-row sub">
+                <span class="sk">└ 본인부담금 (30%)</span>
+                <span class="sv">9,660원</span>
+              </div>
+              <div class="sum-row">
+                <span class="sk"><span class="pip non"></span>비급여액 (전액본인)</span>
+                <span class="sv">3,000원</span>
+              </div>
+              <div class="sum-row">
+                <span class="sk">선택진료료</span>
+                <span class="sv">0원</span>
+              </div>
+            </div>
+            <div class="sum-total">
+              <div class="tk">합계 청구액<span class="h">본인부담금 + 비급여액</span></div>
+              <div class="tv">23,140<span class="won">원</span></div>
+            </div>
+          </div>
+
+          <!-- 결제 controls (payment-controls) -->
+          <div class="pay-box">
+            <div class="pl">결제 수단</div>
+            <div class="seg">
+              <span class="on">카드</span><span>현금</span><span>계좌이체</span>
+            </div>
+            <div class="pay-amt-row">
+              <span class="l">수납 금액</span>
+              <span class="v">23,140<span class="won">원</span></span>
+            </div>
+            <button class="btn-primary"><span class="ic">₩</span>결제 (23,140원)</button>
+            <div class="pay-ghost-row">
+              <button class="btn-ghost">부분 수납</button>
+              <button class="btn-ghost">수납 보류</button>
+            </div>
+          </div>
+
+          <!-- 다음에 할 일 (next-step hint) -->
+          <div class="next-hint">
+            <div class="glyph">🖶</div>
+            <div class="txt">
+              <div class="k">다음 할 일</div>
+              <div class="m">결제 완료 시 → <b>문서 출력 가능</b> (진료비 계산서·영수증)</div>
+            </div>
+          </div>
+
+        </aside>
+      </div>
+
+      <!-- ===================== PART 2 — 문서 출력 (LEGAL DOCUMENT PREVIEW) ===================== -->
+      <div class="doc-zone">
+
+        <!-- app-style control bar over the formal preview -->
+        <div class="doc-bar">
+          <div class="dt"><span class="ic">🖶</span>문서 출력 미리보기 <span class="formal">법정 서식</span></div>
+          <div class="doc-tabs">
+            <span class="on">진료비 계산서·영수증</span>
+            <span>세부산정내역서</span>
+          </div>
+          <div class="doc-actions">
+            <button class="btn-doc">미리보기 새로고침</button>
+            <button class="btn-doc">PDF 저장</button>
+            <button class="btn-doc key"><span class="ic">🖶</span>인쇄 <span class="kbd">Ctrl P</span></button>
+          </div>
+        </div>
+
+        <!-- THE FORMAL PAPER — deliberately NOT the app aesthetic -->
+        <div class="paper-stage">
+          <div class="paper">
+
+            <!-- formal title -->
+            <div class="doc-title">진료비 계산서 · 영수증<span class="en">MEDICAL FEE STATEMENT &amp; RECEIPT</span></div>
+            <div class="doc-meta">
+              <span>[ 외래 ]</span>
+              <span class="tnum">영수증 번호 : 2026-061900123-01</span>
+            </div>
+
+            <!-- hospital info header -->
+            <div class="hosp">
+              <div>
+                <div class="h-name">○○의원</div>
+                <div class="h-line">
+                  사업자등록번호 <span class="tnum">123-45-67890</span> · 요양기관기호 <span class="tnum">31234567</span><br>
+                  서울특별시 ○○구 ○○로 123, 4층 · 대표자 <span>박○○</span><br>
+                  전화 <span class="tnum">02-123-4567</span>
+                </div>
+              </div>
+              <div class="h-seal">의료기관<br>직인</div>
+            </div>
+
+            <!-- 환자 정보 -->
+            <div class="form-cap">환자 정보</div>
+            <table class="form">
+              <tr>
+                <td class="lab">환자 성명</td><td>김영희</td>
+                <td class="lab">차트번호</td><td class="tnum">00123</td>
+              </tr>
+              <tr>
+                <td class="lab">주민등록번호</td><td class="tnum">710314-2******</td>
+                <td class="lab">진료과 · 담당의</td><td>내과 · 이정훈</td>
+              </tr>
+              <tr>
+                <td class="lab">진료기간</td><td class="tnum">2026-06-19 ~ 2026-06-19</td>
+                <td class="lab">환자구분</td><td>건강보험 (지역) · 본인부담 30%</td>
+              </tr>
+            </table>
+
+            <!-- 항목별 금액표 (표준 구조: 급여 / 비급여 × 본인부담 / 공단부담) -->
+            <div class="form-cap">항목별 금액</div>
+            <table class="form amt">
+              <thead>
+                <tr>
+                  <th rowspan="2" style="width:32%">항목</th>
+                  <th colspan="2">급여</th>
+                  <th rowspan="2">비급여</th>
+                  <th rowspan="2">금액 합계</th>
+                </tr>
+                <tr>
+                  <th>본인부담금</th>
+                  <th>공단부담금</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>진찰료</td>
+                  <td class="num">3,390</td><td class="num">7,910</td><td class="num">0</td><td class="num">11,300</td>
+                </tr>
+                <tr>
+                  <td>검사료</td>
+                  <td class="num">3,012</td><td class="num">7,028</td><td class="num">0</td><td class="num">10,040</td>
+                </tr>
+                <tr>
+                  <td>처방료 (원외)</td>
+                  <td class="num">3,258</td><td class="num">7,602</td><td class="num">0</td><td class="num">10,860</td>
+                </tr>
+                <tr>
+                  <td>처치료</td>
+                  <td class="num">0</td><td class="num">0</td><td class="num">3,000</td><td class="num">3,000</td>
+                </tr>
+                <tr>
+                  <td>선택진료료</td>
+                  <td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td>
+                </tr>
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td class="grp">소계</td>
+                  <td class="num">9,660</td><td class="num">22,540</td><td class="num">3,000</td><td class="num">35,200</td>
+                </tr>
+                <tr>
+                  <td class="grp big">본인부담 총액 (납부할 금액)</td>
+                  <td class="num big" colspan="3" style="text-align:left;padding-left:12px;color:#444">본인부담금 9,660 + 비급여 3,000</td>
+                  <td class="num big">23,140</td>
+                </tr>
+              </tfoot>
+            </table>
+
+            <!-- 납부 정보 -->
+            <div class="form-cap">납부 정보</div>
+            <div class="pay-info">
+              <div class="pi-cell">
+                <div class="pk">납부할 금액 (본인부담 총액)</div>
+                <div class="pv due tnum">23,140 원</div>
+              </div>
+              <div class="pi-cell">
+                <div class="pk">기납부액</div>
+                <div class="pv tnum">0 원</div>
+              </div>
+              <div class="pi-cell" style="border-top:1px solid #000">
+                <div class="pk">결제 수단</div>
+                <div class="pv" style="font-size:12px">미결제 — 수납 대기</div>
+              </div>
+              <div class="pi-cell" style="border-top:1px solid #000">
+                <div class="pk">미수납 잔액</div>
+                <div class="pv due tnum">23,140 원</div>
+              </div>
+            </div>
+
+            <!-- 발급 / 서명 -->
+            <div class="doc-foot">
+              <div class="issue">
+                발급일자 : <span class="tnum">2026년 06월 19일</span><br>
+                발급담당 : 원무과 김원무<br>
+                <span style="color:#888">※ 본 미리보기는 결제 전 상태입니다. 결제 완료 후 정식 영수증이 발급됩니다.</span>
+              </div>
+              <div class="sign">
+                위 금액을 청구합니다.<br>
+                <b>○○의원</b> <span class="stamp">직인생략(미리보기)</span>
+              </div>
+            </div>
+
+            <div class="doc-legal">
+              본 계산서·영수증은 「국민건강보험법 시행규칙」 별지 서식에 따른 진료비 계산서·영수증입니다.
+              연말정산 의료비 공제 자료는 국세청 홈택스에 자동 제출되며, 본 영수증으로도 증빙할 수 있습니다.
+              발급 후 정정이 필요한 경우 원무과로 문의하시기 바랍니다.
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <div class="foot-note">
+        <b>이 화면이 정의하는 컴포넌트/패턴:</b> 환자 배너(encounter-hub 재사용) · 수가 항목 내역(fee-table) ·
+        금액 요약(amount-summary) · 결제 컨트롤 · 다음 할 일 힌트 · 법정 문서 미리보기(document-preview) ·
+        인쇄/PDF 출력 액션(print-actions). <b>흐름:</b> 수납 → 문서 출력 (결제 완료 시 문서 출력 가능).
+        <b>상태:</b> 결제상태 A3 (미수납/부분수납/완료). <b>의도된 대비:</b> Part 1 = 차분한 앱 UI / Part 2 = 격식 있는 법정 서식.
+      </div>
+
+    </div><!-- /main -->
+  </div><!-- /app -->
+</div><!-- /browser -->
+</body>
+</html>

@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>진료상태 가독성 A/B — 색이냐 크기냐 (점만 유지)</title>
+<!--
+================================================================================
+  STATUS LEGIBILITY A/B — "DOT-ONLY" PRESERVED (Linear-minimal)
+  Question: 현재 진료상태가 약한 이유가 COLOR(색 선택)인가, DOT SIZE / color-area인가?
+  This page isolates SIZE vs COLOR-AREA so the user can decide BY LOOKING.
+
+  Palette lifted verbatim from status-system-1.html → "클리니컬 틸-블루".
+  State mapping is FIXED across every variant (we test RENDERING, not hue):
+    예약   = 슬레이트  #64758A
+    접수   = 앰버      #BC7E12
+    진행중 = 인디고    #4F46C7
+    완료   = 그린      #2C8466
+    취소   = 로즈레드  #C2433B
+  Teal #0E7C8E = action/brand only (buttons/links) — NEVER a status color.
+================================================================================
+-->
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+
+  :root{
+    /* ---- 클리니컬 틸-블루 THEME ---- */
+    --background:#FAFCFC; --surface:#FFFFFF; --surface-muted:#EFF5F5; --border:#D9E5E5;
+    --text-primary:#0E1C1D; --text-muted:#54686A; --text-disabled:#97A9AA;
+    --primary:#0E7C8E; --primary-foreground:#FFFFFF; --primary-hover:#0A6675; --ring:#2C9FB0;
+    --danger:#C2433B;
+
+    /* ---- 진료상태 colors (FIXED — never brand teal) ---- */
+    --st-reserved:#64758A;  /* 예약   slate    */
+    --st-checkin:#BC7E12;   /* 접수   amber    */
+    --st-progress:#4F46C7;  /* 진행중 indigo   */
+    --st-done:#2C8466;      /* 완료   green     */
+    --st-cancel:#C2433B;    /* 취소   rose-red  */
+    /* amber label darkened for text-legibility on white (same hue family) */
+    --st-checkin-ink:#8A5D09;
+  }
+
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+    background:#eceef1; color:var(--text-primary); font-size:13px; line-height:1.5;
+    padding:28px 22px 72px;
+  }
+  .wrap{max-width:1080px; margin:0 auto; display:flex; flex-direction:column; gap:26px}
+
+  /* ---- page header ---- */
+  .page-head h1{font-size:19px; font-weight:650; letter-spacing:-0.01em; color:var(--text-primary)}
+  .page-head p{font-size:12.5px; color:var(--text-muted); margin-top:6px; line-height:1.7}
+  .page-head .meta{font-size:11.5px; color:#7b8089; margin-top:9px; line-height:1.75}
+  .page-head code{font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;font-size:11px;background:#fff;border:1px solid #dfe2e6;border-radius:4px;padding:1px 5px}
+  .swatch-tag{display:inline-flex;align-items:center;gap:6px}
+  .swatch-tag .sw{width:11px;height:11px;border-radius:3px;border:1px solid rgba(0,0,0,.12);display:inline-block;background:var(--primary)}
+
+  /* ---- big section divider (PART 1 / PART 2) ---- */
+  .part-head{margin:6px 2px -6px}
+  .part-head .pkr{font-size:11px; font-weight:800; letter-spacing:.12em; color:var(--primary)}
+  .part-head h2{font-size:16px; font-weight:700; letter-spacing:-0.01em; color:var(--text-primary); margin-top:3px}
+  .part-head p{font-size:12px; color:var(--text-muted); margin-top:5px; line-height:1.65}
+  .part-head .rule{height:2px; background:linear-gradient(90deg,var(--primary),transparent); border-radius:2px; margin-top:11px}
+
+  /* ---- legend strip ---- */
+  .legend{border:1px solid var(--border); background:var(--surface); border-radius:11px; padding:11px 16px;
+    display:flex; align-items:center; flex-wrap:wrap; gap:7px 20px}
+  .legend .lg-label{font-size:11px; font-weight:700; letter-spacing:.05em; color:#7b8089; text-transform:uppercase; margin-right:4px}
+  .legend .lg{display:inline-flex; align-items:center; gap:7px; font-size:12.5px; font-weight:600; white-space:nowrap}
+  .legend .lg .ld{width:9px; height:9px; border-radius:50%; flex:none}
+  .legend .lg-reserved{color:var(--st-reserved)} .legend .lg-reserved .ld{background:var(--st-reserved)}
+  .legend .lg-checkin{color:var(--st-checkin-ink)} .legend .lg-checkin .ld{background:var(--st-checkin)}
+  .legend .lg-progress{color:var(--st-progress)} .legend .lg-progress .ld{background:var(--st-progress)}
+  .legend .lg-done{color:var(--st-done)} .legend .lg-done .ld{background:var(--st-done)}
+  .legend .lg-cancel{color:var(--st-cancel)} .legend .lg-cancel .ld{background:var(--st-cancel)}
+  .legend .lg-note{font-size:11px; color:var(--text-muted); font-weight:400; margin-left:auto}
+
+  /* ---- variant card ---- */
+  .panel{border:1px solid var(--border); background:var(--surface); border-radius:11px; overflow:hidden}
+  .panel-head{padding:13px 18px; border-bottom:1px solid var(--border); background:var(--background)}
+  .panel-head .ph-title{font-size:14px; font-weight:650; letter-spacing:-0.01em; color:var(--text-primary)}
+  .panel-head .ph-tag{
+    display:inline-block; font-size:10.5px; font-weight:700; letter-spacing:.04em;
+    color:var(--primary); background:color-mix(in srgb,var(--primary) 9%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--primary) 24%,var(--surface));
+    border-radius:5px; padding:1px 7px; margin-right:9px; vertical-align:1px;
+  }
+  .caption{font-size:11.5px; color:var(--text-muted); margin-top:5px; line-height:1.6}
+  .caption b{color:var(--text-primary); font-weight:600}
+
+  /* ---- board header ---- */
+  .bd-head{display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-bottom:1px solid var(--border); background:var(--surface)}
+  .bd-head .ttl{font-size:13px; font-weight:600; color:var(--text-primary); display:inline-flex; align-items:center; gap:8px}
+  .bd-head .ttl .cnt{font-size:11px; font-weight:500; color:var(--text-muted); background:var(--surface-muted); border:1px solid var(--border); border-radius:20px; padding:1px 8px}
+  .btn-primary{
+    font-family:inherit; font-size:12px; font-weight:550;
+    color:var(--primary-foreground); background:var(--primary);
+    border:1px solid var(--primary-hover); border-radius:6px; padding:5px 11px; cursor:pointer;
+    display:inline-flex; align-items:center; gap:6px;
+  }
+  .btn-primary:hover{background:var(--primary-hover)}
+  .btn-primary .ic{font-size:11px; line-height:1}
+
+  /* ============================================================
+     TABLE — dense, hairline, Linear-minimal (identical everywhere)
+     ============================================================ */
+  table.q{width:100%; border-collapse:collapse; font-size:13px; table-layout:fixed}
+  table.q col.c-num{width:14%} table.q col.c-name{width:20%} table.q col.c-st{width:30%}
+  table.q col.c-doc{width:20%} table.q col.c-wait{width:16%}
+  table.q thead th{
+    text-align:left; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.05em;
+    color:var(--text-muted); padding:7px 14px; border-bottom:1px solid var(--border); background:var(--background); white-space:nowrap;
+  }
+  table.q tbody td{padding:6px 14px; border-bottom:1px solid var(--border); color:var(--text-primary); vertical-align:middle; white-space:nowrap}
+  table.q tbody tr:last-child td{border-bottom:none}
+  /* subtle hover (faint surface-muted) — kept light so Part-2 tints aren't overpowered */
+  table.q tbody tr:hover{background:var(--surface-muted)}
+  table.q .num{font-variant-numeric:tabular-nums; color:var(--text-muted)}
+  table.q .name{font-weight:500}
+  table.q .doc{color:var(--text-muted)}
+  table.q .wait{font-variant-numeric:tabular-nums; color:var(--text-primary)}
+  table.q .wait.long{color:var(--danger); font-weight:600}
+  table.q .wait.none{color:var(--text-disabled)}
+
+  /* ============================================================
+     DOT-ONLY STATUS PRIMITIVES — the variables under test
+     ============================================================ */
+  .status{display:inline-flex; align-items:center; gap:7px; white-space:nowrap; font-size:13px}
+  /* dot sizes */
+  .dot{border-radius:50%; flex:none}
+  .dot.sm{width:8px; height:8px}
+  .dot.lg{width:12px; height:12px}
+  .dot.d-reserved{background:var(--st-reserved)}
+  .dot.d-checkin{background:var(--st-checkin)}
+  .dot.d-progress{background:var(--st-progress)}
+  .dot.d-done{background:var(--st-done)}
+  .dot.d-cancel{background:var(--st-cancel)}
+  /* label tone: grey (text-primary) vs state-color */
+  .status.lab-grey{color:var(--text-primary)}
+  .status.lab-color.l-reserved{color:var(--st-reserved)}
+  .status.lab-color.l-checkin {color:var(--st-checkin-ink)}
+  .status.lab-color.l-progress{color:var(--st-progress)}
+  .status.lab-color.l-done    {color:var(--st-done)}
+  .status.lab-color.l-cancel  {color:var(--st-cancel)}
+
+  /* ============================================================
+     PART 2 — row tints (built on big dot + colored label)
+     Tints applied via CSS var so :hover (surface-muted) still reads on top.
+     ============================================================ */
+  /* B1 — every row washed in its state color (~6-8%) */
+  tr.t-reserved{background:color-mix(in srgb,var(--st-reserved) 7%,var(--surface))}
+  tr.t-checkin {background:color-mix(in srgb,var(--st-checkin) 8%,var(--surface))}
+  tr.t-progress{background:color-mix(in srgb,var(--st-progress) 7%,var(--surface))}
+  tr.t-done    {background:color-mix(in srgb,var(--st-done) 7%,var(--surface))}
+  tr.t-cancel  {background:color-mix(in srgb,var(--st-cancel) 7%,var(--surface))}
+  /* B2 — ONLY action rows (접수/진행중) get a faint ~5% tint; others stay white */
+  tr.ta-checkin {background:color-mix(in srgb,var(--st-checkin) 5%,var(--surface))}
+  tr.ta-progress{background:color-mix(in srgb,var(--st-progress) 5%,var(--surface))}
+  /* B3 — action-row tint + 2px left color strip (action rows only) */
+  table.lstrip tbody td:first-child{position:relative}
+  tr.lb-checkin  td:first-child::before,
+  tr.lb-progress td:first-child::before{content:""; position:absolute; left:0; top:0; bottom:0; width:2px}
+  tr.lb-checkin  td:first-child::before{background:var(--st-checkin)}
+  tr.lb-progress td:first-child::before{background:var(--st-progress)}
+
+  .foot-note{font-size:11.5px; color:var(--text-muted); line-height:1.75; padding:2px 2px 0}
+  .foot-note b{color:var(--text-primary); font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ===================== PAGE HEADER ===================== -->
+  <div class="page-head">
+    <h1>진료상태 가독성 A/B — “색이냐 크기냐”</h1>
+    <p>
+      미니멀 <span class="swatch-tag"><span class="sw"></span><strong>클리니컬 틸-블루</strong></span> · Linear식 <strong>점만(dot-only)</strong> 미감은 그대로 유지.
+      매핑은 5개 상태 모두 <strong>고정</strong>(색조 테스트 아님) — 바꾸는 건 오직 <strong>점 크기</strong>와 <strong>라벨 색(=컬러 면적)</strong> 두 축.
+    </p>
+    <p class="meta">
+      Part 1: 같은 표를 4번 렌더 — 점 크기(8↔12px) × 라벨 톤(회색↔컬러)을 교차해, 약한 원인이 <strong>크기</strong>인지 <strong>컬러 면적</strong>인지 분리.<br>
+      Part 2: Part 1의 “큰 점 + 컬러 라벨”을 베이스로 <strong>행 배경</strong>을 3단계로 추가 — “번잡한가?”를 직접 눈으로 검증.<br>
+      <code>예약</code>(슬레이트)·<code>취소</code>(로즈)를 <b>인접 배치</b>해 옛 회색-vs-회색 혼동을 바로 비교 가능하게 둠. 틸 <code>#0E7C8E</code>는 버튼/링크 전용.
+    </p>
+  </div>
+
+  <!-- ===================== LEGEND STRIP ===================== -->
+  <div class="legend">
+    <span class="lg-label">상태</span>
+    <span class="lg lg-reserved"><span class="ld"></span>예약</span>
+    <span class="lg lg-checkin"><span class="ld"></span>접수</span>
+    <span class="lg lg-progress"><span class="ld"></span>진행중</span>
+    <span class="lg lg-done"><span class="ld"></span>완료</span>
+    <span class="lg lg-cancel"><span class="ld"></span>취소</span>
+    <span class="lg-note">매핑 고정 · 점만 유지(배경 없음)</span>
+  </div>
+
+  <!-- ============================================================
+       PART 1
+       ============================================================ -->
+  <div class="part-head">
+    <div class="pkr">PART 1 · 진단</div>
+    <h2>색이냐 크기냐 — 점만 유지 (배경 없음)</h2>
+    <p>점 크기와 라벨 색(컬러 면적)만 교차. 어느 축이 가독성을 끌어올리는지 한 화면에서 비교하세요.</p>
+    <div class="rule"></div>
+  </div>
+
+  <!-- ===== A1 ===== -->
+  <section class="panel">
+    <div class="panel-head">
+      <div class="ph-title"><span class="ph-tag">A1</span>작은 점 + 회색 라벨 (현재 · 베이스라인)</div>
+      <div class="caption">~8px 점 + 라벨은 <b>text-primary 회색</b>. 색은 점 하나에만 존재 → <b>예약·취소가 둘 다 회색 글자</b>로 읽혀 옛 혼동이 재현됨. (대조군)</div>
+    </div>
+    <div class="bd-head"><span class="ttl">진료 대기 현황판 <span class="cnt">총 8명</span></span><button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button></div>
+    <table class="q">
+      <colgroup><col class="c-num"><col class="c-name"><col class="c-st"><col class="c-doc"><col class="c-wait"></colgroup>
+      <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+      <tbody>
+        <tr><td class="num">A-012</td><td class="name">김영희</td><td><span class="status lab-grey"><span class="dot sm d-progress"></span>진행중</span></td><td class="doc">이정훈</td><td class="wait">04:12</td></tr>
+        <tr><td class="num">A-013</td><td class="name">박철수</td><td><span class="status lab-grey"><span class="dot sm d-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">08:45</td></tr>
+        <tr><td class="num">A-014</td><td class="name">이민준</td><td><span class="status lab-grey"><span class="dot sm d-checkin"></span>접수</span></td><td class="doc">서민경</td><td class="wait long">21:30</td></tr>
+        <tr><td class="num">A-015</td><td class="name">정수아</td><td><span class="status lab-grey"><span class="dot sm d-reserved"></span>예약</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-016</td><td class="name">한지우</td><td><span class="status lab-grey"><span class="dot sm d-cancel"></span>취소</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-010</td><td class="name">오세훈</td><td><span class="status lab-grey"><span class="dot sm d-done"></span>완료</span></td><td class="doc">이정훈</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-017</td><td class="name">윤서연</td><td><span class="status lab-grey"><span class="dot sm d-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">12:05</td></tr>
+        <tr><td class="num">A-011</td><td class="name">강도윤</td><td><span class="status lab-grey"><span class="dot sm d-done"></span>완료</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ===== A2 ===== -->
+  <section class="panel">
+    <div class="panel-head">
+      <div class="ph-title"><span class="ph-tag">A2</span>큰 점 + 회색 라벨</div>
+      <div class="caption"><b>크기 축만</b> 변경: ~12px 점 + 회색 라벨. “점을 키우면 충분한가?”를 검증 — 색 면적은 여전히 점뿐이라 예약·취소 글자는 똑같이 회색.</div>
+    </div>
+    <div class="bd-head"><span class="ttl">진료 대기 현황판 <span class="cnt">총 8명</span></span><button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button></div>
+    <table class="q">
+      <colgroup><col class="c-num"><col class="c-name"><col class="c-st"><col class="c-doc"><col class="c-wait"></colgroup>
+      <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+      <tbody>
+        <tr><td class="num">A-012</td><td class="name">김영희</td><td><span class="status lab-grey"><span class="dot lg d-progress"></span>진행중</span></td><td class="doc">이정훈</td><td class="wait">04:12</td></tr>
+        <tr><td class="num">A-013</td><td class="name">박철수</td><td><span class="status lab-grey"><span class="dot lg d-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">08:45</td></tr>
+        <tr><td class="num">A-014</td><td class="name">이민준</td><td><span class="status lab-grey"><span class="dot lg d-checkin"></span>접수</span></td><td class="doc">서민경</td><td class="wait long">21:30</td></tr>
+        <tr><td class="num">A-015</td><td class="name">정수아</td><td><span class="status lab-grey"><span class="dot lg d-reserved"></span>예약</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-016</td><td class="name">한지우</td><td><span class="status lab-grey"><span class="dot lg d-cancel"></span>취소</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-010</td><td class="name">오세훈</td><td><span class="status lab-grey"><span class="dot lg d-done"></span>완료</span></td><td class="doc">이정훈</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-017</td><td class="name">윤서연</td><td><span class="status lab-grey"><span class="dot lg d-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">12:05</td></tr>
+        <tr><td class="num">A-011</td><td class="name">강도윤</td><td><span class="status lab-grey"><span class="dot lg d-done"></span>완료</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ===== A3 ===== -->
+  <section class="panel">
+    <div class="panel-head">
+      <div class="ph-title"><span class="ph-tag">A3</span>작은 점 + 컬러 라벨</div>
+      <div class="caption"><b>컬러 면적 축만</b> 변경: ~8px 점은 그대로, <b>라벨 글자를 상태색</b>으로. 색이 글자까지 번져 예약(슬레이트)·취소(로즈)가 글자색만으로 갈림.</div>
+    </div>
+    <div class="bd-head"><span class="ttl">진료 대기 현황판 <span class="cnt">총 8명</span></span><button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button></div>
+    <table class="q">
+      <colgroup><col class="c-num"><col class="c-name"><col class="c-st"><col class="c-doc"><col class="c-wait"></colgroup>
+      <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+      <tbody>
+        <tr><td class="num">A-012</td><td class="name">김영희</td><td><span class="status lab-color l-progress"><span class="dot sm d-progress"></span>진행중</span></td><td class="doc">이정훈</td><td class="wait">04:12</td></tr>
+        <tr><td class="num">A-013</td><td class="name">박철수</td><td><span class="status lab-color l-checkin"><span class="dot sm d-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">08:45</td></tr>
+        <tr><td class="num">A-014</td><td class="name">이민준</td><td><span class="status lab-color l-checkin"><span class="dot sm d-checkin"></span>접수</span></td><td class="doc">서민경</td><td class="wait long">21:30</td></tr>
+        <tr><td class="num">A-015</td><td class="name">정수아</td><td><span class="status lab-color l-reserved"><span class="dot sm d-reserved"></span>예약</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-016</td><td class="name">한지우</td><td><span class="status lab-color l-cancel"><span class="dot sm d-cancel"></span>취소</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-010</td><td class="name">오세훈</td><td><span class="status lab-color l-done"><span class="dot sm d-done"></span>완료</span></td><td class="doc">이정훈</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-017</td><td class="name">윤서연</td><td><span class="status lab-color l-checkin"><span class="dot sm d-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">12:05</td></tr>
+        <tr><td class="num">A-011</td><td class="name">강도윤</td><td><span class="status lab-color l-done"><span class="dot sm d-done"></span>완료</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ===== A4 ===== -->
+  <section class="panel">
+    <div class="panel-head">
+      <div class="ph-title"><span class="ph-tag">A4</span>큰 점 + 컬러 라벨 (두 축 모두)</div>
+      <div class="caption"><b>두 축 동시</b>: ~12px 점 + 상태색 라벨. 점만 유지하는 범위에서 가장 또렷한 후보 — Part 2의 베이스로 사용.</div>
+    </div>
+    <div class="bd-head"><span class="ttl">진료 대기 현황판 <span class="cnt">총 8명</span></span><button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button></div>
+    <table class="q">
+      <colgroup><col class="c-num"><col class="c-name"><col class="c-st"><col class="c-doc"><col class="c-wait"></colgroup>
+      <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+      <tbody>
+        <tr><td class="num">A-012</td><td class="name">김영희</td><td><span class="status lab-color l-progress"><span class="dot lg d-progress"></span>진행중</span></td><td class="doc">이정훈</td><td class="wait">04:12</td></tr>
+        <tr><td class="num">A-013</td><td class="name">박철수</td><td><span class="status lab-color l-checkin"><span class="dot lg d-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">08:45</td></tr>
+        <tr><td class="num">A-014</td><td class="name">이민준</td><td><span class="status lab-color l-checkin"><span class="dot lg d-checkin"></span>접수</span></td><td class="doc">서민경</td><td class="wait long">21:30</td></tr>
+        <tr><td class="num">A-015</td><td class="name">정수아</td><td><span class="status lab-color l-reserved"><span class="dot lg d-reserved"></span>예약</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-016</td><td class="name">한지우</td><td><span class="status lab-color l-cancel"><span class="dot lg d-cancel"></span>취소</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-010</td><td class="name">오세훈</td><td><span class="status lab-color l-done"><span class="dot lg d-done"></span>완료</span></td><td class="doc">이정훈</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-017</td><td class="name">윤서연</td><td><span class="status lab-color l-checkin"><span class="dot lg d-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">12:05</td></tr>
+        <tr><td class="num">A-011</td><td class="name">강도윤</td><td><span class="status lab-color l-done"><span class="dot lg d-done"></span>완료</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ============================================================
+       PART 2
+       ============================================================ -->
+  <div class="part-head">
+    <div class="pkr">PART 2 · 행 배경</div>
+    <h2>행 틴트 추가 — “번잡한가?” 검증</h2>
+    <p>베이스 = A4(큰 점 + 컬러 라벨). 행 배경을 0→전체→절제 순으로 늘려가며, 어디서 “스캔 잘 됨”과 “번잡함”이 갈리는지 확인하세요.</p>
+    <div class="rule"></div>
+  </div>
+
+  <!-- ===== B1 ===== -->
+  <section class="panel">
+    <div class="panel-head">
+      <div class="ph-title"><span class="ph-tag">B1</span>전 상태 행 틴트 (번잡 케이스 · 일부러)</div>
+      <div class="caption">모든 행이 자기 상태색으로 옅게(~6-8%) 물듦. <b>5색 풀 틴팅이 과한지</b>를 일부러 보여주는 케이스 — 색 줄무늬가 표를 시끄럽게 만드는지 판단용.</div>
+    </div>
+    <div class="bd-head"><span class="ttl">진료 대기 현황판 <span class="cnt">총 8명</span></span><button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button></div>
+    <table class="q">
+      <colgroup><col class="c-num"><col class="c-name"><col class="c-st"><col class="c-doc"><col class="c-wait"></colgroup>
+      <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+      <tbody>
+        <tr class="t-progress"><td class="num">A-012</td><td class="name">김영희</td><td><span class="status lab-color l-progress"><span class="dot lg d-progress"></span>진행중</span></td><td class="doc">이정훈</td><td class="wait">04:12</td></tr>
+        <tr class="t-checkin"><td class="num">A-013</td><td class="name">박철수</td><td><span class="status lab-color l-checkin"><span class="dot lg d-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">08:45</td></tr>
+        <tr class="t-checkin"><td class="num">A-014</td><td class="name">이민준</td><td><span class="status lab-color l-checkin"><span class="dot lg d-checkin"></span>접수</span></td><td class="doc">서민경</td><td class="wait long">21:30</td></tr>
+        <tr class="t-reserved"><td class="num">A-015</td><td class="name">정수아</td><td><span class="status lab-color l-reserved"><span class="dot lg d-reserved"></span>예약</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        <tr class="t-cancel"><td class="num">A-016</td><td class="name">한지우</td><td><span class="status lab-color l-cancel"><span class="dot lg d-cancel"></span>취소</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        <tr class="t-done"><td class="num">A-010</td><td class="name">오세훈</td><td><span class="status lab-color l-done"><span class="dot lg d-done"></span>완료</span></td><td class="doc">이정훈</td><td class="wait none">—</td></tr>
+        <tr class="t-checkin"><td class="num">A-017</td><td class="name">윤서연</td><td><span class="status lab-color l-checkin"><span class="dot lg d-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">12:05</td></tr>
+        <tr class="t-done"><td class="num">A-011</td><td class="name">강도윤</td><td><span class="status lab-color l-done"><span class="dot lg d-done"></span>완료</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+      </tbody>
+    </table>
+    <div class="panel-head" style="border-top:1px solid var(--border);border-bottom:none;background:var(--surface)">
+      <div class="caption"><b>트레이드오프:</b> 행 단위 색 구분은 최강이지만 5색이 동시에 떠 <b>“번잡”</b>으로 기울기 쉬움 — 미니멀 미감과 충돌.</div>
+    </div>
+  </section>
+
+  <!-- ===== B2 ===== -->
+  <section class="panel">
+    <div class="panel-head">
+      <div class="ph-title"><span class="ph-tag">B2</span>액션 상태만 틴트 (절제)</div>
+      <div class="caption"><b>접수·진행중</b> 행만 옅게(~5%) 틴트, <b>예약/완료/취소</b>는 흰 면 유지. “다음에 할 일” 원칙대로 <b>처리할 행만</b> 떠오르게 — 번잡 없이.</div>
+    </div>
+    <div class="bd-head"><span class="ttl">진료 대기 현황판 <span class="cnt">조치 필요 3명</span></span><button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button></div>
+    <table class="q">
+      <colgroup><col class="c-num"><col class="c-name"><col class="c-st"><col class="c-doc"><col class="c-wait"></colgroup>
+      <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+      <tbody>
+        <tr class="ta-progress"><td class="num">A-012</td><td class="name">김영희</td><td><span class="status lab-color l-progress"><span class="dot lg d-progress"></span>진행중</span></td><td class="doc">이정훈</td><td class="wait">04:12</td></tr>
+        <tr class="ta-checkin"><td class="num">A-013</td><td class="name">박철수</td><td><span class="status lab-color l-checkin"><span class="dot lg d-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">08:45</td></tr>
+        <tr class="ta-checkin"><td class="num">A-014</td><td class="name">이민준</td><td><span class="status lab-color l-checkin"><span class="dot lg d-checkin"></span>접수</span></td><td class="doc">서민경</td><td class="wait long">21:30</td></tr>
+        <tr><td class="num">A-015</td><td class="name">정수아</td><td><span class="status lab-color l-reserved"><span class="dot lg d-reserved"></span>예약</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-016</td><td class="name">한지우</td><td><span class="status lab-color l-cancel"><span class="dot lg d-cancel"></span>취소</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-010</td><td class="name">오세훈</td><td><span class="status lab-color l-done"><span class="dot lg d-done"></span>완료</span></td><td class="doc">이정훈</td><td class="wait none">—</td></tr>
+        <tr class="ta-checkin"><td class="num">A-017</td><td class="name">윤서연</td><td><span class="status lab-color l-checkin"><span class="dot lg d-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">12:05</td></tr>
+        <tr><td class="num">A-011</td><td class="name">강도윤</td><td><span class="status lab-color l-done"><span class="dot lg d-done"></span>완료</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+      </tbody>
+    </table>
+    <div class="panel-head" style="border-top:1px solid var(--border);border-bottom:none;background:var(--surface)">
+      <div class="caption"><b>트레이드오프:</b> 면이 두 색뿐이라 조용함 + “할 일” 강조. 단, 틴트가 옅어 행 자체보다 라벨 색에 더 의존.</div>
+    </div>
+  </section>
+
+  <!-- ===== B3 ===== -->
+  <section class="panel">
+    <div class="panel-head">
+      <div class="ph-title"><span class="ph-tag">B3</span>액션 상태만 틴트 + 좌측 2px 컬러 띠 (접수·진행중)</div>
+      <div class="caption">B2에 <b>액션 행 왼쪽 2px 색 띠</b>만 더함. 옅은 틴트의 약한 경계를 띠가 보강 — <b>“스캔되지만 차분한”</b> 가장 균형 잡힌 후보.</div>
+    </div>
+    <div class="bd-head"><span class="ttl">진료 대기 현황판 <span class="cnt">조치 필요 3명</span></span><button class="btn-primary"><span class="ic">▶</span>다음 환자 호출</button></div>
+    <table class="q lstrip">
+      <colgroup><col class="c-num"><col class="c-name"><col class="c-st"><col class="c-doc"><col class="c-wait"></colgroup>
+      <thead><tr><th>대기번호</th><th>환자명</th><th>진료상태</th><th>담당의</th><th>대기시간</th></tr></thead>
+      <tbody>
+        <tr class="ta-progress lb-progress"><td class="num">A-012</td><td class="name">김영희</td><td><span class="status lab-color l-progress"><span class="dot lg d-progress"></span>진행중</span></td><td class="doc">이정훈</td><td class="wait">04:12</td></tr>
+        <tr class="ta-checkin lb-checkin"><td class="num">A-013</td><td class="name">박철수</td><td><span class="status lab-color l-checkin"><span class="dot lg d-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">08:45</td></tr>
+        <tr class="ta-checkin lb-checkin"><td class="num">A-014</td><td class="name">이민준</td><td><span class="status lab-color l-checkin"><span class="dot lg d-checkin"></span>접수</span></td><td class="doc">서민경</td><td class="wait long">21:30</td></tr>
+        <tr><td class="num">A-015</td><td class="name">정수아</td><td><span class="status lab-color l-reserved"><span class="dot lg d-reserved"></span>예약</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-016</td><td class="name">한지우</td><td><span class="status lab-color l-cancel"><span class="dot lg d-cancel"></span>취소</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+        <tr><td class="num">A-010</td><td class="name">오세훈</td><td><span class="status lab-color l-done"><span class="dot lg d-done"></span>완료</span></td><td class="doc">이정훈</td><td class="wait none">—</td></tr>
+        <tr class="ta-checkin lb-checkin"><td class="num">A-017</td><td class="name">윤서연</td><td><span class="status lab-color l-checkin"><span class="dot lg d-checkin"></span>접수</span></td><td class="doc">이정훈</td><td class="wait">12:05</td></tr>
+        <tr><td class="num">A-011</td><td class="name">강도윤</td><td><span class="status lab-color l-done"><span class="dot lg d-done"></span>완료</span></td><td class="doc">서민경</td><td class="wait none">—</td></tr>
+      </tbody>
+    </table>
+    <div class="panel-head" style="border-top:1px solid var(--border);border-bottom:none;background:var(--surface)">
+      <div class="caption"><b>트레이드오프:</b> 띠가 “할 일 행”의 시작 가장자리를 또렷이 잡아줘 스캔성↑, 면적은 그대로라 차분함 유지. 띠는 액션 행에만 — 5색 줄무늬(B1)의 번잡은 피함.</div>
+    </div>
+  </section>
+
+  <!-- ===== HOVER NOTE ===== -->
+  <div class="foot-note">
+    <b>호버 처리:</b> 모든 표의 행 호버는 옅은 <code>surface-muted</code>(#EFF5F5) 강조로 통일. Part 2 행 틴트(5-8%)는 호버 음영보다 옅어 <b>호버가 항상 위로 읽히도록</b> 의도 — 틴트와 호버가 서로 싸우지 않음. B3의 좌측 2px 띠는 셀 위에 절대배치라 호버 음영과 무관하게 유지됩니다.
+  </div>
+
+</div>
+</body>
+</html>
