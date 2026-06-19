@@ -41,6 +41,10 @@ mobile/.flutter-plugins-dependencies
 **/android/.gradle/
 **/android/local.properties
 *.iml
+# Android 서명 키 (절대 커밋 금지)
+**/android/key.properties
+*.keystore
+*.jks
 
 # ── 로그·OS·IDE
 *.log

@@ -34,7 +34,7 @@ patient_management_system/
 └── _bmad-output/planning-artifacts/   # 기획 산출물 (아래)
 ```
 
-> 코드 디렉토리(`supabase/ api/ web/ mobile/`)는 구현 Story 1.1(Init)에서 생성된다.
+> 코드 디렉토리(`supabase/ api/ web/ mobile/`)는 Story 1.1(Init)에서 생성되었다 ✅
 
 ## 계획 산출물 (Planning Artifacts)
 
@@ -52,6 +52,15 @@ patient_management_system/
 
 ## 현재 상태
 
-🟢 **계획 페이즈 완료 · 구현 준비도 READY** — 다음: 스프린트 계획 → Story 1.1(Init) 구현 착수.
+🟢 **Story 1.1(Init) 구현 완료** — 모노레포 4개 서피스 스캐폴드(supabase/api/web/mobile) + 배포 토대(docker-compose · nginx · Dockerfile)가 섰다. 다음: Story 1.2(디자인 시스템·전역 셸) → Epic 1 인증 코어.
+
+**로컬 개발 구동:**
+```bash
+supabase start                          # 로컬 Postgres/Auth/Storage
+cd api && uv run fastapi dev app/main.py  # FastAPI :8000 (/health)
+cd web && npm run dev                    # Next.js (basePath=/patient_management_system)
+```
+
+**배포(홈서버):** 110에서 `docker compose up -d`(web 3002 / api 8060) ← 108 nginx(`deploy/nginx_patient_management_system.conf`). Supabase는 클라우드 관리형.
 
 개발은 의미 있는 단위마다 단계별 커밋으로 진행한다.

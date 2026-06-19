@@ -1,0 +1,135 @@
+# generated: 2026-06-19T17:59:12+0000
+# last_updated: 2026-06-19T19:36:05+0000
+# project: patient_management_system
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 2026-06-19T17:59:12+0000
+last_updated: 2026-06-19T19:36:05+0000
+project: patient_management_system
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+
+development_status:
+  # ── Epic 1: 플랫폼 기반 · 신원 · 접근 통제 ──
+  epic-1: in-progress
+  1-1-모노레포-4개-서피스-스캐폴드-초기화-init: review
+  1-2-디자인-시스템-토큰-전역-셸-골격: backlog
+  1-3-신원-rbac-스키마-rls-헬퍼-감사-트리거-db: backlog
+  1-4-분리-프로필-로그인-supabase-auth: backlog
+  1-5-fastapi-인증-rbac-강제-jwks-권한-의존성: backlog
+  1-6-미들웨어-가드-역할별-셸-노출-rbac-ui-게이트: backlog
+  1-7-rbac-권한-매트릭스-관리자: backlog
+  1-8-직원-계정-재직상태-관리-관리자: backlog
+  1-9-주민번호-암호화-감사-reveal-프리미티브: backlog
+  1-10-감사-로그-뷰어-관리자-append-only: backlog
+  epic-1-retrospective: optional
+
+  # ── Epic 2: 표준 마스터 데이터 ──
+  epic-2: backlog
+  2-1-진료과-진료실-마스터-관리: backlog
+  2-2-코드-마스터-관리-kcd진단-edi수가-약품-버전-유효기간: backlog
+  2-3-마스터-검색-피커-자유-입력-제한: backlog
+  2-4-마스터-비활성-soft-delete-참조-무결성: backlog
+  2-5-마스터-시드-데이터-seed-sql: backlog
+  epic-2-retrospective: optional
+
+  # ── Epic 3: 환자 등록 · 프로필 ──
+  epic-3: backlog
+  3-1-환자-레코드-생성-원무-직접-등록-암호화-rls-적용: backlog
+  3-2-환자-임상-프로필-입력-조회: backlog
+  3-3-보호자-정보-기록: backlog
+  3-4-환자-앱-자가가입-기존-레코드-자동-연결: backlog
+  3-5-전역-환자-검색-ctrl-k-커맨드-팔레트: backlog
+  epic-3-retrospective: optional
+
+  # ── Epic 4: 내원 파이프라인 — 접수·대기·진찰·기록 ──
+  epic-4: backlog
+  4-1-내원-상태머신-전이-rpc-db: backlog
+  4-2-환자-접수-예약-walk-in: backlog
+  4-3-대기-현황판-실시간-다음-호출: backlog
+  4-4-진료-대기열-진찰-시작: backlog
+  4-5-진료-허브-환자-배너-과거-이력-활력-컨텍스트: backlog
+  4-6-soap-진료기록-작성: backlog
+  4-7-진단-부착-kcd-주-부상병-구분: backlog
+  epic-4-retrospective: optional
+
+  # ── Epic 5: 오더 · 수행 — 처방·검사·처치·간호·방사선 ──
+  epic-5: backlog
+  5-1-오더-생명주기-스키마-상태머신-db: backlog
+  5-2-처방-오더-발행-중복-경고: backlog
+  5-3-검사-영상-오더: backlog
+  5-4-처치-오더: backlog
+  5-5-오더-패널-알레르기-교차검증-누락-0-디텍터: backlog
+  5-6-간호-활력징후-기록: backlog
+  5-7-간호-처치-수행-재수행-차단-일상-간호기록: backlog
+  5-8-방사선-촬영-영상-업로드-장비: backlog
+  5-9-영상-판독-검사-오더-완료: backlog
+  5-10-수가-자동발생-트리거-가동: backlog
+  epic-5-retrospective: optional
+
+  # ── Epic 6: 예약 · 근무 스케줄 ──
+  epic-6: backlog
+  6-1-근무표-휴진-예외-관리-db-관리자: backlog
+  6-2-동적-가용-슬롯-계산: backlog
+  6-3-예약-캘린더-더블부킹-차단: backlog
+  6-4-원무-대리-예약-생성-변경-취소: backlog
+  6-5-환자-앱-예약: backlog
+  6-6-sms-리마인더-시뮬-로그: backlog
+  6-7-노쇼-카운트-임계치-제한: backlog
+  6-8-휴진-시-영향-예약-재배정: backlog
+  epic-6-retrospective: optional
+
+  # ── Epic 7: 수납 · 정산 · 표준 문서 ──
+  epic-7: backlog
+  7-1-수납-스키마-수가-매핑-db: backlog
+  7-2-수납-건-생성-집계: backlog
+  7-3-급여-비급여-구분-본인부담-산정: backlog
+  7-4-수납-처리-내원-완료: backlog
+  7-5-진료비-계산서-영수증-출력: backlog
+  7-6-진료비-세부산정내역서-출력: backlog
+  7-7-원외처방전-출력-발급: backlog
+  7-8-수납-정책-후수납-선수납: backlog
+  7-9-취소-노쇼-정산-수가-미발생: backlog
+  7-10-부분-수행-정산: backlog
+  epic-7-retrospective: optional
+
+  # ── Epic 8: 환자 포털 · 운영 대시보드 ──
+  epic-8: backlog
+  8-1-환자-포털-내-진료내역: backlog
+  8-2-환자-포털-처방-검사-결과: backlog
+  8-3-환자-포털-수납-영수증: backlog
+  8-4-환자-앱-apk-패키징-배포: backlog
+  8-5-운영-대시보드-통계-관리자: backlog
+  epic-8-retrospective: optional
