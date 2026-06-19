@@ -1,0 +1,8 @@
+-- patient_management_system — seed.sql (골격)
+-- db reset 시 마이그레이션 적용 후 실행된다 (config.toml [db.seed]).
+--
+-- 🟡 실제 마스터 시드는 후속 스토리(Epic 2 / Story 2.5)가 작성한다:
+--    EDI 수가 · 약품 · KCD 진단 · 진료과 · 진료실 마스터 + 샘플 데이터.
+--    수가 자동발생 매핑(fee_mappings) 시드도 수납 에픽 착수 전 작성(다운스트림).
+--
+-- 식별자는 영문 snake_case, 한국어는 표시명(display_name)·주석만 (docs/glossary.md 단일 진실).

@@ -1,0 +1,6 @@
+# 마이그레이션은 후속 스토리가 순번대로 작성한다 (아키텍처 §스키마 단일 소유):
+#   0001_extensions · 0002_identity_rbac · 0003_rls_helpers · 0004_audit
+#   0005_masters · 0006_patients · 0007_encounters · 0008_clinical
+#   0009_orders · 0010_nursing · 0011_scheduling · 0012_billing
+#   0013_notifications · 0014_rls_policies
+# DDL·RLS·트리거·pgcrypto는 Supabase CLI 마이그레이션이 단일 소유. Alembic 미사용.
