@@ -1,0 +1,29 @@
+[project]
+name = "api"
+version = "0.1.0"
+description = "patient_management_system — FastAPI 오케스트레이션 레이어"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi[standard]>=0.137.2",
+    "httpx>=0.28.1",
+    "pyjwt[crypto]>=2.13.0",
+    "supabase>=2.31.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.15.18",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+# E/F(pyflakes·pycodestyle) · I(isort) · UP(pyupgrade) · B(bugbear)
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
