@@ -1,6 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
+import { apiFetch } from "@/lib/api/client";
+
 // 진료과·진료실 마스터(Story 2.1) 공용 타입·상수·검증·직접조회.
 // ⚠️ 전 경로 snake_case 유지(camelCase 변환 금지, project-context). 읽기 = Supabase 직접조회(전역 참조
 //    데이터, 0006 RLS authenticated SELECT). 쓰기 = FastAPI(apiFetch, master.manage).
@@ -131,6 +133,20 @@ export async function fetchMasters(supabase: SupabaseClient): Promise<MastersDat
     feeSchedules: (feeRes.data ?? []) as FeeSchedule[],
     drugs: (drugRes.data ?? []) as Drug[],
   };
+}
+
+// ── 진료과 의존성 카운트(Story 2.4 / AC4) — 비활성 경고용 ─────────────────────────────────────
+// 직원 수는 users RLS(본인행)를 넘어야 해서 FastAPI(service_role)로 읽는다(나머지 마스터 목록은 직접조회).
+// 경고용 보조 정보 — 비활성 자체를 막지 않는다(soft delete 는 참조 중에도 가능, 과거 기록 보존).
+
+/** FastAPI DepartmentDependents 의 거울. rooms=활성 진료실, staff=재직 직원. */
+export type DepartmentDependents = { rooms: number; staff: number };
+
+/** 진료과 비활성 전 의존성 카운트 조회(master.manage). 실패 시 ApiError throw(호출부가 fail-soft 처리). */
+export function fetchDepartmentDependents(
+  departmentId: string,
+): Promise<DepartmentDependents> {
+  return apiFetch<DepartmentDependents>(`/v1/masters/departments/${departmentId}/dependents`);
 }
 
 // ── 코드 마스터 유효기간 상태(Story 2.2) — code-unique + effective-dating 모델 ────────────────
@@ -428,11 +444,17 @@ export function toRoomUpdatePayload(v: RoomCreateValues): Record<string, unknown
   return { name: v.name, department_id: v.department_id ? v.department_id : null };
 }
 
-/** 진료과 id → 표시명(진료실 목록의 소속 컬럼). 미지정/미존재 → 폴백. */
+/**
+ * 진료과 id → 표시명(진료실 목록의 소속 컬럼). 미지정 → "—".
+ * 비활성 소속은 "(비활성)" 마커(폼 select 와 일관, AC5). 미매칭 폴백은 중립적 "(미상)"
+ * — hard delete 부재(soft delete만 + FK)로 정상 경로 비도달, "삭제된 진료과"는 오해 소지(절단/RLS 아티팩트뿐).
+ */
 export function departmentLabel(
   departments: Department[],
   departmentId: string | null,
 ): string {
   if (!departmentId) return "—";
-  return departments.find((d) => d.id === departmentId)?.name ?? "(삭제된 진료과)";
+  const dept = departments.find((d) => d.id === departmentId);
+  if (!dept) return "(미상)";
+  return dept.is_active ? dept.name : `${dept.name} (비활성)`;
 }

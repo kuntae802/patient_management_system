@@ -205,22 +205,67 @@ describe("MastersManager", () => {
     expect(await screen.findByText("이비인후과")).toBeInTheDocument();
   });
 
-  it("비활성 전환 → 확인 다이얼로그 경유 PATCH(is_active=false)", async () => {
-    (apiFetch as Mock).mockResolvedValue({ ...DEPT_ACTIVE, is_active: false });
+  it("진료과 비활성 전환 → 의존성 카운트 조회 후 확인 다이얼로그 경유 PATCH(is_active=false)", async () => {
+    // 진료과 비활성은 의존성(진료실·직원) 카운트를 먼저 GET 한 뒤 확인 → PATCH (apiFetch 2회).
+    (apiFetch as Mock).mockImplementation((path: string) =>
+      path.endsWith("/dependents")
+        ? Promise.resolve({ rooms: 0, staff: 0 })
+        : Promise.resolve({ ...DEPT_ACTIVE, is_active: false }),
+    );
     renderManager();
 
-    // 활성 진료과(정형외과)의 '비활성' 버튼(테이블 행) — 초기엔 유일.
     await userEvent.click(screen.getByRole("button", { name: "비활성" }));
-    // 확인 다이얼로그 등장
     const dialog = await screen.findByRole("alertdialog");
     expect(within(dialog).getByText(/비활성 처리 확인/)).toBeInTheDocument();
     await userEvent.click(within(dialog).getByRole("button", { name: "비활성" }));
 
-    await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
-    const [path, init] = (apiFetch as Mock).mock.calls[0];
-    expect(path).toBe("/v1/masters/departments/d1/active");
-    expect(init.method).toBe("PATCH");
-    expect(JSON.parse(init.body)).toEqual({ is_active: false });
+    // 의존성 GET + active PATCH (순서 무관하게 PATCH 호출을 찾아 단언).
+    await waitFor(() => {
+      const patch = (apiFetch as Mock).mock.calls.find(
+        ([, init]) => init?.method === "PATCH",
+      );
+      expect(patch).toBeTruthy();
+    });
+    const patchCall = (apiFetch as Mock).mock.calls.find(([, init]) => init?.method === "PATCH");
+    expect(patchCall?.[0]).toBe("/v1/masters/departments/d1/active");
+    expect(JSON.parse(patchCall?.[1].body)).toEqual({ is_active: false });
+    // 의존성 카운트 GET 도 호출됨
+    expect(
+      (apiFetch as Mock).mock.calls.some(([p]) => p === "/v1/masters/departments/d1/dependents"),
+    ).toBe(true);
+  });
+
+  it("진료과 비활성 — 참조 진료실·직원 카운트를 경고에 표시(AC4)", async () => {
+    (apiFetch as Mock).mockImplementation((path: string) =>
+      path.endsWith("/dependents")
+        ? Promise.resolve({ rooms: 3, staff: 5 })
+        : Promise.resolve({ ...DEPT_ACTIVE, is_active: false }),
+    );
+    renderManager();
+
+    await userEvent.click(screen.getByRole("button", { name: "비활성" }));
+    const dialog = await screen.findByRole("alertdialog");
+    // 경고 문구에 카운트 노출
+    expect(within(dialog).getByText(/3개 진료실 · 5명 직원/)).toBeInTheDocument();
+  });
+
+  it("진료과 비활성 — 의존성 조회 실패 시 일반 문구로 폴백(fail-soft, 비활성 진행 가능)", async () => {
+    (apiFetch as Mock).mockImplementation((path: string) =>
+      path.endsWith("/dependents")
+        ? Promise.reject(new Error("network"))
+        : Promise.resolve({ ...DEPT_ACTIVE, is_active: false }),
+    );
+    renderManager();
+
+    await userEvent.click(screen.getByRole("button", { name: "비활성" }));
+    const dialog = await screen.findByRole("alertdialog");
+    // 카운트 문구 없음(일반 폴백) — 그래도 비활성 확인은 가능
+    expect(within(dialog).queryByText(/명 직원/)).not.toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "비활성" }));
+    await waitFor(() => {
+      const patch = (apiFetch as Mock).mock.calls.find(([, init]) => init?.method === "PATCH");
+      expect(patch?.[0]).toBe("/v1/masters/departments/d1/active");
+    });
   });
 
   it("비활성 항목 활성 복귀 → 확인 없이 즉시 PATCH(is_active=true)", async () => {

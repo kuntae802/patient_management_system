@@ -1,6 +1,26 @@
 import { describe, expect, it } from "vitest";
 
-import { codeStatus, formatKrw, isCurrentlyValid, todayISO } from "@/lib/admin/masters";
+import {
+  codeStatus,
+  departmentLabel,
+  formatKrw,
+  isCurrentlyValid,
+  todayISO,
+  type Department,
+} from "@/lib/admin/masters";
+
+function dept(over: Partial<Department>): Department {
+  return {
+    id: "d1",
+    code: "ORTHO",
+    name: "정형외과",
+    description: null,
+    is_active: true,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    ...over,
+  };
+}
 
 const TODAY = "2026-06-20";
 
@@ -58,5 +78,28 @@ describe("todayISO / formatKrw", () => {
   it("formatKrw 는 천단위 구분", () => {
     expect(formatKrw(12000)).toBe("12,000");
     expect(formatKrw(0)).toBe("0");
+  });
+});
+
+describe("departmentLabel (Story 2.4 / AC5)", () => {
+  const depts = [
+    dept({ id: "a", name: "내과", is_active: true }),
+    dept({ id: "b", name: "정형외과", is_active: false }),
+  ];
+
+  it("미지정(null)은 —", () => {
+    expect(departmentLabel(depts, null)).toBe("—");
+  });
+
+  it("활성 소속은 이름만", () => {
+    expect(departmentLabel(depts, "a")).toBe("내과");
+  });
+
+  it("비활성 소속은 이름 + (비활성) 마커", () => {
+    expect(departmentLabel(depts, "b")).toBe("정형외과 (비활성)");
+  });
+
+  it("미매칭은 (미상) 폴백(오해성 '삭제된 진료과' 대신)", () => {
+    expect(departmentLabel(depts, "zzz")).toBe("(미상)");
   });
 });

@@ -16,9 +16,11 @@ import {
   CODE_STATUS_META,
   codeStatus,
   departmentLabel,
+  fetchDepartmentDependents,
   formatKrw,
   todayISO,
   type Department,
+  type DepartmentDependents,
   type Diagnosis,
   type Drug,
   type FeeSchedule,
@@ -30,7 +32,14 @@ import { cn } from "@/lib/utils";
 type Tab = "departments" | "rooms" | "diagnoses" | "feeSchedules" | "drugs";
 
 // 비활성 확인 다이얼로그·상태 토글이 필요로 하는 최소 정보(전 마스터 공통: code·name·id).
-type PendingConfirm = { kind: Tab; id: string; name: string; code: string };
+// dependents = 진료과 비활성 경고용 의존성 카운트(AC4). 진료과 외엔 미사용(참조처 미존재).
+type PendingConfirm = {
+  kind: Tab;
+  id: string;
+  name: string;
+  code: string;
+  dependents?: DepartmentDependents;
+};
 
 // kind → /masters/<segment> URL 세그먼트(수가만 하이픈).
 const RESOURCE: Record<Tab, string> = {
@@ -56,6 +65,17 @@ function sortByCode<T extends { code: string }>(rows: T[]): T[] {
 function upsert<T extends { id: string; code: string }>(rows: T[], saved: T): T[] {
   const exists = rows.some((r) => r.id === saved.id);
   return sortByCode(exists ? rows.map((r) => (r.id === saved.id ? saved : r)) : [...rows, saved]);
+}
+
+// 비활성 확인 문구. 진료과 의존성(진료실·직원)이 있으면 경고에 카운트를 싣는다(AC4). 없으면 일반 문구.
+function confirmDescription(c: PendingConfirm): string {
+  const head = `'${c.name}'(${c.code})을(를) 비활성하면 신규 선택에서 제외됩니다.`;
+  const tail = "비활성해도 과거 기록의 참조는 그대로 유지됩니다. 진행하시겠습니까?";
+  const dep = c.dependents;
+  if (dep && (dep.rooms > 0 || dep.staff > 0)) {
+    return `${head} 현재 ${dep.rooms}개 진료실 · ${dep.staff}명 직원이 이 진료과를 참조 중이며, ${tail}`;
+  }
+  return `${head} ${tail}`;
 }
 
 // 마스터 관리(관리자, FR-200·201·203). 읽기 = RSC Supabase 직접조회 주입(initial), 쓰기 = FastAPI(apiFetch,
@@ -147,11 +167,31 @@ export function MastersManager({ initial, today }: { initial: MastersData; today
     kind: Tab,
     item: { id: string; name: string; code: string; is_active: boolean },
   ) {
-    if (item.is_active) {
-      setConfirm({ kind, id: item.id, name: item.name, code: item.code });
-    } else {
-      void applyActive(kind, item.id, item.name, true);
+    if (!item.is_active) {
+      void applyActive(kind, item.id, item.name, true); // 활성 복귀는 즉시(확인 불요)
+      return;
     }
+    // 비활성 → 확인. 진료과는 의존성(진료실·직원) 카운트를 먼저 조회해 경고에 포함(AC4).
+    if (kind === "departments") {
+      void openDepartmentConfirm(item);
+      return;
+    }
+    setConfirm({ kind, id: item.id, name: item.name, code: item.code });
+  }
+
+  // 진료과 비활성 확인 — 의존성 카운트를 조회해 경고에 싣는다. 조회 실패는 fail-soft(경고는 보조
+  // 정보일 뿐 비활성을 막지 않음 — 일반 문구로 폴백). 조회 중 pendingId 로 행 버튼 disable.
+  async function openDepartmentConfirm(item: { id: string; name: string; code: string }) {
+    setPendingId(item.id);
+    let dependents: DepartmentDependents | undefined;
+    try {
+      dependents = await fetchDepartmentDependents(item.id);
+    } catch {
+      dependents = undefined;
+    } finally {
+      setPendingId(null);
+    }
+    setConfirm({ kind: "departments", id: item.id, name: item.name, code: item.code, dependents });
   }
 
   return (
@@ -278,11 +318,7 @@ export function MastersManager({ initial, today }: { initial: MastersData; today
       <ConfirmDialog
         open={confirm !== null}
         title={confirm ? `${confirm.name} 비활성 처리 확인` : ""}
-        description={
-          confirm
-            ? `'${confirm.name}'(${confirm.code})을(를) 비활성하면 신규 선택에서 제외됩니다. 과거 기록의 참조는 그대로 유지됩니다. 진행하시겠습니까?`
-            : ""
-        }
+        description={confirm ? confirmDescription(confirm) : ""}
         confirmLabel="비활성"
         onConfirm={() => {
           if (confirm) void applyActive(confirm.kind, confirm.id, confirm.name, false);
