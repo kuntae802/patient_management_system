@@ -11,6 +11,9 @@
 -- ⚠️ DEV ONLY — Story 1.4 로그인 검증용 테스트 직원 계정 (프로덕션 시드 아님)
 --   실제 직원 계정 생성은 Story 1.8(관리자 UI). db reset 시 재생성됨.
 --   로컬 자격증명:  admin@pms.local  /  Staff1234   (로컬 전용, 절대 운영 사용 금지)
+--   ★ 안전: seed.sql 은 로컬 `supabase db reset` 에서만 실행된다. 운영 배포는 `supabase db push`
+--     (마이그레이션만, seed 미실행)이므로 클라우드에 이 계정이 생기지 않는다.
+--     🚫 `supabase db reset --linked`(클라우드 대상)는 절대 실행 금지 — DB 전체가 초기화된다.
 --   pgcrypto(crypt/gen_salt)는 extensions 스키마(0001)라 스키마 한정 호출.
 -- ════════════════════════════════════════════════════════════════════════════
 do $$
@@ -19,6 +22,9 @@ declare
   v_admin_role uuid;
 begin
   select id into v_admin_role from public.roles where code = 'admin';
+  if v_admin_role is null then
+    raise exception 'admin 역할이 시드되지 않음 — 0002_identity_rbac 를 먼저 적용하세요';
+  end if;
 
   if not exists (select 1 from auth.users where id = v_uid) then
     -- ⚠️ GoTrue는 토큰 text 컬럼을 non-nullable string으로 스캔 → NULL이면 로그인 시
