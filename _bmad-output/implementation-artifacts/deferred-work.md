@@ -2,6 +2,12 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: code review of 1-6-...-rbac-ui-게이트 (2026-06-20)
+
+- **(staff)/layout 인증·권한 라운드트립 최적화** [web/src/app/(staff)/layout.tsx] — 매 staff 렌더마다 proxy의 getUser + layout의 `requireStaff`(getUser + `auth_user_role` RPC) + `fetchUserPermissions`(users.role_id select + role_permissions select) = 3~4 왕복. `auth_user_role()`가 이미 users→roles를 조인하는데 `fetchUserPermissions`가 `users.role_id`를 다시 조회(중복). → role+permissions를 한 번에 돌려주는 통합 SECURITY DEFINER RPC, 또는 `requireStaff`가 role_id를 반환해 재사용하면 왕복 절감. 기능 정상, 성능 최적화이므로 MVP 수용.
+- **guards.ts server-only 경계 강제** [web/src/lib/auth/guards.ts] — `requireStaff`/`requirePermission`은 `createClient()`→`next/headers cookies()`를 호출하는 서버 전용이나, 경계가 주석뿐이다(`server-only` npm 패키지 미설치). 클라 컴포넌트가 실수로 import하면 빌드가 아니라 런타임에야 실패. → `server-only` 도입 시 import로 빌드타임 차단(새 의존성이라 승인 필요). 스토리가 명시적으로 수용한 트레이드오프.
+- **requirePermission fallback/staff 재확인** [web/src/lib/auth/guards.ts] — 기본 `fallback=STAFF_HOME`이 비-staff·미보유 사용자를 staff 영역으로 보내 `requireStaff`와 ping-pong 가능하고, 권한만 확인하고 staff 여부를 재확인하지 않는다. 1.6은 미배선(소비처 없음); 실제 소비처(Story 1.7 `(staff)/admin/*` 보호 라우트) 정의 시 fallback·staff 재확인 정책 확정.
+
 ## Deferred from: code review of 1-5-...-fastapi-인증-rbac-강제-jwks-권한-의존성 (2026-06-20)
 
 - **권한평가와 쓰기가 별도 트랜잭션** [api/app/core/db.py] — `require_permission`이 자체 `authenticated_conn`(GUC 주입) 트랜잭션에서 `has_permission`을 평가하고, 후속 쓰기 엔드포인트는 또 다른 `authenticated_conn`을 열어야 감사 actor가 붙는다. 평가↔쓰기 사이에 권한/재직상태가 바뀌면 stale 권한으로 쓰기 실행(TOCTOU). 1.5는 쓰기 엔드포인트가 없어 무영향(RLS가 데이터 권위 백스톱). → **쓰기 엔드포인트 도입 에픽(Epic 3+)에서 "권한평가 + 쓰기를 동일 트랜잭션(authenticated_conn) 안에서 수행"하도록 가이드/패턴 확립.**
