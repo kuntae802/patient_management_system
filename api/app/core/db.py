@@ -21,6 +21,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import datetime
 from uuid import UUID
 
 import asyncpg
@@ -42,6 +43,18 @@ _DB_OUTAGE_ERRORS = (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, asy
 _pool: asyncpg.Pool | None = None
 
 
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    """새 물리 커넥션마다 jsonb 코덱 등록 — jsonb 컬럼을 raw text(str)가 아닌 dict/list 로 디코드.
+
+    asyncpg 기본은 jsonb 를 JSON text 로 반환한다. audit_logs.before_data/after_data(Story 1.10)가
+    코드베이스 최초의 jsonb 읽기 — 풀 단위로 한 번 등록해 이후 모든 jsonb 읽기가 파싱된 객체를 받게
+    한다(per-query json.loads 산재 회피). 현재 jsonb 쓰기 경로는 없어 회귀 위험 없음.
+    """
+    await conn.set_type_codec(
+        "jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+    )
+
+
 async def create_pool() -> asyncpg.Pool:
     """앱 시작 시 풀 생성(fail-fast — DB 도달 불가 시 부팅 실패)."""
     global _pool
@@ -51,6 +64,7 @@ async def create_pool() -> asyncpg.Pool:
             min_size=1,
             max_size=10,
             command_timeout=30,
+            init=_init_connection,
         )
         logger.info("asyncpg 풀 생성 완료")
     return _pool
@@ -390,5 +404,77 @@ async def decrypt_sensitive(
         return await conn.fetchval(
             "select public.decrypt_sensitive($1, $2, $3)", ciphertext, target_table, target_id
         )
+
+    return await _run_authed(sub, _op)
+
+
+# ── 감사 로그 조회(Story 1.10, FR-243) ─────────────────────────────────────────
+# 읽기전용 — append-only 불변식은 0004 가 강제(이 경로는 SELECT 만 수행, 절대 INSERT/UPDATE/DELETE
+# 안 함). actor 이름은 users LEFT JOIN(actor_id FK 미부착 → INNER 금지: NULL=시스템·환자 uid·삭제
+# 직원은 매칭 미스로 보존). 조회는 require_permission('audit.read') 로 이미 게이트 → 재평가 불요
+# (1.8 fetch_staff_list 동형). audit_logs SELECT RLS(0004)는 방어심층 2차선으로 유지된다.
+
+# 목록 컬럼(고정). ip_address 는 ::text 캐스트(inet → 문자열, 현재 항상 NULL). actor 이름은 조인.
+_AUDIT_COLUMNS = (
+    "al.id, al.actor_id, u.name as actor_name, u.employee_no as actor_employee_no, "
+    "al.action, al.target_table, al.target_id, al.before_data, al.after_data, "
+    "al.ip_address::text as ip_address, al.created_at"
+)
+
+
+async def fetch_audit_logs(
+    sub: UUID,
+    *,
+    actor_id: UUID | None = None,
+    action: str | None = None,
+    target_table: str | None = None,
+    target_id: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> tuple[list[asyncpg.Record], int]:
+    """감사 로그 페이지(행위자·기간·대상 필터, 최신순) + 필터 적용 전체 건수.
+
+    반환: (행 리스트, total). idx_audit_logs_created_at 가 정렬/기간을, actor_id·target_table
+    인덱스가 등호 필터를 받친다. WHERE 절은 동적 조립하되 **컬럼·연산자는 고정 리터럴**,
+    값만 $n 바인딩으로 SQL injection 을 차단한다.
+    """
+    # (조건 SQL 조각, 값) — 전달된 필터만. 번호는 조립 시 부여. 모두 al.* 참조(count 시 무조인).
+    filters: list[tuple[str, object]] = []
+    if actor_id is not None:
+        filters.append(("al.actor_id = ", actor_id))
+    if action is not None:
+        filters.append(("al.action = ", action))
+    if target_table is not None:
+        filters.append(("al.target_table = ", target_table))
+    if target_id is not None:
+        filters.append(("al.target_id = ", target_id))
+    if date_from is not None:
+        filters.append(("al.created_at >= ", date_from))
+    if date_to is not None:
+        filters.append(("al.created_at <= ", date_to))
+
+    values: list[object] = [val for _frag, val in filters]
+    where_sql = ""
+    if filters:
+        clauses = [f"{frag}${i}" for i, (frag, _val) in enumerate(filters, start=1)]
+        where_sql = " where " + " and ".join(clauses)
+
+    limit_pos = len(values) + 1
+    offset_pos = len(values) + 2
+    offset = (page - 1) * page_size
+
+    list_sql = (
+        f"select {_AUDIT_COLUMNS} from public.audit_logs al "
+        "left join public.users u on u.id = al.actor_id"
+        f"{where_sql} order by al.created_at desc limit ${limit_pos} offset ${offset_pos}"
+    )
+    count_sql = f"select count(*) from public.audit_logs al{where_sql}"
+
+    async def _op(conn: asyncpg.Connection) -> tuple[list[asyncpg.Record], int]:
+        rows = await conn.fetch(list_sql, *values, page_size, offset)
+        total = int(await conn.fetchval(count_sql, *values) or 0)
+        return rows, total
 
     return await _run_authed(sub, _op)
