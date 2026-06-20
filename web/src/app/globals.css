@@ -1,26 +1,161 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/* dark: 변형을 클래스 기반(.dark)으로 고정 — v1 라이트 전용이라 .dark를 절대 부착하지 않으므로
+   vendor 컴포넌트(button 등)에 남은 dark: 유틸이 OS prefers-color-scheme로 활성화되는 것을 차단(무력화). */
+@custom-variant dark (&:is(.dark *));
+
+/*
+  PMS 디자인 시스템 — shadcn/ui on Tailwind 4 위의 "브랜드 델타".
+  단일 진실: _bmad-output/planning-artifacts/ux-designs/.../DESIGN.md
+  - 라이트 전용(v1): 다크모드 미구현(.dark 분기 없음).
+  - 대비 정책: WCAG 2.1 AA — 본문/UI ≥4.5:1, 큰 텍스트/비텍스트 UI ≥3:1 (surface #FFF / background #FAFCFC 기준).
+  - teal(primary) = 액션/브랜드 전용. 상태색으로 절대 미사용.
+  - 음영 비의존: 중요 신호는 색 채움+테두리+굵기로(저가 임상 모니터 강건).
+*/
 
 @theme inline {
+  /* ── 색: shadcn 시맨틱 토큰 → :root 브랜드 변수 매핑 */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* ── 색: PMS 커스텀(브랜드 호버 + 5상태 기능색 + 잉크 변형 + 보조) */
+  --color-primary-hover: var(--primary-hover);
+  --color-status-scheduled: var(--status-scheduled);
+  --color-status-received: var(--status-received);
+  --color-status-received-ink: var(--status-received-ink);
+  --color-status-inprogress: var(--status-inprogress);
+  --color-status-done: var(--status-done);
+  --color-status-done-ink: var(--status-done-ink);
+  --color-status-cancelled: var(--status-cancelled);
+  --color-text-disabled: var(--text-disabled);
+
+  /* ── 사이드바(shadcn Sidebar 추후 도입 대비 — AppShell은 자체 구현) */
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* ── 타이포: Pretendard-led, 윈도우 우선 폴백(맑은 고딕). next/font/local이 --font-pretendard 주입 */
+  --font-sans: var(--font-pretendard, "Pretendard Variable"), Pretendard,
+    "Malgun Gothic", "맑은 고딕", "Apple SD Gothic Neo", -apple-system,
+    system-ui, sans-serif;
+  --font-heading: var(--font-pretendard, "Pretendard Variable"), Pretendard,
+    "Malgun Gothic", "맑은 고딕", "Apple SD Gothic Neo", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* 법정 서식(진료비 계산서·영수증·세부산정내역서) 인쇄 전용 serif 예외. 화면 UI 미적용(Epic 7). */
+  --font-legal-serif: "Batang", "바탕", serif;
+
+  /* ── 코너 반경(DESIGN.md 목업 실측): sm5 · DEFAULT7 · md8 · lg10 · xl11 · full */
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 11px;
+
+  /* ── 셸 스페이싱(big-seams-dense-interiors). w-sidebar / h-topbar 등 유틸 노출 */
+  --spacing-sidebar: 240px;
+  --spacing-sidebar-collapsed: 60px;
+  --spacing-topbar: 52px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+:root {
+  /* ── 중립 램프 */
+  --background: #fafcfc; /* 앱 캔버스(틸 기운 오프화이트) */
+  --foreground: #0e1c1d; /* text-primary 본문·제목 (17.46:1) */
+  --card: #ffffff; /* surface */
+  --card-foreground: #0e1c1d;
+  --popover: #ffffff;
+  --popover-foreground: #0e1c1d;
+  --muted: #eff5f5; /* surface-muted 호버·읽기전용·헤더 틴트 */
+  --muted-foreground: #54686a; /* text-muted 보조·캡션·placeholder·가이드 (5.89:1) */
+  --secondary: #eff5f5;
+  --secondary-foreground: #0e1c1d;
+  --accent: #eff5f5;
+  --accent-foreground: #0e1c1d;
+  --border: #d9e5e5; /* 1px 헤어라인 */
+  --input: #d9e5e5;
+
+  /* ── 브랜드/액센트(클리니컬 틸-블루) — 액션/브랜드 전용 */
+  --primary: #0e7c8e; /* 채움/큰·굵은 텍스트 OK (on white 4.89:1) */
+  --primary-foreground: #ffffff;
+  --primary-hover: #0a6675; /* 호버·누름 + primary 보더 + 작은 teal 텍스트/활성 내비 잉크 (6.62:1) */
+  --ring: #0a6675; /* 포커스 링 — 흰 6.62:1 · 보더 5.14:1 (양쪽 ≥3:1) ⚠ 목업 구값 #2C9FB0 폐기됨 */
+
+  /* ── 5상태 기능색(상태 전용, 색+도형 중복 인코딩). 결제·예약·급여구분도 재사용 */
+  --status-scheduled: #64758a; /* 예약 슬레이트 ○ (4.72:1) */
+  --status-received: #bc7e12; /* 접수 앰버 ● — fill/dot 전용(텍스트 3.43:1 AA 미달) */
+  --status-received-ink: #8a5d09; /* 흰/bg 위 앰버 라벨·잉크 (5.75:1) */
+  --status-inprogress: #4f46c7; /* 진행중 인디고 ◐ (6.92:1) */
+  --status-done: #2c8466; /* 완료 그린 ✓ — fill OK (텍스트 4.57:1 경계) */
+  --status-done-ink: #1f6b50; /* 작은/틴트 위 그린 라벨·잉크 (6.41:1) */
+  --status-cancelled: #c2433b; /* 취소 로즈레드 ✕ (5.05:1) */
+  --destructive: #c2433b; /* danger — 취소색과 동일 hex(안전경고·삭제·검증오류) */
+
+  /* ── 보조 텍스트 */
+  --text-disabled: #607274; /* 진짜 비활성/inert 전용(5.05:1). placeholder/가이드엔 muted-foreground 사용 ⚠ 목업 구값 #97A9AA 폐기됨 */
+
+  /* ── 코너 반경 기준값(rounded / shadcn 컴포넌트 var(--radius) 참조) */
+  --radius: 0.4375rem; /* 7px = 버튼·인풋 DEFAULT */
+
+  /* ── 사이드바 */
+  --sidebar: #ffffff;
+  --sidebar-foreground: #0e1c1d;
+  --sidebar-primary: #0e7c8e;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #eff5f5;
+  --sidebar-accent-foreground: #0e1c1d;
+  --sidebar-border: #d9e5e5;
+  --sidebar-ring: #0a6675;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+    /* 숫자(대기번호·시각·카운트·금액·주민번호) 정렬은 .tabular-nums(Tailwind 내장)로 개별 적용 */
+  }
+  html {
+    @apply font-sans;
+  }
+  /* 포커스 가시성(UX-DR20): 네이티브 요소 포함 전역 :focus-visible 링.
+     shadcn 컴포넌트는 자체 ring을 갖고, <a>/<input> 등 네이티브엔 이 규칙이 보장한다. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* 모션 존중(UX-DR Accessibility Floor): prefers-reduced-motion 시 애니메이션/전환 제거 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
