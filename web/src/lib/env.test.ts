@@ -5,6 +5,7 @@ import { parseEnv } from "./env";
 const VALID = {
   NEXT_PUBLIC_SUPABASE_URL: "http://127.0.0.1:54321",
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "pk_test",
+  NEXT_PUBLIC_API_BASE_URL: "http://localhost:8000",
 };
 
 describe("parseEnv", () => {
@@ -32,5 +33,11 @@ describe("parseEnv", () => {
 
   it("BASE_PATH 는 선택값(없어도 통과)", () => {
     expect(parseEnv(VALID).NEXT_PUBLIC_BASE_PATH).toBeUndefined();
+  });
+
+  it("API_BASE_URL 누락 → throw(필수)", () => {
+    const rest: Record<string, string | undefined> = { ...VALID };
+    delete rest.NEXT_PUBLIC_API_BASE_URL;
+    expect(() => parseEnv(rest)).toThrow(/API_BASE_URL/);
   });
 });

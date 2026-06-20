@@ -11,6 +11,10 @@ const envSchema = z.object({
     .string()
     .min(1, "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY 가 설정되어야 합니다"),
   NEXT_PUBLIC_BASE_PATH: z.string().optional(),
+  // FastAPI 베이스 URL(`/v1` 미포함 — 호출부가 `/v1/...` 를 append). Story 1.7 web→API 쓰기 호출.
+  //   dev = http://localhost:8000 (fastapi dev; root_path 는 OpenAPI/프록시용 메타라 dev 는 /v1 루트 서빙)
+  //   prod = https://kuntae802.mooo.com/patient_management_system/api (nginx 가 프리픽스 스트립)
+  NEXT_PUBLIC_API_BASE_URL: z.url("NEXT_PUBLIC_API_BASE_URL 이 유효한 URL 이어야 합니다"),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -33,4 +37,5 @@ export const env = parseEnv({
   NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
   NEXT_PUBLIC_BASE_PATH: process.env.NEXT_PUBLIC_BASE_PATH,
+  NEXT_PUBLIC_API_BASE_URL: process.env.NEXT_PUBLIC_API_BASE_URL,
 });

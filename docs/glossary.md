@@ -123,3 +123,18 @@
 | `filterNav(items, role, has)` | 함수(web) | 역할(IA 가시성) AND 권한(`requiredPermission`)으로 메뉴 항목 필터 |
 
 > ⚠️ **UI 게이트는 보안 경계가 아니다** — 쓰기 권위=FastAPI `require_permission`(403), 행 권위=RLS. UI 는 학습·속도 레이어(UX-DR4). DB·API 식별자는 영문 snake_case, web 코드 식별자는 camelCase/PascalCase(파일=kebab-case).
+
+## RBAC 권한 매트릭스 · web→API 호출 (Story 1.7)
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `set_role_permission(sub, role_code, permission_code, *, granted)` | 함수(api) | 역할↔권한 grant(INSERT)/revoke(DELETE). **권한 재평가 + 쓰기를 동일 트랜잭션**(TOCTOU 차단). admin 대상=409 `role_locked`, patient=422 `invalid_target`. 0004 트리거가 자동 감사(actor=`app.actor_id`) |
+| `PUT /v1/admin/rbac/grants` | 엔드포인트(api) | `GrantUpdate{role_code,permission_code,granted}` → `GrantResult{...,changed}`. `require_permission('rbac.manage')` 게이트. web→FastAPI 최초 인증 쓰기 표면 |
+| `apiFetch(path, init)` / `ApiError` | 함수·클래스(web·클라) | 인증 FastAPI 호출 — 브라우저 세션 `access_token`을 Bearer 첨부, 봉투 `{error:{code,message,detail}}` 파싱→`ApiError(code,message,status,detail)`. `path`=`/v1/...`(절대 베이스 `NEXT_PUBLIC_API_BASE_URL`, basePath 무관) |
+| `fetchPermissionMatrix(supabase)` | 함수(web) | 매트릭스 데이터(roles[patient 제외·순서]·permissions[전수·resource 정렬]·grant 쌍)를 Supabase 직접 조회(authenticated SELECT, 0003) |
+| `PermissionMatrix` | 컴포넌트(web·클라) | 역할×권한 매트릭스 — 즉시 적용·낙관적 갱신+롤백·민감 권한 확인 다이얼로그·2D 화살표 roving 키보드(`<table>`+`<th scope>`) |
+| `ConfirmDialog` | 컴포넌트(web·클라) | 민감 권한 토글 확인(base-ui AlertDialog: 포커스 트랩·복원·Esc) |
+| `SENSITIVE_PERMISSIONS` / `RESOURCE_LABELS` / `MATRIX_ROLE_ORDER` | 상수(web) | 민감 권한 코드 Set(현 3종: `patient.reveal_rrn`·`rbac.manage`·`audit.read`) · resource→한글 도메인 라벨(그룹 헤더) · 열 순서(admin 최후미 고정) |
+| `NEXT_PUBLIC_API_BASE_URL` | env(web 공개) | FastAPI 베이스 URL(`/v1` 미포함). dev=`http://localhost:8000` · prod=`…/patient_management_system/api`. CORS 화이트리스트(`config.cors_origins`)에 web origin 필요 |
+
+> **`requirePermission(code, fallback)` 정책 확정(Story 1.7, deferred-work 1.6 해소):** `(staff)` 하위 보호 라우트(예: `/admin/permissions`)는 부모 `(staff)/layout`이 이미 직원을 보장하므로 staff 재확인 불요. 권한 미보유 직원은 `fallback=STAFF_HOME(/home)`으로 강등. **매트릭스 읽기 = Supabase 직접 조회, 쓰기 = FastAPI(service_role)** — 0002가 authenticated 에 SELECT 만 grant하므로 토글은 FastAPI 경유가 유일 경로.
