@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-20T14:30:00+0000
+last_updated: 2026-06-20T18:00:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -53,7 +53,7 @@ development_status:
   1-7-rbac-권한-매트릭스-관리자: done
   1-8-직원-계정-재직상태-관리-관리자: done
   1-9-주민번호-암호화-감사-reveal-프리미티브: done
-  1-10-감사-로그-뷰어-관리자-append-only: backlog
+  1-10-감사-로그-뷰어-관리자-append-only: done
   epic-1-retrospective: optional
 
   # ── Epic 2: 표준 마스터 데이터 ──

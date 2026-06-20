@@ -2,6 +2,13 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: code review of 1-10-감사-로그-뷰어-관리자-append-only (2026-06-20)
+
+- **before/after 마스킹이 web 렌더 계층 전용 — API 응답·로그엔 jsonb 원문 전송** [api/app/schemas/audit.py] — 스펙이 마스킹을 렌더 계층으로 의도했고 현재 스냅샷(roles·permissions·role_permissions·users)엔 PII 부재라 무영향. Epic 3+ 환자 스냅샷이 audit_logs에 들어오면 FastAPI 응답 본문·구조적 로그에 평문 PII가 흐를 수 있으므로, 그 시점에 **서버측 마스킹 또는 reveal 권한 게이트 응답 정책**을 검토(decrypt_sensitive reveal 패턴과 정합).
+- **offset 페이지네이션 page 상한 부재 → 대용량 시 큰 OFFSET 비용** [api/app/core/db.py:fetch_audit_logs] — `page: ge=1` 상한 없음, `offset=(page-1)*page_size`. 감사 조회는 admin(`audit.read`) 전용이라 노출이 제한되고 Postgres bigint 범위 내라 현재 실害 없음. 감사 로그가 대량 누적되면 keyset(seek) 페이지네이션 또는 합리적 상한 검토.
+- **date_to 경계가 `<=` + 클라이언트 `T23:59:59`(ms 없음) → 23:59:59.x 로그 누락** [api/app/core/db.py · web/src/components/admin/audit-log-viewer.tsx] — 종료일의 마지막 1초 미만 timestamptz 로그가 제외됨. 반열림 구간(`created_at < 익일 00:00`)이 정석. 경계 정밀도가 중요해지면 전환.
+- **행위자 필터가 직원목록(`/v1/admin/users`, user.manage)에 의존** [web/src/components/admin/audit-log-viewer.tsx] — 시스템/환자/삭제된 직원 actor로는 필터 불가(목록 표시는 actorLabel로 안전 보존). `audit.read`만 가진 전용 감사 역할은 드롭다운이 비는 디그레이드. 향후 **distinct-actor 전용 소스**(user.manage 비의존)로 분리 검토.
+
 ## Deferred from: code review of 1-9-주민번호-암호화-감사-reveal-프리미티브 (2026-06-20)
 
 - **decrypt actor/target = service_role GUC 신뢰(위조 가능)** [supabase/migrations/0005_crypto.sql:decrypt_sensitive] — `app.actor_id` GUC·`target_table`/`target_id` 인자를 호출자(service_role=FastAPI)가 주입하므로, DB는 actor·target 무결성을 강제하지 않는다("복호=감사 일어남"은 강제하나 actor *값*의 진위는 아님). 단, 이는 **0004 `audit_trigger_fn`과 동일한 신뢰 경계**(by-design, 1.9가 도입한 회귀 아님). 프로덕션 경로(`authenticated_conn`)는 항상 검증된 sub를 주입. 운영 하드닝 시 actor=호출 주체 일치 검증(예: ciphertext↔target 바인딩) 검토.
