@@ -138,3 +138,21 @@
 | `NEXT_PUBLIC_API_BASE_URL` | env(web 공개) | FastAPI 베이스 URL(`/v1` 미포함). dev=`http://localhost:8000` · prod=`…/patient_management_system/api`. CORS 화이트리스트(`config.cors_origins`)에 web origin 필요 |
 
 > **`requirePermission(code, fallback)` 정책 확정(Story 1.7, deferred-work 1.6 해소):** `(staff)` 하위 보호 라우트(예: `/admin/permissions`)는 부모 `(staff)/layout`이 이미 직원을 보장하므로 staff 재확인 불요. 권한 미보유 직원은 `fallback=STAFF_HOME(/home)`으로 강등. **매트릭스 읽기 = Supabase 직접 조회, 쓰기 = FastAPI(service_role)** — 0002가 authenticated 에 SELECT 만 grant하므로 토글은 FastAPI 경유가 유일 경로.
+
+## 직원 계정 · 재직상태 관리 (Story 1.8, FR-214·215)
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `GET /v1/admin/users` | 엔드포인트(api) | 전 직원 목록(`StaffResponse[]`, 사번 순). `require_permission('user.manage')`. 관리 조회 — service_role/postgres 풀이 `users` 본인행 RLS 를 우회해 전원 반환 |
+| `POST /v1/admin/users` | 엔드포인트(api) | 직원 생성(201). `StaffCreate` → `StaffResponse`. 사번/이메일 중복 → 409, 비-직원 역할 → 422 |
+| `PATCH /v1/admin/users/{user_id}/employment-status` | 엔드포인트(api) | 재직상태 전환. `EmploymentStatusUpdate` → `StaffResponse`. 자가-락아웃 → 409 `self_lockout`, 미존재 → 404 |
+| `create_staff(sub, payload)` | 함수(api·services) | 직원 생성 오케스트레이션 — Auth 사용자(HTTP) → `users` INSERT(DB), 실패 시 **보상**(`admin_delete_user`)으로 고아 방지. 역할 사전검증(직원 5역할, patient 422) |
+| `change_employment_status(sub, user_id, payload)` | 함수(api·services) | 재직상태 전환 — DB UPDATE(접근 권위·감사) **먼저** → GoTrue ban/unban(로그인·세션) 보강(소프트, 멱등) |
+| `list_staff(sub)` | 함수(api·services) | 전 직원 목록 조회 위임 |
+| `insert_staff_profile` / `update_employment_status` / `fetch_staff_list` | 함수(api·db) | `authenticated_conn`(GUC actor) 안에서 `has_permission('user.manage')` 재평가 + 쓰기(동일 트랜잭션·TOCTOU 차단). 0004 `trg_users_audit` 자동 감사. 자가-락아웃 가드(`user_id==sub && status!='active'` → 409) |
+| `admin_create_user` / `admin_delete_user` / `admin_set_ban(uid, *, banned)` | 함수(api·supabase_admin) | Supabase Auth Admin(supabase-py service_role) 래퍼 — **시스템 최초 supabase-py 사용**. 동기 API 를 `anyio.to_thread` 로 오프로드. ban=`{ban_duration:"876000h"\|"none"}`. 이메일 중복 → 409 `email_taken`, 약한 비밀번호 → 422 |
+| `StaffDirectory` / `staff-create-form`(`StaffCreateForm`) | 컴포넌트(web·클라) | 직원 목록·재직상태 변경(확인 다이얼로그) / 생성 폼(base-ui Dialog + RHF + Zod). 목록·쓰기 모두 `apiFetch` |
+| `staffCreateSchema` / `toCreatePayload` / `EMPLOYMENT_STATUS_META` | 상수·함수(web·`lib/admin/staff`) | 생성 폼 Zod 스키마(Pydantic `StaffCreate` 거울) · 빈 옵셔널 제거 페이로드 변환 · 재직상태 라벨+배지 색 메타 |
+| `supabase_url` | env/config(api) | Supabase API 베이스(GoTrue Auth admin·Storage). 로컬 `http://127.0.0.1:54321`, 배포는 클라우드 URL override |
+
+> **재직상태 = 이중 차단(Story 1.8 확정):** `employment_status`(`active`/`on_leave`/`terminated`) UPDATE 가 **접근 권위** — `has_permission`/`auth_user_role`(0003)이 active 만 인정하므로 휴직/퇴사 시 역할·권한이 즉시 무효(명령 403·셸 강등). GoTrue **ban** 이 **로그인·세션 차단**을 보강(DB 먼저→ban 나중, 차단 방향 fail-safe). 생성은 **Auth(HTTP) + users INSERT(DB) 2단계 비원자 오케스트레이션 + 보상**. email 은 auth.users 단일소유(`public.users`·응답에 없음), 비밀번호 비노출. **마이그레이션 0건**(스키마·트리거·권한 1.3 완비).

@@ -2,6 +2,19 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: dev of 1-8-직원-계정-재직상태-관리-관리자 (2026-06-20)
+
+- ✅ **1.5 TOCTOU "권한평가+쓰기 동일 트랜잭션" 확장** — 1.7이 단일 DML로 확립한 패턴을 1.8이 **두 시스템(Supabase Auth ↔ Postgres) 오케스트레이션**으로 확장(`services/users.create_staff` = Auth 생성 → DB INSERT + 보상). 첫 외부+DB 복합 명령 + `services/` 계층 첫 사용.
+- **GoTrue ban 동기화 실패 재조정 부재** [api/app/services/users.py:change_employment_status] — `admin_set_ban` 실패는 소프트 처리(로깅)되고 DB(접근 권위)는 갱신되나, DB는 차단/복원됐는데 GoTrue ban 상태가 어긋난 드리프트가 남을 수 있다(로그인 표면만). 멱등 재시도는 가능하나 자동 재조정(재시도 큐·주기 동기화)은 없음. 접근은 DB 헬퍼가 이미 차단하므로 안전하나, 운영 하드닝 시 ban 재조정 잡 검토.
+- **last-admin 가드 부재** [api/app/core/db.py:update_employment_status] — 자가-락아웃(본인 비활성)은 409로 막지만, admin A가 **다른** 유일 active admin B를 퇴사시켜 active admin 0이 되는 케이스는 막지 않는다. active admin 카운트 가드는 카운트 쿼리 필요 → 후속(현 self-lockout 가드가 흔한 케이스 커버).
+- **직원 소속 진료과(department) 배정 UI 부재** [web staff-create-form] — 백엔드는 `department_id`(옵셔널) 수용하나, 진료과 master(Epic 2) 이전이라 생성 폼에 피커 미노출(`users.department_id` FK도 0005_masters에서 추가 예정). Epic 2 이후 직원 진료과 배정 UI 추가.
+- **목록 클라 fetch + set-state-in-effect 린트 예외** [web/src/components/admin/staff-directory.tsx] — `users` RLS(본인행)로 RSC 서버 직접조회 불가 → 목록을 클라 `apiFetch`(마운트 effect)로 조회, `react-hooks/set-state-in-effect`를 정당한 예외로 1줄 disable. SSR 서버 apiFetch 인프라(1.1 deferred `API_INTERNAL_URL` + 서버 토큰)를 도입하면 서버 fetch 로 전환 가능(현재 YAGNI).
+
+## Deferred from: code review of 1-8-직원-계정-재직상태-관리-관리자 (2026-06-20)
+
+- **보상 삭제 실패 시 고아 Auth 사용자 재조정** [api/app/core/supabase_admin.py:admin_delete_user] — `admin_delete_user` 가 best-effort(모든 예외 삼킴·로깅만)라, GoTrue create 성공 + DB INSERT 실패 + delete 실패 시 `public.users` 행 없는 **보이지 않는 고아 auth.users**가 남는다. 같은 이메일 재생성은 `email_taken`(409)으로 영구 차단 → 해당 이메일 사용 불가. delete 실패 자체가 드물지만 영향이 영구적. → 고아 스캔/정리 운영 잡 또는 outbox 재시도(ban 재조정과 함께 묶어 검토).
+- **임시 비밀번호 최초 로그인 강제 변경** [web staff-create-form · auth flow] — 스토리 결정(관리자 입력 임시비번 + UI 안내)대로 구현됐으나, 첫 로그인 시 변경을 **강제**하는 로직이 없어 관리자가 아는 임시 비밀번호가 무기한 유효할 수 있다(관리자→직원 가장 가능성). → `must_change_password` 플래그 + 미들웨어/온보딩 강제는 보안 하드닝으로 후속.
+
 ## Deferred from: code review of 1-7-rbac-권한-매트릭스-관리자 (2026-06-20)
 
 - **`apiFetch` 빈/204 본문 → `null`을 `T`로 반환** [web/src/lib/api/client.ts] — 2xx + 빈 본문 시 `body=null`을 `T`로 캐스트 반환. 현 엔드포인트(`PUT /v1/admin/rbac/grants`)는 항상 `GrantResult` 본문을 반환하고 현 호출부(`permission-matrix.tsx`)는 결과값을 사용하지 않아 무영향. 미래에 204/빈 본문 엔드포인트가 생기면 `await apiFetch<X>()`가 `null`을 `X`로 반환해 호출부 첫 프로퍼티 접근에서 NPE → 그 계약을 정의하는 스토리에서 `undefined` 반환 또는 `empty_body` 에러로 확정.
