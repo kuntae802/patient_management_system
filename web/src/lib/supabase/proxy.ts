@@ -3,6 +3,7 @@ import { type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { LOGIN_PATH } from "@/lib/auth/branch";
+import { env } from "@/lib/env";
 
 // @supabase/ssr 세션 갱신 + 인증 가드. Next 16에서 middleware→proxy(노드 런타임 기본).
 // 역할별(RBAC) 라우트 가드는 Story 1.6 — 여기선 "로그인 여부"만 본다(§결정 D-2).
@@ -13,8 +14,8 @@ export async function updateSession(request: NextRequest): Promise<NextResponse>
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
+    env.NEXT_PUBLIC_SUPABASE_URL,
+    env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
     {
       cookies: {
         getAll() {

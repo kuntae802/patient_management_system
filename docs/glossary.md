@@ -110,3 +110,16 @@
 | `app.actor_id` | 세션 GUC(`set local`) | FastAPI(service_role)가 트랜잭션 행위자를 주입(감사 actor 캡처 계약 — Story 1.5). 미설정 시 `auth.uid()` 폴백 |
 
 > **권한 카탈로그(`permissions`)** 는 `0002`가 초기 버전을 시드하고, 리소스가 온라인될 때 각 에픽 마이그레이션이 확장한다. 역할별 grant(`role_permissions`) 토글 관리 UI는 **Story 1.7**. `0002`는 기본 grant로 `admin`=전체만 시드.
+
+## web RBAC UI 게이트 (Story 1.6)
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `fetchUserPermissions(supabase, userId)` | 함수(web·서버) | 현재 직원의 권한 코드 목록을 Supabase 직접 조회(`0003`이 깔아둔 `authenticated` SELECT 정책 사용). RBAC UI 노출 게이트의 데이터 소스 |
+| `PermissionsProvider` | 컴포넌트(web·클라) | 서버에서 fetch 한 `role`·`permissions`를 React Context 로 셸에 제공(TanStack Query 미사용) |
+| `usePermissions()` | 훅(web·클라) | `{ role, has(code) }` — 사이드바 노출 게이트·권한 밖 액션 게이트가 소비 |
+| `PermissionGate` / `LockedAction` | 컴포넌트(web·클라) | 권한 밖 액션 잠금 표현(`aria-disabled` + 잠금 글리프 + 한국어 사유). UX-DR8·18·20 |
+| `requireStaff()` / `requirePermission(code)` | 함수(web·서버) | route group 레이아웃 라우트 가드. UI 게이트와 독립(최종 권위=FastAPI·RLS) |
+| `filterNav(items, role, has)` | 함수(web) | 역할(IA 가시성) AND 권한(`requiredPermission`)으로 메뉴 항목 필터 |
+
+> ⚠️ **UI 게이트는 보안 경계가 아니다** — 쓰기 권위=FastAPI `require_permission`(403), 행 권위=RLS. UI 는 학습·속도 레이어(UX-DR4). DB·API 식별자는 영문 snake_case, web 코드 식별자는 camelCase/PascalCase(파일=kebab-case).

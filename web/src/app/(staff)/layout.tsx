@@ -1,16 +1,18 @@
-import { redirect } from "next/navigation";
-
+import { PermissionsProvider } from "@/components/auth/permissions-provider";
 import { AppShell } from "@/components/shell/app-shell";
-import { isStaffRole } from "@/lib/auth/branch";
-import { createClient } from "@/lib/supabase/server";
+import { requireStaff } from "@/lib/auth/guards";
+import { fetchUserPermissions } from "@/lib/auth/permissions";
 
-// 직원 영역 레이아웃 — 전역 셸(AppShell, Story 1.2)을 렌더한다. 인증 여부는 proxy가 가드.
-// 스톱갭(§리뷰): 비-직원이 (staff) 직접 내비 시 환자 영역으로. 전면 RBAC·역할별 노출 게이트는 Story 1.6.
+// 직원 영역 레이아웃 — 역할 가드(requireStaff: 비직원 → /portal) 후 권한 목록을 fetch 해
+// 전역 셸(AppShell)에 Context 로 제공한다. 인증 여부 1차 가드는 proxy(미인증 → /login).
+// RBAC UI 노출 게이트(사이드바 필터·권한 밖 액션)는 이 Context 를 소비(Story 1.6).
 export default async function StaffLayout({ children }: { children: React.ReactNode }) {
-  const supabase = await createClient();
-  const { data: role } = await supabase.rpc("auth_user_role");
-  if (!isStaffRole(role as string | null)) {
-    redirect("/portal");
-  }
-  return <AppShell>{children}</AppShell>;
+  const { supabase, userId, role } = await requireStaff();
+  const permissions = await fetchUserPermissions(supabase, userId);
+
+  return (
+    <PermissionsProvider role={role} permissions={permissions}>
+      <AppShell>{children}</AppShell>
+    </PermissionsProvider>
+  );
 }

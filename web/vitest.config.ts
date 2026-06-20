@@ -11,6 +11,11 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./vitest.setup.ts"],
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    // 공개 env 주입 — `lib/env.ts`의 모듈 레벨 검증이 테스트에서 안전하게 통과하도록.
+    env: {
+      NEXT_PUBLIC_SUPABASE_URL: "http://127.0.0.1:54321",
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "test-publishable-key",
+    },
   },
   resolve: {
     alias: {

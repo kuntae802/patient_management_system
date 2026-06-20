@@ -1,82 +1,77 @@
-import {
-  CalendarDays,
-  CircleHelp,
-  LayoutDashboard,
-  Printer,
-  Search,
-  Settings,
-  UserPlus,
-  UserRoundPlus,
-  Wallet,
-  type LucideIcon,
-} from "lucide-react";
+"use client";
 
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+
+import { usePermissions } from "@/hooks/use-permissions";
+import {
+  filterNav,
+  ROLE_LABELS,
+  STAFF_FOOTER_NAV,
+  STAFF_NAV,
+  type NavItem,
+} from "@/lib/nav/staff-nav";
 import { cn } from "@/lib/utils";
 
-type NavItem = {
-  label: string;
-  icon: LucideIcon;
-  count?: number;
-  active?: boolean;
-};
+// 현재 경로가 항목(또는 그 하위)인지 — 활성 표시 판정. usePathname 은 basePath 제외 앱-내 경로 반환.
+function isNavActive(pathname: string, href: string): boolean {
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
 
-// 정적 placeholder 내비(원무 역할 예시). RBAC 노출 게이트(usePermissions)·실제 라우트 연결은 Story 1.6.
-const primaryNav: NavItem[] = [
-  { label: "대기 현황", icon: LayoutDashboard, count: 11, active: true },
-  { label: "접수", icon: UserPlus },
-  { label: "예약 관리", icon: CalendarDays },
-  { label: "환자 등록", icon: UserRoundPlus },
-  { label: "환자 검색", icon: Search },
-  { label: "수납", icon: Wallet },
-  { label: "문서 출력", icon: Printer },
-];
-
-const footerNav: NavItem[] = [
-  { label: "설정", icon: Settings },
-  { label: "도움말", icon: CircleHelp },
-];
-
-function NavButton({ item, collapsed }: { item: NavItem; collapsed: boolean }) {
+function NavLink({
+  item,
+  collapsed,
+  active,
+}: {
+  item: NavItem;
+  collapsed: boolean;
+  active: boolean;
+}) {
   const Icon = item.icon;
   return (
-    <button
-      type="button"
-      aria-label={item.label}
-      aria-current={item.active ? "page" : undefined}
+    <Link
+      href={item.href}
+      aria-current={active ? "page" : undefined}
       title={collapsed ? item.label : undefined}
       className={cn(
         "relative flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-[13px] transition-colors",
         collapsed && "justify-center px-0",
-        item.active
+        active
           ? "bg-primary/10 font-semibold text-primary-hover before:absolute before:top-1.5 before:bottom-1.5 before:left-0 before:w-[3px] before:rounded-full before:bg-primary before:content-['']"
           : "text-foreground hover:bg-muted",
       )}
     >
       <Icon
-        className={cn(
-          "size-4 shrink-0",
-          item.active ? "text-primary-hover" : "text-muted-foreground",
-        )}
+        className={cn("size-4 shrink-0", active ? "text-primary-hover" : "text-muted-foreground")}
         aria-hidden
       />
       {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
-      {!collapsed && item.count != null && (
-        <span
-          className={cn(
-            "rounded-full px-1.5 py-0.5 text-[11px] tabular-nums",
-            item.active
-              ? "bg-primary/15 text-primary-hover"
-              : "bg-muted text-muted-foreground",
-          )}
-        >
-          {item.count}
-        </span>
-      )}
-    </button>
+    </Link>
   );
 }
 
+// 역할별 셸 — RBAC 노출 게이트(UX-DR4): 권한 없는 항목은 렌더하지 않는다(숨김; 트리에서 제외).
+// 메뉴 정의·노출 규칙은 lib/nav/staff-nav. 활성=좌측 teal 액센트 바.
 export function Sidebar({ collapsed }: { collapsed: boolean }) {
+  const pathname = usePathname();
+  const { role, has } = usePermissions();
+
+  const items = filterNav(STAFF_NAV, role, has);
+  const footerItems = filterNav(STAFF_FOOTER_NAV, role, has);
+
+  // 섹션 순서를 보존하며 그룹핑(빈 섹션은 자연히 생기지 않음 → 캡션 깨짐 없음).
+  const sections: { name: string; items: NavItem[] }[] = [];
+  for (const it of items) {
+    let group = sections.find((s) => s.name === it.section);
+    if (!group) {
+      group = { name: it.section, items: [] };
+      sections.push(group);
+    }
+    group.items.push(it);
+  }
+
+  const roleLabel = role ? (ROLE_LABELS[role] ?? role) : "";
+
   return (
     <aside
       id="app-sidebar"
@@ -90,30 +85,46 @@ export function Sidebar({ collapsed }: { collapsed: boolean }) {
       <div className="flex h-topbar shrink-0 items-center gap-2.5 border-b border-border px-3">
         <div className="size-7 shrink-0 rounded-md bg-primary" aria-hidden />
         {!collapsed && (
-          <span className="truncate text-sm font-semibold text-foreground">
-            한빛 정형외과
-          </span>
+          <span className="truncate text-sm font-semibold text-foreground">한빛 정형외과</span>
         )}
       </div>
 
-      {/* 주 내비 */}
-      <nav className="flex-1 space-y-0.5 overflow-y-auto p-2">
-        {primaryNav.map((item) => (
-          <NavButton key={item.label} item={item} collapsed={collapsed} />
+      {/* 주 내비 — 섹션별 그룹(권한으로 필터됨) */}
+      <nav className="flex-1 space-y-3 overflow-y-auto p-2">
+        {sections.map((section) => (
+          <div key={section.name} className="space-y-0.5">
+            {!collapsed && (
+              <div className="px-2.5 pt-1 pb-1 text-[10px] font-bold tracking-[0.09em] text-muted-foreground uppercase">
+                {section.name}
+              </div>
+            )}
+            {section.items.map((item) => (
+              <NavLink
+                key={item.href}
+                item={item}
+                collapsed={collapsed}
+                active={isNavActive(pathname, item.href)}
+              />
+            ))}
+          </div>
         ))}
       </nav>
 
-      {/* 푸터: 보조 내비 + 사용자/역할 */}
+      {/* 푸터: 보조 내비 + 역할 표시 */}
       <div className="shrink-0 space-y-0.5 border-t border-border p-2">
-        {footerNav.map((item) => (
-          <NavButton key={item.label} item={item} collapsed={collapsed} />
+        {footerItems.map((item) => (
+          <NavLink
+            key={item.href}
+            item={item}
+            collapsed={collapsed}
+            active={isNavActive(pathname, item.href)}
+          />
         ))}
         <div className="mt-1 flex items-center gap-2 px-2 py-1.5">
           <div className="size-7 shrink-0 rounded-full bg-muted" aria-hidden />
-          {!collapsed && (
+          {!collapsed && roleLabel && (
             <div className="min-w-0">
-              <div className="truncate text-[13px] text-foreground">정해린</div>
-              <div className="truncate text-[11px] text-muted-foreground">원무</div>
+              <div className="truncate text-[11px] text-muted-foreground">{roleLabel}</div>
             </div>
           )}
         </div>
