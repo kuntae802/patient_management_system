@@ -7,6 +7,7 @@
 - 테이블 = 복수 snake_case(`patients`, `encounters`), 컬럼 snake_case.
 - PK `id`(UUID), FK `<참조단수>_id`(`patient_id`). 사람용 번호는 별도(`chart_no`, `encounter_no`).
 - 타임스탬프 `created_at`/`updated_at`(timestamptz, UTC). soft delete `is_active`.
+- 유효기간(코드 마스터) `effective_from`(발효일)·`effective_to`(만료일, null=무기한) = `date`. 금액 `amount_krw`(KRW 정수). 약품 `ingredient_code`(주성분코드)·`unit`(단위). 수가 `category`(분류).
 - enum 타입 `<entity>_status`, RPC = snake_case 동사(`register_encounter`), 트리거 `trg_<table>_<action>`, 헬퍼 `has_permission()`.
 - JSON 필드 = 전 경로 snake_case(두 읽기 경로 일관).
 
@@ -172,3 +173,5 @@
 | `mask_pii` / `PiiMaskingFilter` / `configure_logging` | 함수·클래스(api·`core/logging`) | 운영 로그 주민번호 마스킹 백스톱(우발적 PII 로깅 방어심층). 루트 핸들러에 부착(lifespan) |
 
 > **마이그레이션 번호 변이:** 1.9 가 `0005_crypto.sql` 을 차지 → 아키텍처 계획 맵의 `0005_masters`·`0006_patients` 는 **각각 0006·0007 로 한 칸 시프트**(계획 번호는 *예약*, 적용된 마이그레이션이 아님; 1.3 이 Vault 를 0001 에 접지 않고 별도 마이그레이션으로 미룬 귀결). Epic 2/3 스토리 생성 시 번호 재조정. **reveal UI(눈 아이콘+"감사기록")·엔드포인트는 Epic 3/4**(UX-DR9) — 1.9 는 DB 프리미티브 + 패턴 확립까지.
+>
+> **(Story 2.2 갱신) 확정 번호:** `0006_masters.sql`=조직 마스터(진료과·진료실, 2.1), `0007_masters_codes.sql`=코드 마스터(진단·수가·약품 + 유효기간, 2.2). 코드 마스터가 0007 을 차지하므로 **patients 는 0008 로 한 칸 더 cascade**(Epic 3 `0008_patients`). 적용된 마이그레이션은 0001~0007.

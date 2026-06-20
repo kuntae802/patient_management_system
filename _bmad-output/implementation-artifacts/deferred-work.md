@@ -2,6 +2,17 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: code review of 2-2-코드-마스터-관리-kcd진단-edi수가-약품-버전-유효기간 (2026-06-20)
+
+> 3레이어 적대적 리뷰. Acceptance Auditor: AC1~4 충족·MUST·Non-goals 준수(차단성 위반 없음). patch 2건은 수정 적용. 아래는 Edge Hunter defer 항목.
+
+**Story 2.3(재사용 검색 피커)에서 다룰 항목:**
+- **`codeStatus`/`isCurrentlyValid` today = 브라우저 로컬 시간** [web/src/lib/admin/masters.ts] — 관리화면 상태 배지는 클라 today(로컬 KST)로 계산하나, 2.3 피커·Epic 4·5 소비처가 "현재 유효"를 DB `current_date`(UTC) 기준으로 필터하면 자정 경계·비-KST 브라우저에서 배지("유효")와 피커(제외)가 불일치할 수 있다. 2.3에서 "현재 유효" 판정을 **DB 권위로 통일**(서버 today를 RSC에서 주입하거나 SQL `current_date` 필터를 단일 진실로) — `isCurrentlyValid`는 이미 today 인자를 받도록 설계됨(서버 today 주입 가능).
+
+**프로젝트 전역 하드닝(2.1과 공통):**
+- **`fetchMasters` 단일 실패점 확대(2→5 테이블)** [web/src/lib/admin/masters.ts] — `Promise.all` + 첫 에러 throw(의도된 fail-loud). 코드 마스터 3종 추가로 단일 테이블 오류가 관리화면 전체를 다운시킬 표면이 2.5배 확대. 대량화 또는 부분 강등이 필요해지면 per-table 에러 처리(정상 탭은 표시, 실패 탭만 에러)로 검토. 현재는 2.1 fail-loud 패턴 유지.
+- **단일 `pendingId` 다중행 동시 토글** [web/src/components/admin/masters-manager.tsx] — 비활성은 ConfirmDialog로 직렬화되나 활성 복귀(즉시 실행)는 연속 클릭 시 첫 행 pending UI가 소실(요청은 in-flight). 2.1 deferred-work에 이미 기록된 전역 패턴 — per-row pending Set으로 일괄 개선 시 마스터 매니저도 함께 적용.
+
 ## Deferred from: code review of 2-1-진료과-진료실-마스터-관리 (2026-06-20)
 
 > 3레이어 적대적 리뷰 결과. Acceptance Auditor clean pass(AC1~4 충족). 아래는 Blind/Edge Hunter defer 항목.
