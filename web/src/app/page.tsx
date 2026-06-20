@@ -1,65 +1,86 @@
-import Image from "next/image";
+import { AppShell } from "@/components/shell/app-shell";
+import { EmptyState } from "@/components/shell/empty-state";
+import { ToastDemo } from "@/components/shell/toast-demo";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+
+// 디자인 시스템 토큰·전역 셸 프리뷰(Story 1.2). 실제 역할 화면·route group은 후속 스토리가 채운다.
+// 5상태 = 색 + 도형 중복 인코딩. 잉크 규칙: 접수=앰버 잉크, 완료(작은 라벨)=그린 잉크.
+const statusBadges = [
+  { label: "예약", glyph: "○", className: "text-status-scheduled" },
+  { label: "접수", glyph: "●", className: "text-status-received-ink" },
+  { label: "진행중", glyph: "◐", className: "text-status-inprogress" },
+  { label: "완료", glyph: "✓", className: "text-status-done-ink" },
+  { label: "취소", glyph: "✕", className: "text-status-cancelled line-through" },
+];
+
+function Section({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="space-y-3">
+      <h2 className="text-[13px] font-semibold text-muted-foreground">{title}</h2>
+      {children}
+    </section>
+  );
+}
 
 export default function Home() {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <AppShell>
+      <div className="mx-auto max-w-5xl space-y-8 px-6 py-6">
+        <div>
+          <h1 className="text-[20px] font-semibold tracking-[-0.02em] text-foreground">
+            디자인 시스템 · 전역 셸 프리뷰
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+          <p className="mt-1 text-[13px] text-muted-foreground">
+            브랜드 토큰 · Pretendard · AppShell 골격 · 공통 상태의 시각 검증 페이지입니다.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+
+        <Section title="상태 배지 (색 + 도형 중복 인코딩)">
+          <div className="flex flex-wrap items-center gap-4">
+            {statusBadges.map((s) => (
+              <span
+                key={s.label}
+                className={`inline-flex items-center gap-1.5 text-[13px] ${s.className}`}
+              >
+                <span aria-hidden>{s.glyph}</span>
+                {s.label}
+              </span>
+            ))}
+          </div>
+        </Section>
+
+        <Section title="버튼">
+          <div className="flex flex-wrap items-center gap-3">
+            <Button>주 액션</Button>
+            <Button variant="ghost">보조 액션</Button>
+            <Button variant="outline">아웃라인</Button>
+            <ToastDemo />
+          </div>
+        </Section>
+
+        <Section title="로딩 — 스켈레톤 (스피너 금지)">
+          <div className="space-y-2 rounded-lg border border-border bg-card p-4">
+            <Skeleton className="h-5 w-1/3" />
+            <Skeleton className="h-4 w-2/3" />
+            <Skeleton className="h-4 w-1/2" />
+          </div>
+        </Section>
+
+        <Section title="빈 상태">
+          <EmptyState
+            title="오늘 접수된 환자가 없습니다"
+            description="새 환자를 접수하면 대기 현황에 표시됩니다."
+            action={<Button>＋ 환자 접수하기</Button>}
+          />
+        </Section>
+      </div>
+    </AppShell>
   );
 }
