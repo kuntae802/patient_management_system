@@ -4,7 +4,14 @@ import { afterEach, beforeAll, describe, expect, it, vi, type Mock } from "vites
 
 import { MastersManager } from "@/components/admin/masters-manager";
 import { apiFetch } from "@/lib/api/client";
-import type { Department, Room } from "@/lib/admin/masters";
+import type {
+  Department,
+  Diagnosis,
+  Drug,
+  FeeSchedule,
+  MastersData,
+  Room,
+} from "@/lib/admin/masters";
 
 vi.mock("@/lib/api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api/client")>();
@@ -72,9 +79,84 @@ const ROOM: Room = {
   updated_at: TS,
 };
 
-function renderManager() {
+// 시점 상태가 결정적이도록 발효/만료일을 먼 과거/미래로 둔다(codeStatus 는 실제 today 기준).
+const DX_VALID: Diagnosis = {
+  id: "dx1",
+  code: "I10",
+  name: "본태성 고혈압",
+  effective_from: "2000-01-01",
+  effective_to: null,
+  is_active: true,
+  created_at: TS,
+  updated_at: TS,
+};
+const DX_EXPIRED: Diagnosis = {
+  id: "dx2",
+  code: "E11",
+  name: "구버전 당뇨",
+  effective_from: "2000-01-01",
+  effective_to: "2000-12-31",
+  is_active: true,
+  created_at: TS,
+  updated_at: TS,
+};
+const DX_PENDING: Diagnosis = {
+  id: "dx3",
+  code: "J45",
+  name: "예정 천식",
+  effective_from: "2999-01-01",
+  effective_to: null,
+  is_active: true,
+  created_at: TS,
+  updated_at: TS,
+};
+const DX_INACTIVE: Diagnosis = {
+  id: "dx4",
+  code: "Z99",
+  name: "폐지 진단",
+  effective_from: "2000-01-01",
+  effective_to: null,
+  is_active: false,
+  created_at: TS,
+  updated_at: TS,
+};
+const FEE: FeeSchedule = {
+  id: "f1",
+  code: "AA157",
+  name: "재진 진찰료",
+  amount_krw: 12000,
+  category: "진찰료",
+  effective_from: "2000-01-01",
+  effective_to: null,
+  is_active: true,
+  created_at: TS,
+  updated_at: TS,
+};
+const DRUG: Drug = {
+  id: "g1",
+  code: "642901230",
+  name: "타이레놀정 500mg",
+  ingredient_code: "120901ATB",
+  unit: "정",
+  effective_from: "2000-01-01",
+  effective_to: null,
+  is_active: true,
+  created_at: TS,
+  updated_at: TS,
+};
+
+function renderManager(overrides: Partial<MastersData> = {}) {
   return render(
-    <MastersManager initial={{ departments: [DEPT_ACTIVE, DEPT_INACTIVE], rooms: [ROOM] }} />,
+    <MastersManager
+      initial={{
+        departments: [DEPT_ACTIVE, DEPT_INACTIVE],
+        rooms: [ROOM],
+        diagnoses: [],
+        feeSchedules: [],
+        drugs: [],
+        ...overrides,
+      }}
+    />,
   );
 }
 
@@ -153,5 +235,70 @@ describe("MastersManager", () => {
     expect(path).toBe("/v1/masters/departments/d2/active");
     expect(JSON.parse(init.body)).toEqual({ is_active: true });
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument(); // 확인 없음
+  });
+
+  it("진단 탭 → 시점 상태 배지(유효/만료/발효 전/비활성) 표시", async () => {
+    renderManager({ diagnoses: [DX_VALID, DX_EXPIRED, DX_PENDING, DX_INACTIVE] });
+    await userEvent.click(screen.getByRole("tab", { name: /진단/ }));
+
+    const validRow = screen.getByText("본태성 고혈압").closest("tr") as HTMLElement;
+    const expiredRow = screen.getByText("구버전 당뇨").closest("tr") as HTMLElement;
+    const pendingRow = screen.getByText("예정 천식").closest("tr") as HTMLElement;
+    const inactiveRow = screen.getByText("폐지 진단").closest("tr") as HTMLElement;
+    expect(within(validRow).getByText("유효")).toBeInTheDocument();
+    expect(within(expiredRow).getByText("만료")).toBeInTheDocument();
+    expect(within(pendingRow).getByText("발효 전")).toBeInTheDocument();
+    // 비활성 행: 배지 "비활성"(행 액션 버튼은 "활성"이라 행 스코프로 단언).
+    expect(within(inactiveRow).getByText("비활성")).toBeInTheDocument();
+  });
+
+  it("진단 생성 → POST /v1/masters/diagnoses (발효일 포함)", async () => {
+    (apiFetch as Mock).mockResolvedValue({ ...DX_VALID, id: "dxN", code: "K35", name: "급성 충수염" });
+    renderManager();
+    await userEvent.click(screen.getByRole("tab", { name: /진단/ }));
+
+    await userEvent.click(screen.getByRole("button", { name: "진단 추가" }));
+    await userEvent.type(screen.getByLabelText(/코드/), "K35");
+    await userEvent.type(screen.getByLabelText(/이름/), "급성 충수염");
+    await userEvent.click(screen.getByRole("button", { name: "생성" }));
+
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
+    const [path, init] = (apiFetch as Mock).mock.calls[0];
+    expect(path).toBe("/v1/masters/diagnoses");
+    expect(init.method).toBe("POST");
+    const body = JSON.parse(init.body);
+    expect(body.code).toBe("K35");
+    expect(body.name).toBe("급성 충수염");
+    expect(typeof body.effective_from).toBe("string"); // 폼 기본=오늘
+    expect(await screen.findByText("급성 충수염")).toBeInTheDocument();
+  });
+
+  it("수가 탭 → 금액 천단위 포맷 표시", async () => {
+    renderManager({ feeSchedules: [FEE] });
+    await userEvent.click(screen.getByRole("tab", { name: /수가/ }));
+    expect(screen.getByText("12,000")).toBeInTheDocument();
+  });
+
+  it("약품 탭 → 주성분코드·단위 표시", async () => {
+    renderManager({ drugs: [DRUG] });
+    await userEvent.click(screen.getByRole("tab", { name: /약품/ }));
+    expect(screen.getByText("타이레놀정 500mg")).toBeInTheDocument();
+    expect(screen.getByText("120901ATB")).toBeInTheDocument();
+  });
+
+  it("진단 비활성 → 확인 다이얼로그 경유 PATCH(is_active=false)", async () => {
+    (apiFetch as Mock).mockResolvedValue({ ...DX_VALID, is_active: false });
+    renderManager({ diagnoses: [DX_VALID] });
+    await userEvent.click(screen.getByRole("tab", { name: /진단/ }));
+
+    await userEvent.click(screen.getByRole("button", { name: "비활성" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "비활성" }));
+
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
+    const [path, init] = (apiFetch as Mock).mock.calls[0];
+    expect(path).toBe("/v1/masters/diagnoses/dx1/active");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body)).toEqual({ is_active: false });
   });
 });
