@@ -16,7 +16,8 @@ as $$
   select r.code
   from public.users u
   join public.roles r on r.id = u.role_id
-  where u.id = (select auth.uid());
+  where u.id = (select auth.uid())
+    and u.employment_status = 'active';  -- 휴직/퇴사자는 역할 무효(방어심층)
 $$;
 
 -- ── has_permission(code): 현재 로그인 직원의 역할이 권한 보유 여부(조인 RLS 회피용 헬퍼) ──
@@ -31,7 +32,11 @@ as $$
     select 1
     from public.role_permissions rp
     join public.permissions p on p.id = rp.permission_id
-    where rp.role_id = (select role_id from public.users where id = (select auth.uid()))
+    where rp.role_id = (
+        select role_id from public.users
+        where id = (select auth.uid())
+          and employment_status = 'active'  -- 휴직/퇴사자는 권한 무효(방어심층)
+      )
       and p.code = perm_code
   );
 $$;

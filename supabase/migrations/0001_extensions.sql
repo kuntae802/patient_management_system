@@ -9,5 +9,7 @@
 --     마이그레이션으로 추가한다. 이 파일은 적용 후 편집하지 말 것(마이그레이션 불변성).
 --
 -- Supabase 관습: 확장은 `extensions` 스키마에 설치(config.toml extra_search_path=["public","extensions"]).
+-- 비-Supabase Postgres(extensions 스키마 부재) 대비 스키마를 멱등 보장한 뒤 설치.
 
+create schema if not exists extensions;
 create extension if not exists pgcrypto with schema extensions;
