@@ -58,17 +58,22 @@ def test_users_id_fk_to_auth_users(psql):
     assert cnt == "1"
 
 
-def test_users_department_id_has_no_fk(psql):
-    """users.department_id는 0002에서 FK 미부착 — departments(0005) 부재(D-4)."""
+def test_users_department_id_fk_to_departments(psql):
+    """users.department_id → departments(id) FK 존재(0002는 departments 부재로 미부착, 0006이 추가).
+
+    0002 시점엔 FK 가 없었고(D-4) Story 2.1(0006_masters)이 departments 생성 후 FK 를 추가한다.
+    psql 은 누적 적용된 라이브 DB 를 보므로 여기선 '추가된 상태'를 단언한다(상세는
+    test_migrations_masters.test_users_department_id_fk_added)."""
     cnt = psql.scalar(
         "select count(*) from pg_constraint c "
         "join pg_class t on t.oid=c.conrelid and t.relname='users' "
+        "join pg_class rt on rt.oid=c.confrelid and rt.relname='departments' "
         "where c.contype='f' "
         "and 'department_id' = any("
         "  select attname from pg_attribute "
         "  where attrelid=t.oid and attnum=any(c.conkey));"
     )
-    assert cnt == "0", "0002에 department_id FK가 있으면 마이그레이션 적용 실패함(0005가 추가)"
+    assert cnt == "1", "users.department_id FK가 departments로 부착돼야 함(0006_masters)"
 
 
 def test_users_check_constraints(psql):
