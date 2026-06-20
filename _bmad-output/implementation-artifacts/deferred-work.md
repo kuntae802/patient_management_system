@@ -2,12 +2,19 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: code review of 2-3-마스터-검색-피커-자유-입력-제한 (2026-06-20)
+
+> 3레이어 적대적 리뷰. Acceptance Auditor: AC1~3·MUST·Non-goals 충족·2.2 이월 해소 검증(ACCEPTED). patch 2건은 수정 적용. 아래는 defer 항목.
+
+**프로젝트 전역 하드닝(에러 복구):**
+- **피커 로드 에러 시 영구 비활성·재시도 부재** [web/src/components/ui/master-search-picker.tsx] — `disabled={disabled || loadError != null}` + `<p role="alert">`로 fail-loud하나, 재시도 버튼·자동 재조회가 없어 일시 네트워크 장애 시 전체 remount(페이지 새로고침)로만 복구. itemsProp 주입 경로는 무영향(loadError 미설정). 프로젝트 전역 fail-loud·무재시도 패턴(2.1 deferred "토글 실패 시 재조회/재조정 부재"와 동형) — 에러 복구 하드닝 묶음에서 일괄 처리(retry + 자동 재조회).
+
 ## Deferred from: code review of 2-2-코드-마스터-관리-kcd진단-edi수가-약품-버전-유효기간 (2026-06-20)
 
 > 3레이어 적대적 리뷰. Acceptance Auditor: AC1~4 충족·MUST·Non-goals 준수(차단성 위반 없음). patch 2건은 수정 적용. 아래는 Edge Hunter defer 항목.
 
 **Story 2.3(재사용 검색 피커)에서 다룰 항목:**
-- **`codeStatus`/`isCurrentlyValid` today = 브라우저 로컬 시간** [web/src/lib/admin/masters.ts] — 관리화면 상태 배지는 클라 today(로컬 KST)로 계산하나, 2.3 피커·Epic 4·5 소비처가 "현재 유효"를 DB `current_date`(UTC) 기준으로 필터하면 자정 경계·비-KST 브라우저에서 배지("유효")와 피커(제외)가 불일치할 수 있다. 2.3에서 "현재 유효" 판정을 **DB 권위로 통일**(서버 today를 RSC에서 주입하거나 SQL `current_date` 필터를 단일 진실로) — `isCurrentlyValid`는 이미 today 인자를 받도록 설계됨(서버 today 주입 가능).
+- ~~**`codeStatus`/`isCurrentlyValid` today = 브라우저 로컬 시간**~~ **[✅ 해소 — Story 2.3, 2026-06-20]** — "현재 유효" 판정을 **서버 today 단일 권위로 통일**. (a) 피커(`MasterSearchPicker`)는 `today`를 **필수 prop**(서버 주입, 브라우저 시계 기본값 제거)으로 받아 `fetchCurrentlyValidMasters`가 SQL(`is_active`·`effective_from<=today`·`effective_to is null or >=today`)로 1차 필터 + 컴포넌트가 `isCurrentlyValid(item, today)`로 동일 술어 방어 필터. (b) 관리화면(`/admin/masters` RSC)이 서버 `todayISO()`를 계산해 `MastersManager → 코드 마스터 테이블 → CodeStatusBadge(codeStatus(row, today))`로 주입 → 배지와 피커가 **같은 today** 공유(자정 경계·비-KST 불일치 제거). `MastersManager` `today` 미주입 시 클라 `todayISO()` 폴백(하위호환). [web/src/lib/admin/masters.ts · web/src/components/ui/master-search-picker.tsx · web/src/components/admin/masters-manager.tsx · web/src/app/(staff)/admin/masters/page.tsx]
 
 **프로젝트 전역 하드닝(2.1과 공통):**
 - **`fetchMasters` 단일 실패점 확대(2→5 테이블)** [web/src/lib/admin/masters.ts] — `Promise.all` + 첫 에러 throw(의도된 fail-loud). 코드 마스터 3종 추가로 단일 테이블 오류가 관리화면 전체를 다운시킬 표면이 2.5배 확대. 대량화 또는 부분 강등이 필요해지면 per-table 에러 처리(정상 탭은 표시, 실패 탭만 에러)로 검토. 현재는 2.1 fail-loud 패턴 유지.

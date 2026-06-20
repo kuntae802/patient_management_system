@@ -10,6 +10,7 @@
 - 유효기간(코드 마스터) `effective_from`(발효일)·`effective_to`(만료일, null=무기한) = `date`. 금액 `amount_krw`(KRW 정수). 약품 `ingredient_code`(주성분코드)·`unit`(단위). 수가 `category`(분류).
 - enum 타입 `<entity>_status`, RPC = snake_case 동사(`register_encounter`), 트리거 `trg_<table>_<action>`, 헬퍼 `has_permission()`.
 - JSON 필드 = 전 경로 snake_case(두 읽기 경로 일관).
+- 재사용 검색 피커(Story 2.3, FR-202): `master_search_picker`(마스터 검색 피커) = 진단·약품·수가를 검색·선택만 강제(free-text 차단)하는 공용 컴포넌트(`MasterSearchPicker`). 종류 `MasterKind`(`diagnosis`·`drug`·`fee_schedule`), 선택 결과 `MasterPickerItem`(`code`·`name` + 종류별 식별 필드). Epic 4.7·5.2·5.5/7.x 재사용.
 
 ## 도메인 엔티티
 
