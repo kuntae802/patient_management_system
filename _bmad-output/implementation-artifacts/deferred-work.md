@@ -2,6 +2,27 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: code review of 2-1-진료과-진료실-마스터-관리 (2026-06-20)
+
+> 3레이어 적대적 리뷰 결과. Acceptance Auditor clean pass(AC1~4 충족). 아래는 Blind/Edge Hunter defer 항목.
+
+**Story 2.4(참조 무결성 심화)에서 다룰 항목:**
+- **진료실→비활성 진료과 신규 배정 API 미차단** [api/app/core/db.py insert_room/update_room] — FK는 존재만 검증하고 `is_active`는 검사 안 함. UI 피커는 활성 진료과만 노출하나(스펙이 "신규 선택 제외"를 소비처 피커에 위임), API 권위 레벨에서 비활성 마스터로의 신규 배정을 막으려면 `is_active` 검사 추가. Story 2.4 참조 무결성 범위.
+- **진료과 비활성 시 의존성 경고/재배정 부재** [web masters-manager.tsx ConfirmDialog] — 비활성 처리 시 그 진료과를 참조하는 진료실·직원 수를 세어 경고하거나 재배정을 유도하는 흐름이 없다. AC2(참조 보존)는 충족되나(행·명칭 유지), 운영 UX로는 "3개 진료실·5명 직원이 아직 참조 중" 경고가 바람직. 2.4 참조 무결성/UX.
+- **진료실 목록 비활성 소속 진료과 미표기 + departmentLabel 폴백 문구** [web masters-manager.tsx · lib/admin/masters.ts] — 진료실 폼 select는 비활성 진료과에 "(비활성)" 접미사를 붙이나 목록 테이블은 이름만 표시. `departmentLabel`의 "(삭제된 진료과)" 폴백은 hard-delete 부재(soft delete만 + FK)로 정상 경로에서 비도달이며 도달 시 오해 소지(절단/RLS 아티팩트). 2.4 UI 명확성 polish 시 비활성 마커 추가 + 폴백 문구를 "(미상)" 류로.
+- **code 대소문자 구분 unique** [supabase/migrations/0006_masters.sql] — `code`가 `text unique`라 `ORTHO`/`ortho`/`Ortho`가 별개로 공존(409 미발생). 스펙이 엄격 정규식을 강제하지 않아 의도된 유연성이나, 코드 일관성을 원하면 `citext` 또는 `lower(code)` unique 인덱스로 정규화 검토. 2.4 마스터 데이터 품질.
+
+**PATCH 시맨틱(외부 API 소비처 등장 시):**
+- **마스터 PATCH = 전체 교체** [api/app/schemas/masters.py · api/app/core/db.py] — `DepartmentUpdate`/`RoomUpdate`의 옵셔널 필드가 기본값 `None`이고 `update_*`가 무조건 `set description=$`/`set department_id=$` 실행 → partial 페이로드(예: `{name}`만)가 description/department_id를 NULL로 만든다. 현재 유일 소비처인 web 폼은 항상 전체 필드를 전송하므로 무영향. 외부 API 소비처가 생기면 partial-merge(미전송 필드 보존) 시맨틱 또는 PUT/PATCH 계약 명세 확정 필요.
+- **set_*_active 멱등 미보장(감사 노이즈)** [api/app/core/db.py set_*_active] — 동일 상태로 재토글 시 동일 before/after의 감사 `update` 행이 누적된다. UI는 반대 액션만 노출해 차단하나 API 직접호출은 가능. 상태가 실제 바뀔 때만 쓰도록(`where ... and is_active is distinct from $`) 가드하되 멱등 성공(404 회피) 처리 검토.
+
+**프로젝트 전역 하드닝(1.7/1.8과 공통):**
+- **낙관적 동시성 부재(lost update)** [api/app/core/db.py update_*] — `where id=$1`만으로 갱신, `updated_at` 선행조건/ETag 없음 → 두 관리자가 같은 행을 편집하면 last-write-wins(409 없음). 1.7 매트릭스·1.8 직원관리와 동일한 전역 패턴. 동시성 하드닝 묶음에서 일괄 처리.
+- **단일 `pendingId` 다중행 동시 토글** [web masters-manager.tsx] — 한 행 토글 중 다른 행 토글 시 첫 행 pending이 해제되어 이중제출 여지. staff-directory(1.8)와 동일 패턴 → 일괄 개선 시 per-row pending Set 으로.
+- **토글 실패 시 재조회/재조정 부재** [web masters-manager.tsx applyActive] — 실패 시 toast만, UI/DB 발산은 수동 재로드로만 복구. 1.8과 동일.
+- **fetchMasters 페이지네이션/limit 부재** [web/src/lib/admin/masters.ts] — `.range()/.limit()` 없음 → soft-delete 누적으로 PostgREST max-rows(≈1000) 초과 시 무음 절단. 마스터는 소수라 당장 무해(1.10 audit offset defer와 동형). 대량화 시 keyset/limit + "더 보기".
+- **TOCTOU 재평가·일부 분기 전용 테스트 부재** [api/tests] — in-tx `_require_master_manage`(권한 revoke 레이스)·update_room-bad-dept 전용 단위 케이스 없음. 통합 테스트와 1.7/1.8 정황으로 커버, 전용 케이스는 후속.
+
 ## Deferred from: code review of 1-10-감사-로그-뷰어-관리자-append-only (2026-06-20)
 
 - **before/after 마스킹이 web 렌더 계층 전용 — API 응답·로그엔 jsonb 원문 전송** [api/app/schemas/audit.py] — 스펙이 마스킹을 렌더 계층으로 의도했고 현재 스냅샷(roles·permissions·role_permissions·users)엔 PII 부재라 무영향. Epic 3+ 환자 스냅샷이 audit_logs에 들어오면 FastAPI 응답 본문·구조적 로그에 평문 PII가 흐를 수 있으므로, 그 시점에 **서버측 마스킹 또는 reveal 권한 게이트 응답 정책**을 검토(decrypt_sensitive reveal 패턴과 정합).
