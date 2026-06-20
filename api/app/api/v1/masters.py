@@ -17,6 +17,7 @@ from app.core.security import CurrentUser, require_permission
 from app.schemas.masters import (
     ActiveUpdate,
     DepartmentCreate,
+    DepartmentDependents,
     DepartmentResponse,
     DepartmentUpdate,
     DiagnosisCreate,
@@ -74,6 +75,20 @@ async def set_department_active(
     return await masters_service.set_department_active(
         user.sub, department_id, is_active=payload.is_active
     )
+
+
+@router.get("/departments/{department_id}/dependents", response_model=DepartmentDependents)
+async def get_department_dependents(
+    department_id: UUID,
+    user: CurrentUser = Depends(require_master_manage),
+) -> DepartmentDependents:
+    """진료과 의존성 카운트(비활성 경고용, AC4) — 활성 진료실 + 재직 직원 수. 미존재 → 404.
+
+    masters 라우터 **유일한 read 엔드포인트** — 직원 수가 users RLS(본인행)를 넘어야 해서 예외적으로
+    API(service_role)로 읽는다(나머지 목록은 web 이 Supabase 직접조회). 경고용 보조 정보일 뿐
+    비활성 자체를 막지 않는다(soft delete 는 참조 중에도 가능).
+    """
+    return await masters_service.count_department_dependents(user.sub, department_id)
 
 
 # ── 진료실(rooms) ─────────────────────────────────────────────────────────────

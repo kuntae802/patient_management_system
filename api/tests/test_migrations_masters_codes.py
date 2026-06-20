@@ -46,14 +46,17 @@ def test_effective_from_not_null_and_to_nullable(psql):
         assert "effective_to:YES" in nullable, f"{table}.effective_to nullable 아님: {nullable}"
 
 
-def test_code_master_code_unique(psql):
+def test_code_master_code_unique_case_insensitive(psql):
+    """진단·수가·약품 code 대소문자 무관 unique(0008) — lower(code) 인덱스 + 기존 제약 제거."""
     for table in _TABLES:
-        cnt = psql.scalar(
-            "select count(*) from pg_constraint c "
-            f"join pg_class t on t.oid=c.conrelid and t.relname='{table}' "
-            "where c.contype='u';"
+        idx = psql.scalar(
+            "select count(*) from pg_indexes "
+            f"where schemaname='public' and tablename='{table}' "
+            "and indexdef ilike '%unique%' and indexdef ilike '%lower(code)%';"
         )
-        assert int(cnt) >= 1, f"{table}.code UNIQUE 제약이 없음"
+        assert int(idx) >= 1, f"{table}.code 대소문자 무관 unique 인덱스(lower(code)) 없음(0008)"
+        old = psql.scalar(f"select count(*) from pg_constraint where conname='{table}_code_key';")
+        assert int(old) == 0, f"{table}_code_key 제약이 아직 존재(0008 drop 누락)"
 
 
 def test_fee_schedules_has_amount_krw(psql):

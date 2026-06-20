@@ -562,13 +562,77 @@ async def set_department_active(
     return await _run_authed(sub, _op)
 
 
+async def _assert_department_assignable(
+    conn: asyncpg.Connection, department_id: UUID
+) -> None:
+    """신규 배정 대상 진료과가 존재 + 활성인지 동일 트랜잭션에서 검증(Story 2.4 / AC3 참조 무결성).
+
+    미존재 → 422 invalid_department(FK 백스톱과 동일 코드). 비활성 → 422 inactive_department
+    (UI 피커는 활성만 노출하나 API 권위 레벨에서 비활성 마스터로의 신규 배정을 차단 — 단일 진실).
+    soft delete 만 하므로 물리 삭제는 없어 검사↔쓰기 사이 행 소멸은 불가(같은 tx 내 일관).
+    """
+    is_active = await conn.fetchval(
+        "select is_active from public.departments where id = $1", department_id
+    )
+    if is_active is None:
+        raise AppError(
+            "존재하지 않는 진료과입니다.",
+            code="invalid_department",
+            status_code=422,
+            detail={"department_id": str(department_id)},
+        )
+    if not is_active:
+        raise AppError(
+            "비활성된 진료과에는 새로 배정할 수 없습니다.",
+            code="inactive_department",
+            status_code=422,
+            detail={"department_id": str(department_id)},
+        )
+
+
+async def count_department_dependents(sub: UUID, department_id: UUID) -> dict[str, int]:
+    """진료과의 운영상 살아있는 참조 수(Story 2.4 / AC4): 활성 진료실 + 재직 직원.
+
+    진료과 미존재 → 404. service_role 풀이 users RLS(본인행, 0003)를 우회하므로 직원 수 카운트가
+    가능하다(클라 직접조회로는 불가 — 이 엔드포인트가 필요한 이유). 읽기이므로 권한 재평가는 불요
+    (엔드포인트 require_master_manage 게이트로 충분 — fetch_staff_list·fetch_audit_logs 동형).
+
+    ⚠️ 직원 = **재직(在職)**: `employment_status <> 'terminated'`(active + on_leave). 휴직 직원은
+       현재 접근은 차단돼도 그 진료과에 여전히 *배정*돼 있어 복귀 시 영향받으므로 의존성에 포함한다
+       (퇴사자만 제외 — 더는 소속 아님). 진료실은 활성만(비활성 진료실 ≈ 제거된 자원).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, int]:
+        exists = await conn.fetchval(
+            "select 1 from public.departments where id = $1", department_id
+        )
+        if exists is None:
+            raise NotFoundError(detail={"department_id": str(department_id)})
+        rooms = await conn.fetchval(
+            "select count(*) from public.rooms where department_id = $1 and is_active = true",
+            department_id,
+        )
+        staff = await conn.fetchval(
+            "select count(*) from public.users "
+            "where department_id = $1 and employment_status <> 'terminated'",
+            department_id,
+        )
+        return {"rooms": int(rooms or 0), "staff": int(staff or 0)}
+
+    return await _run_authed(sub, _op)
+
+
 async def insert_room(
     sub: UUID, *, code: str, name: str, department_id: UUID | None
 ) -> asyncpg.Record:
-    """진료실 INSERT(자동 감사). code 중복 → 409, 미존재 department_id → 422 invalid_department."""
+    """진료실 INSERT(자동 감사). code 중복 → 409, 미존재 → 422 invalid_department,
+    비활성 진료과 배정 → 422 inactive_department."""
 
     async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
         await _require_master_manage(conn)
+        # 신규 = 모든 비활성 배정 차단(AC3). 무소속(None)은 검사 불요.
+        if department_id is not None:
+            await _assert_department_assignable(conn, department_id)
         try:
             row = await conn.fetchrow(
                 f"insert into public.rooms (code, name, department_id) "
@@ -581,7 +645,7 @@ async def insert_room(
             raise ConflictError(
                 "이미 사용 중인 진료실 코드입니다.", code="code_taken", detail={"code": code}
             ) from exc
-        except asyncpg.ForeignKeyViolationError as exc:
+        except asyncpg.ForeignKeyViolationError as exc:  # 명시 검사 백스톱(레이스 대비)
             raise AppError(
                 "존재하지 않는 진료과입니다.",
                 code="invalid_department",
@@ -597,10 +661,25 @@ async def insert_room(
 async def update_room(
     sub: UUID, room_id: UUID, *, name: str, department_id: UUID | None
 ) -> asyncpg.Record:
-    """진료실 수정(name·department_id). 미존재 진료과 → 422, 미존재 진료실 → 404."""
+    """진료실 수정(name·department_id). 미존재 진료실 → 404, 미존재 진료과 → 422,
+    비활성 진료과 신규 배정 → 422 inactive_department.
+
+    AC3: 소속을 **변경**해 비활성 진료과로 새로 배정하면 거부하되, 현 소속(이미 비활성)을 그대로
+    유지하는 수정은 허용한다(이탈 강요 금지 — room-form 의 '현 소속 유지' 옵션과 일치). 이를 위해
+    현 소속을 먼저 읽어 변경분일 때만 활성 검사를 건다.
+    """
 
     async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
         await _require_master_manage(conn)
+        # 현 소속 + 존재 확인(없으면 404). NULL 소속과 "미존재 진료실"을 구분하려 id 도 함께 조회.
+        current = await conn.fetchrow(
+            "select id, department_id from public.rooms where id = $1", room_id
+        )
+        if current is None:
+            raise NotFoundError(detail={"room_id": str(room_id)})
+        # 소속을 **변경**할 때만 활성 검사(현 비활성 소속 유지는 허용).
+        if department_id is not None and department_id != current["department_id"]:
+            await _assert_department_assignable(conn, department_id)
         try:
             row = await conn.fetchrow(
                 f"update public.rooms set name = $2, department_id = $3, updated_at = now() "
@@ -609,13 +688,14 @@ async def update_room(
                 name,
                 department_id,
             )
-        except asyncpg.ForeignKeyViolationError as exc:
+        except asyncpg.ForeignKeyViolationError as exc:  # 명시 검사 백스톱
             raise AppError(
                 "존재하지 않는 진료과입니다.",
                 code="invalid_department",
                 status_code=422,
                 detail={"department_id": str(department_id)},
             ) from exc
+        # 선행 존재 확인 후 동일 tx UPDATE → 정상 1행. 이론적 race(행 소멸) 시 graceful 404.
         if row is None:
             raise NotFoundError(detail={"room_id": str(room_id)})
         return row

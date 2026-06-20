@@ -80,6 +80,18 @@ class ActiveUpdate(BaseModel):
     is_active: bool
 
 
+class DepartmentDependents(BaseModel):
+    """진료과 비활성 전 의존성 카운트(Story 2.4 / AC4) — 운영상 살아있는 참조 수.
+
+    rooms = 활성 진료실, staff = 재직 직원(active + on_leave — 퇴사자만 제외). 비활성 처리를
+    막지 않는 **경고용** 보조 정보다(soft delete 는 참조 중에도 가능, 과거 기록 보존). 직원 수는
+    users RLS(본인행) 때문에 클라가 못 세므로 service_role 엔드포인트가 센다.
+    """
+
+    rooms: int
+    staff: int
+
+
 # ── 코드 마스터(KCD 진단·EDI 수가·약품) — 버전·유효기간(발효/만료), Story 2.2 / FR-201 ────────
 # code 는 생성 후 불변(Update 미포함, 2.1 관례). 유효기간 = effective_from(발효)·effective_to(만료).
 # effective_to=null 은 무기한. "현재 유효" 필터는 소비처(2.3 피커)가 적용; 이 모듈은 검증·매핑만.

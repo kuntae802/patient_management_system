@@ -14,6 +14,7 @@ import asyncpg
 from app.core import db
 from app.schemas.masters import (
     DepartmentCreate,
+    DepartmentDependents,
     DepartmentResponse,
     DepartmentUpdate,
     DiagnosisCreate,
@@ -72,6 +73,14 @@ async def set_department_active(
 ) -> DepartmentResponse:
     row = await db.set_department_active(sub, department_id, is_active=is_active)
     return _to_department(row)
+
+
+async def count_department_dependents(
+    sub: UUID, department_id: UUID
+) -> DepartmentDependents:
+    """진료과 의존성 카운트(AC4) — 비활성 경고용 활성 진료실·재직 직원 수."""
+    counts = await db.count_department_dependents(sub, department_id)
+    return DepartmentDependents(rooms=counts["rooms"], staff=counts["staff"])
 
 
 async def create_room(sub: UUID, payload: RoomCreate) -> RoomResponse:

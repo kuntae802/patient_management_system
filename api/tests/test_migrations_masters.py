@@ -31,15 +31,19 @@ def test_master_tables_have_is_active(psql):
         assert default.startswith("true"), f"{table}.is_active 기본값이 true 가 아님: {default}"
 
 
-def test_master_code_unique(psql):
-    """departments·rooms code UNIQUE 제약 존재(중복 코드 차단)."""
+def test_master_code_unique_case_insensitive(psql):
+    """departments·rooms code 대소문자 무관 unique(0008) — lower(code) 인덱스 + 기존 제약 제거."""
     for table in ("departments", "rooms"):
-        cnt = psql.scalar(
-            "select count(*) from pg_constraint c "
-            f"join pg_class t on t.oid=c.conrelid and t.relname='{table}' "
-            "where c.contype='u';"
+        # 신규(0008): lower(code) unique 인덱스 — ORTHO/ortho 공존 차단(원본 케이스 표시는 보존)
+        idx = psql.scalar(
+            "select count(*) from pg_indexes "
+            f"where schemaname='public' and tablename='{table}' "
+            "and indexdef ilike '%unique%' and indexdef ilike '%lower(code)%';"
         )
-        assert int(cnt) >= 1, f"{table}.code UNIQUE 제약이 없음"
+        assert int(idx) >= 1, f"{table}.code 대소문자 무관 unique 인덱스(lower(code)) 없음(0008)"
+        # 기존 인라인 unique 제약(<table>_code_key)은 0008 이 drop 함(이중 unique 방지)
+        old = psql.scalar(f"select count(*) from pg_constraint where conname='{table}_code_key';")
+        assert int(old) == 0, f"{table}_code_key 제약이 아직 존재(0008 drop 누락)"
 
 
 # ── 0006: FK 무결성 ──────────────────────────────────────────────────────────

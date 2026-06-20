@@ -233,3 +233,154 @@ def test_users_department_id_fk_enforced(psql: Psql) -> None:
     assert "foreign key" in err or "users_department_id_fkey" in err, (
         f"users.department_id FK 가 강제되지 않음(AC4): {err}"
     )
+
+
+# ── Story 2.4: 참조 무결성 심화 ────────────────────────────────────────────────
+
+
+def test_insert_room_to_inactive_department_blocked(
+    client: TestClient, admin_token: str
+) -> None:
+    """AC3: 비활성 진료과로 진료실 **신규 생성** → 422 inactive_department(API 권위 차단)."""
+    dept = client.post(
+        _DEPT_URL, headers=_bearer(admin_token), json={"code": _code("DEPT"), "name": "곧비활성과"}
+    )
+    dept_id = dept.json()["id"]
+    client.patch(
+        f"{_DEPT_URL}/{dept_id}/active", headers=_bearer(admin_token), json={"is_active": False}
+    )
+    blocked = client.post(
+        _ROOM_URL,
+        headers=_bearer(admin_token),
+        json={"code": _code("R"), "name": "차단실", "department_id": dept_id},
+    )
+    assert blocked.status_code == 422, blocked.text
+    assert blocked.json()["error"]["code"] == "inactive_department"
+
+
+def test_update_room_department_reassignment_integrity(
+    client: TestClient, admin_token: str
+) -> None:
+    """AC3: 진료실 소속 변경 — 비활성 진료과로 **새 배정**은 422, **현 비활성 소속 유지**는 허용."""
+    dept_a = client.post(
+        _DEPT_URL, headers=_bearer(admin_token), json={"code": _code("DEPT"), "name": "A과"}
+    ).json()
+    dept_b = client.post(
+        _DEPT_URL, headers=_bearer(admin_token), json={"code": _code("DEPT"), "name": "B과"}
+    ).json()
+    room = client.post(
+        _ROOM_URL,
+        headers=_bearer(admin_token),
+        json={"code": _code("R"), "name": "이동실", "department_id": dept_a["id"]},
+    ).json()
+
+    # dept_b 비활성 → room 을 b 로 이동(새 배정) 시도 → 422 inactive_department
+    client.patch(
+        f"{_DEPT_URL}/{dept_b['id']}/active",
+        headers=_bearer(admin_token),
+        json={"is_active": False},
+    )
+    moved = client.patch(
+        f"{_ROOM_URL}/{room['id']}",
+        headers=_bearer(admin_token),
+        json={"name": "이동실", "department_id": dept_b["id"]},
+    )
+    assert moved.status_code == 422, moved.text
+    assert moved.json()["error"]["code"] == "inactive_department"
+
+    # dept_a 비활성 → room 의 현 소속(a) 유지하며 이름만 변경 → 200(이탈 강요 금지)
+    client.patch(
+        f"{_DEPT_URL}/{dept_a['id']}/active",
+        headers=_bearer(admin_token),
+        json={"is_active": False},
+    )
+    kept = client.patch(
+        f"{_ROOM_URL}/{room['id']}",
+        headers=_bearer(admin_token),
+        json={"name": "이동실(수정)", "department_id": dept_a["id"]},
+    )
+    assert kept.status_code == 200, kept.text
+    assert kept.json()["name"] == "이동실(수정)"
+    assert kept.json()["department_id"] == dept_a["id"]
+
+
+def test_department_code_case_insensitive_unique(
+    client: TestClient, admin_token: str
+) -> None:
+    """AC6: 코드 대소문자 무관 unique(0008) — 대문자 후 같은 값 소문자 → 409 code_taken."""
+    base = _code("CIX").upper()
+    first = client.post(
+        _DEPT_URL, headers=_bearer(admin_token), json={"code": base, "name": "대문자과"}
+    )
+    assert first.status_code == 201, first.text
+    dup = client.post(
+        _DEPT_URL, headers=_bearer(admin_token), json={"code": base.lower(), "name": "소문자과"}
+    )
+    assert dup.status_code == 409, dup.text
+    assert dup.json()["error"]["code"] == "code_taken"
+
+
+def test_department_dependents_count(
+    client: TestClient, admin_token: str, psql: Psql
+) -> None:
+    """AC4: 진료과 의존성 카운트 — 활성 진료실 수 + 재직 직원 수(service_role 가 users RLS 우회)."""
+    dept_id = client.post(
+        _DEPT_URL, headers=_bearer(admin_token), json={"code": _code("DEPT"), "name": "의존성과"}
+    ).json()["id"]
+    # 활성 진료실 2개 배정
+    for n in ("r1", "r2"):
+        client.post(
+            _ROOM_URL,
+            headers=_bearer(admin_token),
+            json={"code": _code("R"), "name": n, "department_id": dept_id},
+        )
+
+    base = client.get(f"{_DEPT_URL}/{dept_id}/dependents", headers=_bearer(admin_token))
+    assert base.status_code == 200, base.text
+    assert base.json() == {"rooms": 2, "staff": 0}
+
+    # 재직 직원 1명 임시 배정 → staff 1. 휴직도 재직이라 카운트됨을 함께 검증(퇴사만 제외).
+    # try/finally 로 department_id·employment_status 원복(시드 오염 방지).
+    # ⚠️ admin 제외: 호출 토큰 주체(admin)를 on_leave/terminated 로 바꾸면 자기 접근이 끊겨 403 이 된다.
+    emp = psql.scalar(
+        "select u.id::text from public.users u join public.roles r on r.id=u.role_id "
+        "where u.employment_status='active' and r.code <> 'admin' limit 1"
+    )
+    if emp and emp not in ("", "\\N"):
+        prev_dept = psql.scalar(
+            f"select coalesce(department_id::text,'') from public.users where id='{emp}';"
+        )
+        try:
+            psql.run(f"update public.users set department_id='{dept_id}' where id='{emp}';")
+            active_staff = client.get(
+                f"{_DEPT_URL}/{dept_id}/dependents", headers=_bearer(admin_token)
+            )
+            assert active_staff.json()["staff"] == 1, active_staff.text
+            # 휴직 전환 → 여전히 그 진료과 소속이므로 재직 카운트에 포함(퇴사만 제외).
+            psql.run(f"update public.users set employment_status='on_leave' where id='{emp}';")
+            on_leave_staff = client.get(
+                f"{_DEPT_URL}/{dept_id}/dependents", headers=_bearer(admin_token)
+            )
+            assert on_leave_staff.json()["staff"] == 1, on_leave_staff.text
+            # 퇴사 전환 → 카운트 제외(더는 소속 아님).
+            psql.run(f"update public.users set employment_status='terminated' where id='{emp}';")
+            terminated_staff = client.get(
+                f"{_DEPT_URL}/{dept_id}/dependents", headers=_bearer(admin_token)
+            )
+            assert terminated_staff.json()["staff"] == 0, terminated_staff.text
+        finally:
+            restore = f"'{prev_dept}'" if prev_dept and prev_dept not in ("", "\\N") else "null"
+            psql.run(
+                f"update public.users set department_id={restore}, "
+                f"employment_status='active' where id='{emp}';"
+            )
+
+
+def test_department_dependents_forbidden_for_doctor(
+    client: TestClient, doctor_token: str
+) -> None:
+    """AC7: 의존성 카운트도 master.manage 게이트 — doctor → 403(존재 여부 무관, 게이트 선평가)."""
+    res = client.get(
+        f"{_DEPT_URL}/{uuid.uuid4()}/dependents", headers=_bearer(doctor_token)
+    )
+    assert res.status_code == 403, res.text
