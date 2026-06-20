@@ -185,6 +185,153 @@ async def set_role_permission(
     return await _run_authed(sub, _op)
 
 
+# 직원 프로필 컬럼(목록·생성·상태변경 공용 RETURNING/SELECT 셰이프). role_code = roles 조인.
+_STAFF_COLUMNS = (
+    "u.id, u.employee_no, u.name, r.code as role_code, u.employment_status, "
+    "u.license_no, u.license_type, u.phone, u.hire_date, u.department_id, "
+    "u.created_at, u.updated_at"
+)
+
+
+async def _resolve_role_id(conn: asyncpg.Connection, role_code: str) -> UUID:
+    """role_code → role_id. patient = 직원 생성 비대상(422), 미존재 → 404.
+
+    roles 는 5직원역할 + patient 만 존재하므로 patient 차단 + 404 면 staff 역할만 통과한다.
+    """
+    if role_code == "patient":
+        raise AppError(
+            "직원 계정으로 만들 수 없는 역할입니다.",
+            code="invalid_target",
+            status_code=422,
+            detail={"role_code": role_code},
+        )
+    role_id = await conn.fetchval("select id from public.roles where code = $1", role_code)
+    if role_id is None:
+        raise NotFoundError(detail={"role_code": role_code})
+    return role_id
+
+
+async def insert_staff_profile(
+    sub: UUID,
+    *,
+    uid: UUID,
+    employee_no: str,
+    name: str,
+    role_code: str,
+    license_no: str | None,
+    license_type: str | None,
+    phone: str | None,
+    hire_date: object | None,
+    department_id: UUID | None,
+) -> asyncpg.Record:
+    """`public.users` 프로필을 INSERT 한다 — 권한 재평가와 쓰기를 **동일 트랜잭션**에서 수행.
+
+    `uid` 는 호출 서비스가 Supabase Auth 로 먼저 만든 사용자 id(=auth.users.id, FK). 0004
+    `trg_users_audit` 가 INSERT 를 자동 감사(actor = `app.actor_id` = 호출 관리자). employee_no
+    중복 → 409 `employee_no_taken`. employment_status 는 DB 기본값('active')를 따른다.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        # 1) 권한 재평가(평가↔쓰기 원자성, TOCTOU 차단). 미보유 → 403.
+        if not bool(await conn.fetchval("select public.has_permission('user.manage')")):
+            raise ForbiddenError(detail={"required_permission": "user.manage"})
+
+        # 2) role_code → id(patient 422 / 미존재 404).
+        role_id = await _resolve_role_id(conn, role_code)
+
+        # 3) INSERT(자동 감사). employee_no unique 위반 → 409.
+        try:
+            row = await conn.fetchrow(
+                "insert into public.users "
+                "(id, employee_no, name, role_id, license_no, license_type, phone, "
+                " hire_date, department_id) "
+                "values ($1, $2, $3, $4, $5, $6, $7, $8, $9) "
+                "returning id, employee_no, name, "
+                "(select code from public.roles where id = role_id) as role_code, "
+                "employment_status, license_no, license_type, phone, hire_date, "
+                "department_id, created_at, updated_at",
+                uid,
+                employee_no,
+                name,
+                role_id,
+                license_no,
+                license_type,
+                phone,
+                hire_date,
+                department_id,
+            )
+        except asyncpg.UniqueViolationError as exc:
+            if exc.constraint_name and "employee_no" in exc.constraint_name:
+                raise ConflictError(
+                    "이미 사용 중인 사번입니다.",
+                    code="employee_no_taken",
+                    detail={"employee_no": employee_no},
+                ) from exc
+            raise  # id(PK) 충돌 등 예기치 못한 위반 → 503 매핑(_run_authed)
+        assert row is not None  # RETURNING 은 항상 1행
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def update_employment_status(
+    sub: UUID, *, user_id: UUID, status: str
+) -> asyncpg.Record:
+    """`users.employment_status` 를 갱신한다 — 권한 재평가 + 자가-락아웃 가드 + 자동 감사.
+
+    DB 헬퍼(`has_permission`/`auth_user_role`)가 active 만 권한·역할을 인정하므로 이 UPDATE 한 번이
+    접근 차단/복원의 데이터 권위다. 로그인(세션) 차단은 호출 서비스가 GoTrue ban 으로 보강한다.
+    대상 미존재 → 404, 자기 자신 비활성화 → 409 `self_lockout`.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        if not bool(await conn.fetchval("select public.has_permission('user.manage')")):
+            raise ForbiddenError(detail={"required_permission": "user.manage"})
+
+        exists = await conn.fetchval("select 1 from public.users where id = $1", user_id)
+        if exists is None:
+            raise NotFoundError(detail={"user_id": str(user_id)})
+
+        # 자가-락아웃 방지: 관리자가 자신을 비활성하면 관리 경로가 끊긴다(1.7 admin-lock 동형).
+        if user_id == sub and status != "active":
+            raise ConflictError(
+                "본인 계정은 비활성(휴직/퇴사)으로 변경할 수 없습니다.",
+                code="self_lockout",
+                detail={"user_id": str(user_id)},
+            )
+
+        row = await conn.fetchrow(
+            "update public.users u set employment_status = $2, updated_at = now() "
+            "where u.id = $1 "
+            "returning u.id, u.employee_no, u.name, "
+            "(select code from public.roles r where r.id = u.role_id) as role_code, "
+            "u.employment_status, u.license_no, u.license_type, u.phone, u.hire_date, "
+            "u.department_id, u.created_at, u.updated_at",
+            user_id,
+            status,
+        )
+        assert row is not None
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_staff_list(sub: UUID) -> list[asyncpg.Record]:
+    """전 직원 프로필 목록(사번 순). service_role/postgres 풀이 RLS(본인행) 를 우회해 전원 반환.
+
+    엔드포인트가 `require_permission('user.manage')` 로 이미 게이트하므로 읽기는 재평가 불요.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+        return await conn.fetch(
+            f"select {_STAFF_COLUMNS} from public.users u "
+            "join public.roles r on r.id = u.role_id "
+            "order by u.employee_no"
+        )
+
+    return await _run_authed(sub, _op)
+
+
 async def fetch_staff_identity(sub: UUID) -> dict[str, str | None]:
     """`/auth/me` 용 신원 — active 직원만 프로필 노출(퇴사/휴직자 role=None → 비노출)."""
 

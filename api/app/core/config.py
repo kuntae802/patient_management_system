@@ -34,7 +34,11 @@ class Settings(BaseSettings):
     # 로컬 기본 = `supabase start` 출력값. 배포는 compose env 로 override.
     supabase_db_url: str = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
     supabase_jwks_url: str = "http://127.0.0.1:54321/auth/v1/.well-known/jwks.json"
+    # Supabase API 베이스(GoTrue Auth admin·Storage용). JWKS URL 과 동일 호스트지만 별도 명시
+    # (suffix 스트립 의존 회피). 배포는 클라우드 URL 로 override. (Story 1.8)
+    supabase_url: str = "http://127.0.0.1:54321"
     # 서버 전용 시크릿(supabase-py admin·Storage용). 토큰 검증 키 아님. 미설정 가능(경고).
+    # Story 1.8(직원 프로비저닝)부터 실사용 — 미설정 시 해당 명령만 503(부팅은 막지 않음).
     supabase_secret_key: str | None = None
 
     # JWKS 검증 기대값. iss 는 미설정 시 jwks_url 베이스에서 도출.
@@ -68,9 +72,10 @@ class Settings(BaseSettings):
                 + " — .env 또는 환경변수를 설정하세요."
             )
         if not self.supabase_secret_key:
-            # 토큰 검증엔 불필요하나, supabase-py admin 호출(후속)에 필요 — 경고만.
+            # 토큰 검증엔 불필요하나, supabase-py admin 호출(직원 프로비저닝 등)에 필요 — 경고만.
+            # 부팅은 통과하고, admin 명령(POST /admin/users 등) 호출 시점에 503 으로 명확히 실패.
             logger.warning(
-                "SUPABASE_SECRET_KEY 미설정 — admin/Storage 기능은 후속 스토리에서 필요."
+                "SUPABASE_SECRET_KEY 미설정 — 직원 계정 생성/재직상태 관리(admin) 기능 비활성."
             )
         if self.jwt_issuer is None:
             # JWKS URL 에서 issuer 도출 실패 → iss 검증 무음 비활성(다른 발급자 토큰 위험).
