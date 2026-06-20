@@ -26,7 +26,11 @@ def test_identity_tables_exist(psql):
         "and tablename in ('users','roles','permissions','role_permissions','audit_logs');"
     )
     assert set(rows.split(",")) == {
-        "users", "roles", "permissions", "role_permissions", "audit_logs"
+        "users",
+        "roles",
+        "permissions",
+        "role_permissions",
+        "audit_logs",
     }
 
 
@@ -83,7 +87,12 @@ def test_users_check_constraints(psql):
 def test_seed_roles_six(psql):
     codes = psql.scalar("select string_agg(code, ',' order by code) from roles;")
     assert set(codes.split(",")) == {
-        "admin", "doctor", "nurse", "patient", "radiologist", "reception"
+        "admin",
+        "doctor",
+        "nurse",
+        "patient",
+        "radiologist",
+        "reception",
     }
 
 
@@ -94,9 +103,7 @@ def test_seed_permission_catalog_nonempty(psql):
 
 def test_permission_code_format(psql):
     """모든 권한 코드는 `<resource>.<action>` 형식."""
-    bad = psql.scalar(
-        "select count(*) from permissions where code !~ '^[a-z_]+\\.[a-z_]+$';"
-    )
+    bad = psql.scalar("select count(*) from permissions where code !~ '^[a-z_]+\\.[a-z_]+$';")
     assert bad == "0"
 
 
@@ -176,9 +183,7 @@ def test_audit_logs_append_only_update_revoked(psql):
 
 def test_audit_logs_append_only_delete_revoked(psql):
     """service_role로 audit_logs DELETE 시도 → GRANT 회수로 권한 거부(append-only)."""
-    err = psql.expect_error(
-        "set role service_role; delete from audit_logs where false;"
-    ).lower()
+    err = psql.expect_error("set role service_role; delete from audit_logs where false;").lower()
     assert "audit_logs" in err and "denied" in err, f"audit_logs 권한 거부가 아님: {err}"
 
 

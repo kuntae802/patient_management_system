@@ -55,9 +55,18 @@ class Psql:
         """SQL을 stdin으로 전달(다중 문장·따옴표 안전). ON_ERROR_STOP=1로 첫 오류에 실패."""
         return subprocess.run(
             [
-                "docker", "exec", "-i", self.container,
-                "psql", "-U", "postgres", "-d", dbname,
-                "-tA", "-v", "ON_ERROR_STOP=1",
+                "docker",
+                "exec",
+                "-i",
+                self.container,
+                "psql",
+                "-U",
+                "postgres",
+                "-d",
+                dbname,
+                "-tA",
+                "-v",
+                "ON_ERROR_STOP=1",
             ],
             input=sql,
             capture_output=True,
