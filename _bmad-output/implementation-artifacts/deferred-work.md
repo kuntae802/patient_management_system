@@ -2,6 +2,19 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: code review of 2-4-마스터-비활성-soft-delete-참조-무결성 (2026-06-20)
+
+> 3레이어 적대적 리뷰. Acceptance Auditor: AC1~AC7 clean pass·규칙/Non-goals 준수. decision-needed 1·patch 1 은 처리, 아래는 defer.
+
+**프로젝트 전역 하드닝(2.1/2.2 와 공통):**
+- **단일 `pendingId` 다중행 경합(마스터 매니저 재확인)** [web/src/components/admin/masters-manager.tsx] — Story 2.4 가 추가한 `openDepartmentConfirm` 의 `finally setPendingId(null)` 가 무조건 실행돼, dependents 조회 await 중 사용자가 다른 행/탭 항목을 토글하면 늦게 끝난 finally 가 무관한 행의 pending 을 조기 해제하고(깜빡임) 두 번째 `setConfirm` 이 첫 다이얼로그를 덮어쓸 수 있다. 데이터 손상 아님(드문 UI 경합). 2.1/2.2 deferred 의 "per-row pending Set" 전역 패턴과 동형 — 일괄 개선 시 마스터 매니저 dependents 경로도 함께(조회 id 와 현재 id 비교 후에만 해제).
+
+**테스트 하드닝:**
+- **의존성 카운트 테스트 시드 원복 robustness** [api/tests/test_masters_integration.py test_department_dependents_count] — 재직 직원 1명을 테스트 진료과로 임시 배정 후 `try/finally` 로 원복하나, restore `psql.run` 자체가 실패하면 시드 직원의 `department_id` 가 테스트용 진료과를 가리킨 채 남는다(`supabase db reset` 으로만 정리). UUID 보간이라 SQL 인젝션 위험은 없음. 후속: 트랜잭션 래핑 또는 전용 비시드 직원 픽스처로 격리.
+
+**데이터 품질(2.4 CI unique 후속):**
+- **`lower(code)` unique 의 공백·유니코드 정규화 부재** [supabase/migrations/0008_masters_code_ci_unique.sql · api/app/schemas/masters.py `_Stripped`] — `lower(code)` 함수 인덱스 + 양끝 trim 만으로 대소문자 무관 유일성을 보장하나, 내부 공백 차이(`"OR THO"` vs `"ORTHO"`)·합성/분해 유니코드(NFC)·로케일 케이스폴딩(터키어 dotless-i 등) 경계는 별개 행으로 통과한다. 마스터 코드가 사실상 ASCII 영숫자이고 스펙이 code 정규식을 강제하지 않아(의도된 유연성) 실무 위험은 낮음. 엄격화를 원하면 `regexp_replace`+`normalize()` 기반 표현식 인덱스 또는 입력 정규식 강제 검토.
+
 ## Deferred from: code review of 2-3-마스터-검색-피커-자유-입력-제한 (2026-06-20)
 
 > 3레이어 적대적 리뷰. Acceptance Auditor: AC1~3·MUST·Non-goals 충족·2.2 이월 해소 검증(ACCEPTED). patch 2건은 수정 적용. 아래는 defer 항목.
