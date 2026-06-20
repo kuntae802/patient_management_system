@@ -26,7 +26,13 @@ from uuid import UUID
 import asyncpg
 
 from app.core.config import settings
-from app.core.errors import ServiceUnavailableError
+from app.core.errors import (
+    AppError,
+    ConflictError,
+    ForbiddenError,
+    NotFoundError,
+    ServiceUnavailableError,
+)
 
 logger = logging.getLogger("app.db")
 
@@ -111,6 +117,70 @@ async def fetch_user_role(sub: UUID) -> str | None:
 
     async def _op(conn: asyncpg.Connection) -> str | None:
         return await conn.fetchval("select public.auth_user_role()")
+
+    return await _run_authed(sub, _op)
+
+
+async def set_role_permission(
+    sub: UUID, role_code: str, permission_code: str, *, granted: bool
+) -> bool:
+    """역할↔권한을 grant(true)/revoke(false) 한다 — 권한 재평가와 쓰기를 **동일 트랜잭션**에서 수행.
+
+    `require_permission` 의존성이 별도 트랜잭션에서 한 번 평가하더라도, 쓰기 직전 같은 conn 에서
+    `has_permission('rbac.manage')` 를 재평가해 평가↔쓰기 사이 권한/재직상태 변경(TOCTOU)을 차단한다
+    (Story1.5 deferred 해소). INSERT/DELETE 는 0004 `trg_role_permissions_audit` 가 자동 감사하며
+    (actor = `app.actor_id` = 호출 관리자), 앱은 감사 INSERT 를 직접 하지 않는다.
+
+    반환 = 실제 변경 발생 여부. 멱등: 이미 있는 grant 재요청·없는 revoke → False(감사행 0).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> bool:
+        # 1) 권한 재평가(평가↔쓰기 원자성). 미보유 → 403.
+        if not bool(await conn.fetchval("select public.has_permission('rbac.manage')")):
+            raise ForbiddenError(detail={"required_permission": "rbac.manage"})
+
+        # 2) 대상 역할 가드(id 해석 전 코드로 차단). admin = 전권 고정(자가-락아웃 방지),
+        #    patient = 매트릭스 비대상(직무 RBAC 아님). UI 가 막지만 방어심층으로 서버도 거부.
+        if role_code == "admin":
+            raise ConflictError(
+                "관리자 역할의 권한은 변경할 수 없습니다.",
+                code="role_locked",
+                detail={"role_code": role_code},
+            )
+        if role_code == "patient":
+            raise AppError(
+                "권한 매트릭스에서 변경할 수 없는 역할입니다.",
+                code="invalid_target",
+                status_code=422,
+                detail={"role_code": role_code},
+            )
+
+        # 3) 코드 → id 해석(미존재 → 404).
+        role_id = await conn.fetchval("select id from public.roles where code = $1", role_code)
+        if role_id is None:
+            raise NotFoundError(detail={"role_code": role_code})
+        permission_id = await conn.fetchval(
+            "select id from public.permissions where code = $1", permission_code
+        )
+        if permission_id is None:
+            raise NotFoundError(detail={"permission_code": permission_code})
+
+        # 4) grant=INSERT(멱등) / revoke=DELETE. 0004 트리거가 변경을 자동 감사.
+        if granted:
+            status = await conn.execute(
+                "insert into public.role_permissions (role_id, permission_id) "
+                "values ($1, $2) on conflict (role_id, permission_id) do nothing",
+                role_id,
+                permission_id,
+            )
+        else:
+            status = await conn.execute(
+                "delete from public.role_permissions where role_id = $1 and permission_id = $2",
+                role_id,
+                permission_id,
+            )
+        # asyncpg execute → "INSERT 0 1" / "DELETE 1" / "INSERT 0 0" 등. 마지막 토큰 = 영향 행 수.
+        return int(status.split()[-1]) > 0
 
     return await _run_authed(sub, _op)
 
