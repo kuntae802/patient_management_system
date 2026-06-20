@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-19T20:21:40+0000
+last_updated: 2026-06-20T00:15:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -45,8 +45,8 @@ development_status:
   # ── Epic 1: 플랫폼 기반 · 신원 · 접근 통제 ──
   epic-1: in-progress
   1-1-모노레포-4개-서피스-스캐폴드-초기화-init: done
-  1-2-디자인-시스템-토큰-전역-셸-골격: backlog
-  1-3-신원-rbac-스키마-rls-헬퍼-감사-트리거-db: backlog
+  1-2-디자인-시스템-토큰-전역-셸-골격: done
+  1-3-신원-rbac-스키마-rls-헬퍼-감사-트리거-db: review
   1-4-분리-프로필-로그인-supabase-auth: backlog
   1-5-fastapi-인증-rbac-강제-jwks-권한-의존성: backlog
   1-6-미들웨어-가드-역할별-셸-노출-rbac-ui-게이트: backlog
