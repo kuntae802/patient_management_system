@@ -191,6 +191,99 @@ export function formatKrw(amount: number): string {
   return new Intl.NumberFormat("ko-KR").format(amount);
 }
 
+// ── 재사용 검색 피커(Story 2.3) — 마스터 검색·선택 강제(free-text 차단, FR-202) ─────────────
+// 진단(KCD)·약품·수가 3종을 단일 피커가 소비(Epic 4.7·5.2·5.5/7.x). 읽기 = Supabase 직접조회.
+// "현재 유효" 판정은 isCurrentlyValid 단일 술어 + 서버 today(DB 권위)로 통일(2.2 이월 해소).
+
+/** 피커가 다루는 마스터 종류. 테이블·표시 컬럼을 결정. */
+export type MasterKind = "diagnosis" | "drug" | "fee_schedule";
+
+/**
+ * 피커 선택 결과 — 소비처(Epic 4/5)가 필요로 하는 식별 필드 상위집합.
+ * 행 필드는 snake_case 유지(전 경로 일관, project-context). 종류별 옵셔널은 해당 종류에만 채워짐.
+ */
+export type MasterPickerItem = {
+  id: string;
+  code: string;
+  name: string;
+  kind: MasterKind;
+  // 유효기간 필드 — 자기기술적(소비처·피커가 동일 술어 isCurrentlyValid 로 방어 필터 가능).
+  is_active: boolean;
+  effective_from: string;
+  effective_to: string | null;
+  ingredient_code?: string | null; // drug
+  unit?: string | null; // drug
+  category?: string | null; // fee_schedule
+  amount_krw?: number; // fee_schedule (KRW 정수)
+};
+
+const MASTER_TABLE: Record<MasterKind, "diagnoses" | "drugs" | "fee_schedules"> = {
+  diagnosis: "diagnoses",
+  drug: "drugs",
+  fee_schedule: "fee_schedules",
+};
+
+const MASTER_COLUMNS: Record<MasterKind, string> = {
+  diagnosis: "id, code, name, effective_from, effective_to, is_active",
+  drug: "id, code, name, ingredient_code, unit, effective_from, effective_to, is_active",
+  fee_schedule: "id, code, name, category, amount_krw, effective_from, effective_to, is_active",
+};
+
+/** 조회 행(snake_case) → MasterPickerItem. 종류별 추가 필드만 채운다. */
+export function toMasterPickerItem(kind: MasterKind, row: Record<string, unknown>): MasterPickerItem {
+  const base: MasterPickerItem = {
+    id: String(row.id),
+    code: String(row.code),
+    name: String(row.name),
+    kind,
+    is_active: Boolean(row.is_active),
+    effective_from: String(row.effective_from),
+    effective_to: (row.effective_to as string | null) ?? null,
+  };
+  if (kind === "fee_schedule") {
+    return { ...base, category: (row.category as string | null) ?? null, amount_krw: Number(row.amount_krw) };
+  }
+  if (kind === "drug") {
+    return {
+      ...base,
+      ingredient_code: (row.ingredient_code as string | null) ?? null,
+      unit: (row.unit as string | null) ?? null,
+    };
+  }
+  return base;
+}
+
+/**
+ * "현재 유효" 코드만 Supabase 직접조회(DB 권위 — 서버 주입 today 로 SQL 필터).
+ * is_active=true AND effective_from<=today AND (effective_to IS NULL OR effective_to>=today).
+ * isCurrentlyValid 술어의 SQL 등가(소비처는 동일 today 를 컴포넌트 방어 필터에도 재사용해 드리프트 제거).
+ * fail-loud: 에러는 throw(빈 배열 강등 금지).
+ */
+export async function fetchCurrentlyValidMasters(
+  supabase: SupabaseClient,
+  kind: MasterKind,
+  today: string,
+): Promise<MasterPickerItem[]> {
+  const { data, error } = await supabase
+    .from(MASTER_TABLE[kind])
+    .select(MASTER_COLUMNS[kind])
+    .eq("is_active", true)
+    .lte("effective_from", today)
+    .or(`effective_to.is.null,effective_to.gte.${today}`)
+    .order("code");
+  if (error) {
+    throw new Error(`코드 마스터 조회 실패: ${error.message}`);
+  }
+  return ((data ?? []) as unknown as Record<string, unknown>[]).map((row) =>
+    toMasterPickerItem(kind, row),
+  );
+}
+
+/** 피커 표시·검색 라벨("코드 · 명칭"). itemToStringLabel 로 입력창에 노출. */
+export function masterItemLabel(item: MasterPickerItem): string {
+  return `${item.code} · ${item.name}`;
+}
+
 // ── 코드 마스터 검증(Zod) — Pydantic 스키마의 거울. code 는 생성 시에만(불변) ───────────────
 
 export const diagnosisCreateSchema = z

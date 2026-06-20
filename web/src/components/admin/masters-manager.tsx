@@ -17,6 +17,7 @@ import {
   codeStatus,
   departmentLabel,
   formatKrw,
+  todayISO,
   type Department,
   type Diagnosis,
   type Drug,
@@ -60,7 +61,10 @@ function upsert<T extends { id: string; code: string }>(rows: T[], saved: T): T[
 // 마스터 관리(관리자, FR-200·201·203). 읽기 = RSC Supabase 직접조회 주입(initial), 쓰기 = FastAPI(apiFetch,
 // master.manage). 비활성(soft delete)은 확인 다이얼로그, 활성 복귀는 즉시. 변경은 0006·0007 자동 감사.
 // 조직 마스터(진료과·진료실, 2.1) + 코드 마스터(진단·수가·약품 + 유효기간, 2.2)를 탭으로 통합.
-export function MastersManager({ initial }: { initial: MastersData }) {
+// today 는 RSC 서버 주입(KST, DB 권위) — 코드 마스터 시점 배지와 2.3 검색 피커가 동일 today 를 공유해
+// 자정 경계·비-KST 브라우저 불일치를 제거(2.2 이월 해소). 미주입 시 클라 todayISO() 폴백(하위호환).
+export function MastersManager({ initial, today }: { initial: MastersData; today?: string }) {
+  const serverToday = today ?? todayISO();
   const [tab, setTab] = useState<Tab>("departments");
   const [departments, setDepartments] = useState<Department[]>(sortByCode(initial.departments));
   const [rooms, setRooms] = useState<Room[]>(sortByCode(initial.rooms));
@@ -215,6 +219,7 @@ export function MastersManager({ initial }: { initial: MastersData }) {
         <DiagnosisTable
           diagnoses={diagnoses}
           pendingId={pendingId}
+          today={serverToday}
           onEdit={(d) => setDxForm({ open: true, editing: d })}
           onToggleActive={(d) => onToggleActive("diagnoses", d)}
         />
@@ -223,6 +228,7 @@ export function MastersManager({ initial }: { initial: MastersData }) {
         <FeeScheduleTable
           feeSchedules={feeSchedules}
           pendingId={pendingId}
+          today={serverToday}
           onEdit={(f) => setFeeForm({ open: true, editing: f })}
           onToggleActive={(f) => onToggleActive("feeSchedules", f)}
         />
@@ -231,6 +237,7 @@ export function MastersManager({ initial }: { initial: MastersData }) {
         <DrugTable
           drugs={drugs}
           pendingId={pendingId}
+          today={serverToday}
           onEdit={(d) => setDrugForm({ open: true, editing: d })}
           onToggleActive={(d) => onToggleActive("drugs", d)}
         />
@@ -338,8 +345,15 @@ function ActiveBadge({ isActive }: { isActive: boolean }) {
 }
 
 // 코드 마스터 시점 상태 배지(유효/발효 전/만료/비활성) — 색+글리프+라벨 3중(음영 비의존, UX-DR20).
-function CodeStatusBadge({ row }: { row: { is_active: boolean; effective_from: string; effective_to: string | null } }) {
-  const meta = CODE_STATUS_META[codeStatus(row)];
+// today 는 서버 주입(DB 권위) — 피커의 "현재 유효" 필터와 동일 today 로 일관(2.2 이월 해소).
+function CodeStatusBadge({
+  row,
+  today,
+}: {
+  row: { is_active: boolean; effective_from: string; effective_to: string | null };
+  today: string;
+}) {
+  const meta = CODE_STATUS_META[codeStatus(row, today)];
   return (
     <span
       className={cn(
@@ -524,11 +538,13 @@ function RoomTable({
 function DiagnosisTable({
   diagnoses,
   pendingId,
+  today,
   onEdit,
   onToggleActive,
 }: {
   diagnoses: Diagnosis[];
   pendingId: string | null;
+  today: string;
   onEdit: (d: Diagnosis) => void;
   onToggleActive: (d: Diagnosis) => void;
 }) {
@@ -558,7 +574,7 @@ function DiagnosisTable({
               <DateCell value={d.effective_to} />
             </td>
             <td className={TD}>
-              <CodeStatusBadge row={d} />
+              <CodeStatusBadge row={d} today={today} />
             </td>
             <td className={TD}>
               <RowActions
@@ -578,11 +594,13 @@ function DiagnosisTable({
 function FeeScheduleTable({
   feeSchedules,
   pendingId,
+  today,
   onEdit,
   onToggleActive,
 }: {
   feeSchedules: FeeSchedule[];
   pendingId: string | null;
+  today: string;
   onEdit: (f: FeeSchedule) => void;
   onToggleActive: (f: FeeSchedule) => void;
 }) {
@@ -620,7 +638,7 @@ function FeeScheduleTable({
               <DateCell value={f.effective_to} />
             </td>
             <td className={TD}>
-              <CodeStatusBadge row={f} />
+              <CodeStatusBadge row={f} today={today} />
             </td>
             <td className={TD}>
               <RowActions
@@ -640,11 +658,13 @@ function FeeScheduleTable({
 function DrugTable({
   drugs,
   pendingId,
+  today,
   onEdit,
   onToggleActive,
 }: {
   drugs: Drug[];
   pendingId: string | null;
+  today: string;
   onEdit: (d: Drug) => void;
   onToggleActive: (d: Drug) => void;
 }) {
@@ -682,7 +702,7 @@ function DrugTable({
               <DateCell value={d.effective_to} />
             </td>
             <td className={TD}>
-              <CodeStatusBadge row={d} />
+              <CodeStatusBadge row={d} today={today} />
             </td>
             <td className={TD}>
               <RowActions
