@@ -5,8 +5,10 @@ description = "patient_management_system — FastAPI 오케스트레이션 레�
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "asyncpg>=0.31.0",
     "fastapi[standard]>=0.137.2",
     "httpx>=0.28.1",
+    "pydantic-settings>=2.14.2",
     "pyjwt[crypto]>=2.13.0",
     "supabase>=2.31.0",
 ]
@@ -14,6 +16,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "ruff>=0.15.18",
 ]
 
@@ -25,5 +28,11 @@ target-version = "py313"
 # E/F(pyflakes·pycodestyle) · I(isort) · UP(pyupgrade) · B(bugbear)
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI 의존성 주입은 기본값 내 호출이 관용(B008 오탐) — immutable 취급.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Security", "fastapi.Query", "fastapi.Path"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# async 의존성(asyncpg 풀·권한 평가)을 직접 호출하는 테스트용. auto = `async def test_*` 자동 인식.
+asyncio_mode = "auto"
