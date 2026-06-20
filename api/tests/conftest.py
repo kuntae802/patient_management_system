@@ -14,11 +14,16 @@ import subprocess
 
 import pytest
 
+DB_CONTAINER = "supabase_db_patient_management_system"
 DB_CONTAINER_PREFIX = "supabase_db_"
 
 
 def _find_db_container() -> str | None:
-    """실행 중인 supabase 로컬 db 컨테이너 이름을 동적으로 찾는다(이름 하드코딩 회피)."""
+    """실행 중인 이 프로젝트의 supabase db 컨테이너를 찾는다.
+
+    동일 호스트에 여러 Supabase 프로젝트가 떠 있을 수 있으므로 프로젝트 전체 이름을
+    우선 매칭하고, 없을 때만 prefix 로 폴백한다(타 프로젝트 DB 오선택 방지).
+    """
     if shutil.which("docker") is None:
         return None
     try:
@@ -31,9 +36,12 @@ def _find_db_container() -> str | None:
         )
     except (subprocess.SubprocessError, OSError):
         return None
-    for name in out.stdout.splitlines():
+    names = [n.strip() for n in out.stdout.splitlines() if n.strip()]
+    if DB_CONTAINER in names:
+        return DB_CONTAINER
+    for name in names:
         if name.startswith(DB_CONTAINER_PREFIX):
-            return name.strip()
+            return name
     return None
 
 

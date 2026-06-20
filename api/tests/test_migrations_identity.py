@@ -166,33 +166,40 @@ def test_rls_enabled_on_all_tables(psql):
 
 
 def test_audit_logs_append_only_update_revoked(psql):
-    """service_role로 audit_logs UPDATE 시도 → 권한 거부(append-only)."""
+    """service_role로 audit_logs UPDATE 시도 → GRANT 회수로 권한 거부(append-only)."""
     err = psql.expect_error(
-        "set role service_role; update audit_logs set action='update' where true;"
-    )
-    assert "permission denied" in err.lower() or "denied" in err.lower()
+        "set role service_role; update audit_logs set action='update' where false;"
+    ).lower()
+    # 오류가 audit_logs 권한 거부임을 특정 — 무관한 set role 실패도 'denied'를 포함하므로 오탐 방지.
+    assert "audit_logs" in err and "denied" in err, f"audit_logs 권한 거부가 아님: {err}"
 
 
 def test_audit_logs_append_only_delete_revoked(psql):
-    """service_role로 audit_logs DELETE 시도 → 권한 거부(append-only)."""
+    """service_role로 audit_logs DELETE 시도 → GRANT 회수로 권한 거부(append-only)."""
     err = psql.expect_error(
-        "set role service_role; delete from audit_logs where true;"
-    )
-    assert "permission denied" in err.lower() or "denied" in err.lower()
+        "set role service_role; delete from audit_logs where false;"
+    ).lower()
+    assert "audit_logs" in err and "denied" in err, f"audit_logs 권한 거부가 아님: {err}"
 
 
-def test_audit_actor_id_fk_to_auth_users(psql):
-    """audit_logs.actor_id는 users가 아니라 auth.users 참조(환자-actor 수용, D-6)."""
-    target = psql.scalar(
-        "select rn.nspname || '.' || rt.relname from pg_constraint c "
+def test_audit_logs_owner_blocked_by_trigger(psql):
+    """테이블 owner(postgres)도 BEFORE 트리거로 UPDATE/DELETE 차단(append-only 강화, owner 경로)."""
+    err_u = psql.expect_error("update audit_logs set action='update' where false;").lower()
+    assert "append-only" in err_u, f"owner UPDATE가 트리거로 차단되지 않음: {err_u}"
+    err_d = psql.expect_error("delete from audit_logs where false;").lower()
+    assert "append-only" in err_d, f"owner DELETE가 트리거로 차단되지 않음: {err_d}"
+
+
+def test_audit_actor_id_has_no_fk(psql):
+    """audit_logs.actor_id는 비정규화 — FK 미부착(감사 INSERT 회복력 + 삭제 후 보존, D-6')."""
+    cnt = psql.scalar(
+        "select count(*) from pg_constraint c "
         "join pg_class t on t.oid=c.conrelid and t.relname='audit_logs' "
-        "join pg_class rt on rt.oid=c.confrelid "
-        "join pg_namespace rn on rn.oid=rt.relnamespace "
         "where c.contype='f' "
         "and 'actor_id' = any("
         "  select attname from pg_attribute where attrelid=t.oid and attnum=any(c.conkey));"
     )
-    assert target == "auth.users"
+    assert cnt == "0", "actor_id FK는 부재 actor가 감사 쓰기를 abort시키므로 두면 안 됨"
 
 
 # ── 0004: 트리거 부착 + actor 캡처 동작 ───────────────────────────────────────
