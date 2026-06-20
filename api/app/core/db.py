@@ -21,7 +21,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 import asyncpg
@@ -636,6 +636,271 @@ async def set_room_active(sub: UUID, room_id: UUID, *, is_active: bool) -> async
         )
         if row is None:
             raise NotFoundError(detail={"room_id": str(room_id)})
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+# ── 코드 마스터(KCD 진단·EDI 수가·약품) — 버전·유효기간(발효/만료), Story 2.2 / FR-201 ────────
+# departments(0006) 쓰기 패턴 그대로: _require_master_manage 동일 트랜잭션 재평가(TOCTOU) → DML.
+# 0007 감사 트리거가 변경을 자동 기록(actor=app.actor_id). code unique 위반 → 409 code_taken.
+# 유효기간 역전·금액 음수는 Pydantic 422 가 1차 차단, DB CHECK 가 최종선(정상경로 비도달).
+
+_DIAGNOSIS_COLUMNS = (
+    "id, code, name, effective_from, effective_to, is_active, created_at, updated_at"
+)
+_FEE_SCHEDULE_COLUMNS = (
+    "id, code, name, amount_krw, category, effective_from, effective_to, "
+    "is_active, created_at, updated_at"
+)
+_DRUG_COLUMNS = (
+    "id, code, name, ingredient_code, unit, effective_from, effective_to, "
+    "is_active, created_at, updated_at"
+)
+
+
+async def insert_diagnosis(
+    sub: UUID, *, code: str, name: str, effective_from: date, effective_to: date | None
+) -> asyncpg.Record:
+    """KCD 진단 INSERT(자동 감사). code unique 위반 → 409 code_taken."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        try:
+            row = await conn.fetchrow(
+                f"insert into public.diagnoses (code, name, effective_from, effective_to) "
+                f"values ($1, $2, $3, $4) returning {_DIAGNOSIS_COLUMNS}",
+                code,
+                name,
+                effective_from,
+                effective_to,
+            )
+        except asyncpg.UniqueViolationError as exc:
+            raise ConflictError(
+                "이미 사용 중인 진단 코드입니다.", code="code_taken", detail={"code": code}
+            ) from exc
+        assert row is not None
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def update_diagnosis(
+    sub: UUID,
+    diagnosis_id: UUID,
+    *,
+    name: str,
+    effective_from: date,
+    effective_to: date | None,
+) -> asyncpg.Record:
+    """KCD 진단 수정(name·유효기간). updated_at 명시 갱신. 미존재 → 404."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        row = await conn.fetchrow(
+            f"update public.diagnoses set name = $2, effective_from = $3, effective_to = $4, "
+            f"updated_at = now() where id = $1 returning {_DIAGNOSIS_COLUMNS}",
+            diagnosis_id,
+            name,
+            effective_from,
+            effective_to,
+        )
+        if row is None:
+            raise NotFoundError(detail={"diagnosis_id": str(diagnosis_id)})
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def set_diagnosis_active(
+    sub: UUID, diagnosis_id: UUID, *, is_active: bool
+) -> asyncpg.Record:
+    """KCD 진단 활성/비활성(soft delete) 토글. 미존재 → 404."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        row = await conn.fetchrow(
+            f"update public.diagnoses set is_active = $2, updated_at = now() "
+            f"where id = $1 returning {_DIAGNOSIS_COLUMNS}",
+            diagnosis_id,
+            is_active,
+        )
+        if row is None:
+            raise NotFoundError(detail={"diagnosis_id": str(diagnosis_id)})
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def insert_fee_schedule(
+    sub: UUID,
+    *,
+    code: str,
+    name: str,
+    amount_krw: int,
+    category: str | None,
+    effective_from: date,
+    effective_to: date | None,
+) -> asyncpg.Record:
+    """EDI 수가 INSERT(자동 감사). code unique 위반 → 409 code_taken."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        try:
+            row = await conn.fetchrow(
+                f"insert into public.fee_schedules "
+                f"(code, name, amount_krw, category, effective_from, effective_to) "
+                f"values ($1, $2, $3, $4, $5, $6) returning {_FEE_SCHEDULE_COLUMNS}",
+                code,
+                name,
+                amount_krw,
+                category,
+                effective_from,
+                effective_to,
+            )
+        except asyncpg.UniqueViolationError as exc:
+            raise ConflictError(
+                "이미 사용 중인 수가 코드입니다.", code="code_taken", detail={"code": code}
+            ) from exc
+        assert row is not None
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def update_fee_schedule(
+    sub: UUID,
+    fee_schedule_id: UUID,
+    *,
+    name: str,
+    amount_krw: int,
+    category: str | None,
+    effective_from: date,
+    effective_to: date | None,
+) -> asyncpg.Record:
+    """EDI 수가 수정(name·amount_krw·category·유효기간). 미존재 → 404."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        row = await conn.fetchrow(
+            f"update public.fee_schedules set name = $2, amount_krw = $3, category = $4, "
+            f"effective_from = $5, effective_to = $6, updated_at = now() "
+            f"where id = $1 returning {_FEE_SCHEDULE_COLUMNS}",
+            fee_schedule_id,
+            name,
+            amount_krw,
+            category,
+            effective_from,
+            effective_to,
+        )
+        if row is None:
+            raise NotFoundError(detail={"fee_schedule_id": str(fee_schedule_id)})
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def set_fee_schedule_active(
+    sub: UUID, fee_schedule_id: UUID, *, is_active: bool
+) -> asyncpg.Record:
+    """EDI 수가 활성/비활성(soft delete) 토글. 미존재 → 404."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        row = await conn.fetchrow(
+            f"update public.fee_schedules set is_active = $2, updated_at = now() "
+            f"where id = $1 returning {_FEE_SCHEDULE_COLUMNS}",
+            fee_schedule_id,
+            is_active,
+        )
+        if row is None:
+            raise NotFoundError(detail={"fee_schedule_id": str(fee_schedule_id)})
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def insert_drug(
+    sub: UUID,
+    *,
+    code: str,
+    name: str,
+    ingredient_code: str | None,
+    unit: str | None,
+    effective_from: date,
+    effective_to: date | None,
+) -> asyncpg.Record:
+    """약품 INSERT(자동 감사). code unique 위반 → 409 code_taken."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        try:
+            row = await conn.fetchrow(
+                f"insert into public.drugs "
+                f"(code, name, ingredient_code, unit, effective_from, effective_to) "
+                f"values ($1, $2, $3, $4, $5, $6) returning {_DRUG_COLUMNS}",
+                code,
+                name,
+                ingredient_code,
+                unit,
+                effective_from,
+                effective_to,
+            )
+        except asyncpg.UniqueViolationError as exc:
+            raise ConflictError(
+                "이미 사용 중인 약품 코드입니다.", code="code_taken", detail={"code": code}
+            ) from exc
+        assert row is not None
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def update_drug(
+    sub: UUID,
+    drug_id: UUID,
+    *,
+    name: str,
+    ingredient_code: str | None,
+    unit: str | None,
+    effective_from: date,
+    effective_to: date | None,
+) -> asyncpg.Record:
+    """약품 수정(name·주성분·단위·유효기간). 미존재 → 404."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        row = await conn.fetchrow(
+            f"update public.drugs set name = $2, ingredient_code = $3, unit = $4, "
+            f"effective_from = $5, effective_to = $6, updated_at = now() "
+            f"where id = $1 returning {_DRUG_COLUMNS}",
+            drug_id,
+            name,
+            ingredient_code,
+            unit,
+            effective_from,
+            effective_to,
+        )
+        if row is None:
+            raise NotFoundError(detail={"drug_id": str(drug_id)})
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def set_drug_active(sub: UUID, drug_id: UUID, *, is_active: bool) -> asyncpg.Record:
+    """약품 활성/비활성(soft delete) 토글. 미존재 → 404."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        row = await conn.fetchrow(
+            f"update public.drugs set is_active = $2, updated_at = now() "
+            f"where id = $1 returning {_DRUG_COLUMNS}",
+            drug_id,
+            is_active,
+        )
+        if row is None:
+            raise NotFoundError(detail={"drug_id": str(drug_id)})
         return row
 
     return await _run_authed(sub, _op)

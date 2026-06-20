@@ -19,6 +19,15 @@ from app.schemas.masters import (
     DepartmentCreate,
     DepartmentResponse,
     DepartmentUpdate,
+    DiagnosisCreate,
+    DiagnosisResponse,
+    DiagnosisUpdate,
+    DrugCreate,
+    DrugResponse,
+    DrugUpdate,
+    FeeScheduleCreate,
+    FeeScheduleResponse,
+    FeeScheduleUpdate,
     RoomCreate,
     RoomResponse,
     RoomUpdate,
@@ -97,3 +106,107 @@ async def set_room_active(
 ) -> RoomResponse:
     """진료실 활성/비활성(soft delete). 미존재 → 404."""
     return await masters_service.set_room_active(user.sub, room_id, is_active=payload.is_active)
+
+
+# ── 진단(diagnoses, KCD) — Story 2.2 ──────────────────────────────────────────
+
+
+@router.post(
+    "/diagnoses", response_model=DiagnosisResponse, status_code=status.HTTP_201_CREATED
+)
+async def create_diagnosis(
+    payload: DiagnosisCreate,
+    user: CurrentUser = Depends(require_master_manage),
+) -> DiagnosisResponse:
+    """KCD 진단 생성. 코드 중복 → 409 code_taken, 만료<발효 → 422."""
+    return await masters_service.create_diagnosis(user.sub, payload)
+
+
+@router.patch("/diagnoses/{diagnosis_id}", response_model=DiagnosisResponse)
+async def update_diagnosis(
+    diagnosis_id: UUID,
+    payload: DiagnosisUpdate,
+    user: CurrentUser = Depends(require_master_manage),
+) -> DiagnosisResponse:
+    """KCD 진단 수정(name·유효기간). 미존재 → 404."""
+    return await masters_service.update_diagnosis(user.sub, diagnosis_id, payload)
+
+
+@router.patch("/diagnoses/{diagnosis_id}/active", response_model=DiagnosisResponse)
+async def set_diagnosis_active(
+    diagnosis_id: UUID,
+    payload: ActiveUpdate,
+    user: CurrentUser = Depends(require_master_manage),
+) -> DiagnosisResponse:
+    """KCD 진단 활성/비활성(soft delete) — 물리 삭제 없이 신규 선택만 제외. 미존재 → 404."""
+    return await masters_service.set_diagnosis_active(
+        user.sub, diagnosis_id, is_active=payload.is_active
+    )
+
+
+# ── 수가(fee_schedules, EDI) — Story 2.2 ──────────────────────────────────────
+
+
+@router.post(
+    "/fee-schedules", response_model=FeeScheduleResponse, status_code=status.HTTP_201_CREATED
+)
+async def create_fee_schedule(
+    payload: FeeScheduleCreate,
+    user: CurrentUser = Depends(require_master_manage),
+) -> FeeScheduleResponse:
+    """EDI 수가 생성. 코드 중복 → 409, 금액 음수·만료<발효 → 422."""
+    return await masters_service.create_fee_schedule(user.sub, payload)
+
+
+@router.patch("/fee-schedules/{fee_schedule_id}", response_model=FeeScheduleResponse)
+async def update_fee_schedule(
+    fee_schedule_id: UUID,
+    payload: FeeScheduleUpdate,
+    user: CurrentUser = Depends(require_master_manage),
+) -> FeeScheduleResponse:
+    """EDI 수가 수정(name·amount_krw·category·유효기간). 미존재 → 404."""
+    return await masters_service.update_fee_schedule(user.sub, fee_schedule_id, payload)
+
+
+@router.patch("/fee-schedules/{fee_schedule_id}/active", response_model=FeeScheduleResponse)
+async def set_fee_schedule_active(
+    fee_schedule_id: UUID,
+    payload: ActiveUpdate,
+    user: CurrentUser = Depends(require_master_manage),
+) -> FeeScheduleResponse:
+    """EDI 수가 활성/비활성(soft delete). 미존재 → 404."""
+    return await masters_service.set_fee_schedule_active(
+        user.sub, fee_schedule_id, is_active=payload.is_active
+    )
+
+
+# ── 약품(drugs) — Story 2.2 ───────────────────────────────────────────────────
+
+
+@router.post("/drugs", response_model=DrugResponse, status_code=status.HTTP_201_CREATED)
+async def create_drug(
+    payload: DrugCreate,
+    user: CurrentUser = Depends(require_master_manage),
+) -> DrugResponse:
+    """약품 생성. 코드 중복 → 409, 만료<발효 → 422."""
+    return await masters_service.create_drug(user.sub, payload)
+
+
+@router.patch("/drugs/{drug_id}", response_model=DrugResponse)
+async def update_drug(
+    drug_id: UUID,
+    payload: DrugUpdate,
+    user: CurrentUser = Depends(require_master_manage),
+) -> DrugResponse:
+    """약품 수정(name·주성분·단위·유효기간). 미존재 → 404."""
+    return await masters_service.update_drug(user.sub, drug_id, payload)
+
+
+@router.patch("/drugs/{drug_id}/active", response_model=DrugResponse)
+async def set_drug_active(
+    drug_id: UUID,
+    payload: ActiveUpdate,
+    user: CurrentUser = Depends(require_master_manage),
+) -> DrugResponse:
+    """약품 활성/비활성(soft delete). 미존재 → 404."""
+    return await masters_service.set_drug_active(user.sub, drug_id, is_active=payload.is_active)

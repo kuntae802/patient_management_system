@@ -16,6 +16,15 @@ from app.schemas.masters import (
     DepartmentCreate,
     DepartmentResponse,
     DepartmentUpdate,
+    DiagnosisCreate,
+    DiagnosisResponse,
+    DiagnosisUpdate,
+    DrugCreate,
+    DrugResponse,
+    DrugUpdate,
+    FeeScheduleCreate,
+    FeeScheduleResponse,
+    FeeScheduleUpdate,
     RoomCreate,
     RoomResponse,
     RoomUpdate,
@@ -28,6 +37,18 @@ def _to_department(row: asyncpg.Record) -> DepartmentResponse:
 
 def _to_room(row: asyncpg.Record) -> RoomResponse:
     return RoomResponse.model_validate(dict(row))
+
+
+def _to_diagnosis(row: asyncpg.Record) -> DiagnosisResponse:
+    return DiagnosisResponse.model_validate(dict(row))
+
+
+def _to_fee_schedule(row: asyncpg.Record) -> FeeScheduleResponse:
+    return FeeScheduleResponse.model_validate(dict(row))
+
+
+def _to_drug(row: asyncpg.Record) -> DrugResponse:
+    return DrugResponse.model_validate(dict(row))
 
 
 async def create_department(sub: UUID, payload: DepartmentCreate) -> DepartmentResponse:
@@ -70,3 +91,103 @@ async def update_room(sub: UUID, room_id: UUID, payload: RoomUpdate) -> RoomResp
 async def set_room_active(sub: UUID, room_id: UUID, *, is_active: bool) -> RoomResponse:
     row = await db.set_room_active(sub, room_id, is_active=is_active)
     return _to_room(row)
+
+
+# ── 코드 마스터(KCD 진단·EDI 수가·약품) — Story 2.2 ──────────────────────────────
+
+
+async def create_diagnosis(sub: UUID, payload: DiagnosisCreate) -> DiagnosisResponse:
+    row = await db.insert_diagnosis(
+        sub,
+        code=payload.code,
+        name=payload.name,
+        effective_from=payload.effective_from,
+        effective_to=payload.effective_to,
+    )
+    return _to_diagnosis(row)
+
+
+async def update_diagnosis(
+    sub: UUID, diagnosis_id: UUID, payload: DiagnosisUpdate
+) -> DiagnosisResponse:
+    row = await db.update_diagnosis(
+        sub,
+        diagnosis_id,
+        name=payload.name,
+        effective_from=payload.effective_from,
+        effective_to=payload.effective_to,
+    )
+    return _to_diagnosis(row)
+
+
+async def set_diagnosis_active(
+    sub: UUID, diagnosis_id: UUID, *, is_active: bool
+) -> DiagnosisResponse:
+    row = await db.set_diagnosis_active(sub, diagnosis_id, is_active=is_active)
+    return _to_diagnosis(row)
+
+
+async def create_fee_schedule(sub: UUID, payload: FeeScheduleCreate) -> FeeScheduleResponse:
+    row = await db.insert_fee_schedule(
+        sub,
+        code=payload.code,
+        name=payload.name,
+        amount_krw=payload.amount_krw,
+        category=payload.category,
+        effective_from=payload.effective_from,
+        effective_to=payload.effective_to,
+    )
+    return _to_fee_schedule(row)
+
+
+async def update_fee_schedule(
+    sub: UUID, fee_schedule_id: UUID, payload: FeeScheduleUpdate
+) -> FeeScheduleResponse:
+    row = await db.update_fee_schedule(
+        sub,
+        fee_schedule_id,
+        name=payload.name,
+        amount_krw=payload.amount_krw,
+        category=payload.category,
+        effective_from=payload.effective_from,
+        effective_to=payload.effective_to,
+    )
+    return _to_fee_schedule(row)
+
+
+async def set_fee_schedule_active(
+    sub: UUID, fee_schedule_id: UUID, *, is_active: bool
+) -> FeeScheduleResponse:
+    row = await db.set_fee_schedule_active(sub, fee_schedule_id, is_active=is_active)
+    return _to_fee_schedule(row)
+
+
+async def create_drug(sub: UUID, payload: DrugCreate) -> DrugResponse:
+    row = await db.insert_drug(
+        sub,
+        code=payload.code,
+        name=payload.name,
+        ingredient_code=payload.ingredient_code,
+        unit=payload.unit,
+        effective_from=payload.effective_from,
+        effective_to=payload.effective_to,
+    )
+    return _to_drug(row)
+
+
+async def update_drug(sub: UUID, drug_id: UUID, payload: DrugUpdate) -> DrugResponse:
+    row = await db.update_drug(
+        sub,
+        drug_id,
+        name=payload.name,
+        ingredient_code=payload.ingredient_code,
+        unit=payload.unit,
+        effective_from=payload.effective_from,
+        effective_to=payload.effective_to,
+    )
+    return _to_drug(row)
+
+
+async def set_drug_active(sub: UUID, drug_id: UUID, *, is_active: bool) -> DrugResponse:
+    row = await db.set_drug_active(sub, drug_id, is_active=is_active)
+    return _to_drug(row)
