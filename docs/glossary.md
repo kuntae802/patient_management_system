@@ -156,3 +156,19 @@
 | `supabase_url` | env/config(api) | Supabase API 베이스(GoTrue Auth admin·Storage). 로컬 `http://127.0.0.1:54321`, 배포는 클라우드 URL override |
 
 > **재직상태 = 이중 차단(Story 1.8 확정):** `employment_status`(`active`/`on_leave`/`terminated`) UPDATE 가 **접근 권위** — `has_permission`/`auth_user_role`(0003)이 active 만 인정하므로 휴직/퇴사 시 역할·권한이 즉시 무효(명령 403·셸 강등). GoTrue **ban** 이 **로그인·세션 차단**을 보강(DB 먼저→ban 나중, 차단 방향 fail-safe). 생성은 **Auth(HTTP) + users INSERT(DB) 2단계 비원자 오케스트레이션 + 보상**. email 은 auth.users 단일소유(`public.users`·응답에 없음), 비밀번호 비노출. **마이그레이션 0건**(스키마·트리거·권한 1.3 완비).
+
+## 암복호 프리미티브 · PII 경계 (Story 1.9, `0005_crypto.sql`)
+
+> **제네릭(주민번호 전용 아님)** — 모든 PII(연락처·주소 등) 공용 보안 경로(UX-DR22). 환자 주민번호는 **첫 소비처(Epic 3 patients)** 일 뿐, 이 마이그레이션은 데이터/컬럼을 만들지 않는다(에픽 범위 노트).
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `encrypt_sensitive(text)` | 함수(db, SECURITY DEFINER) | 평문 PII → 암호문 `bytea`(`pgp_sym_encrypt`, 키=Vault). service_role only(authenticated/anon REVOKE) |
+| `decrypt_sensitive(bytea, target_table, target_id)` | 함수(db, SECURITY DEFINER) | 암호문 → 평문 + **복호 자가-감사**(`audit_logs` `read`, actor=`app.actor_id`, **값 미저장**). "복호=감사"를 DB가 강제(우회 불가). service_role only |
+| `blind_index(text)` | 함수(db, SECURITY DEFINER) | 결정적 HMAC 해시(중복 매칭, FR-003 토대). 키=Vault. **IMMUTABLE 불가**(vault 읽음)→소비처가 컬럼(`*_hash`)에 저장+UNIQUE. 입력은 정규화값. service_role only |
+| `pms_pii_enc_key` / `pms_pii_hmac_key` | Vault 시크릿(`vault.secrets`) | pgcrypto 대칭키 / HMAC 키. **코드·DB에 평문 없음**(FR-241) — `gen_random_bytes(32)` 로 DB 안에서 생성·`vault.decrypted_secrets` 로 복호 조회 |
+| `normalize_rrn` / `validate_rrn` / `mask_rrn` | 함수(api·`services/rrn`) | 주민번호 정규화(13자리) / HARD(형식·성별세기자리 1–8·생년월일)·SOFT(체크섬 경고) 검증 / 마스킹(`710314-2******`). **순수**(DB·테이블 비의존) — 결과는 코드만 담고 원본 미echo(PII 경계) |
+| `encrypt_sensitive` / `decrypt_sensitive` / `blind_index`(래퍼) | 함수(api·`core/db`) | 위 RPC 를 `authenticated_conn`(actor GUC 주입) 안에서 호출하는 얇은 async 래퍼. DB 장애→503 |
+| `mask_pii` / `PiiMaskingFilter` / `configure_logging` | 함수·클래스(api·`core/logging`) | 운영 로그 주민번호 마스킹 백스톱(우발적 PII 로깅 방어심층). 루트 핸들러에 부착(lifespan) |
+
+> **마이그레이션 번호 변이:** 1.9 가 `0005_crypto.sql` 을 차지 → 아키텍처 계획 맵의 `0005_masters`·`0006_patients` 는 **각각 0006·0007 로 한 칸 시프트**(계획 번호는 *예약*, 적용된 마이그레이션이 아님; 1.3 이 Vault 를 0001 에 접지 않고 별도 마이그레이션으로 미룬 귀결). Epic 2/3 스토리 생성 시 번호 재조정. **reveal UI(눈 아이콘+"감사기록")·엔드포인트는 Epic 3/4**(UX-DR9) — 1.9 는 DB 프리미티브 + 패턴 확립까지.

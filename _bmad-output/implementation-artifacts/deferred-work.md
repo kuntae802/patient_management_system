@@ -2,6 +2,14 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: code review of 1-9-주민번호-암호화-감사-reveal-프리미티브 (2026-06-20)
+
+- **decrypt actor/target = service_role GUC 신뢰(위조 가능)** [supabase/migrations/0005_crypto.sql:decrypt_sensitive] — `app.actor_id` GUC·`target_table`/`target_id` 인자를 호출자(service_role=FastAPI)가 주입하므로, DB는 actor·target 무결성을 강제하지 않는다("복호=감사 일어남"은 강제하나 actor *값*의 진위는 아님). 단, 이는 **0004 `audit_trigger_fn`과 동일한 신뢰 경계**(by-design, 1.9가 도입한 회귀 아님). 프로덕션 경로(`authenticated_conn`)는 항상 검증된 sub를 주입. 운영 하드닝 시 actor=호출 주체 일치 검증(예: ciphertext↔target 바인딩) 검토.
+- **`blind_index` 입력 정규화 미강제** [supabase/migrations/0005_crypto.sql:blind_index] — 함수가 입력을 그대로 HMAC하므로 `710314-2345678`(하이픈)과 `7103142345678`이 다른 해시 → 소비처가 정규화를 빠뜨리면 FR-003 중복 매칭·UNIQUE가 깨진다. 제네릭 프리미티브라 PII 유형별 정규화를 DB가 알 수 없어 **소비처(Epic 3) 책임**으로 위임(docstring 명시). Epic 3 `0006/0007_patients`에서 `resident_no_hash` 저장 시 `services.rrn.normalize_rrn` 후 `blind_index` 호출을 강제·테스트할 것.
+- **복호 실패 시 'read' 감사 누락** [supabase/migrations/0005_crypto.sql:decrypt_sensitive] — `pgp_sym_decrypt`가 손상 ciphertext·키 불일치로 예외를 던지면 audit insert 전에 abort → 실패한 reveal 시도는 감사에 안 남는다. 실패는 아무 값도 노출하지 않으므로 AC3("복호=감사") 위반 아님(정상 경로의 ciphertext는 DB 출처라 유효). 침입탐지 관점의 "시도 감사"가 필요하면 후속에서 `exception` 블록으로 실패도 기록.
+- **로그 마스킹 백스톱이 RRN만 커버** [api/app/core/logging.py] — 암복호 함수는 제네릭(모든 PII)이나 로그 마스킹은 주민번호 패턴만 레닥션. 연락처·주소 등은 신뢰할 만한 마스킹 패턴이 없어 제외(최고위험 구조적 PII 우선). 1차 방어는 "raw PII 미로깅" 규율. 후속에서 전화번호 등 추가 패턴 검토.
+- **래퍼 통합테스트가 append-only `audit_logs` 행 누적** [api/tests/test_crypto_wrappers_integration.py] — `decrypt_sensitive` 래퍼가 트랜잭션을 커밋하므로 `wrap-smoke` `read` 행이 매 실행 1건씩 잔존(append-only라 정리 불가, `supabase db reset`이 초기화). 정확성엔 무해(고유 sub로 최신 행만 단언)하나 CI 누적 시 감사 카운트 테스트 간섭 가능. 후속에서 전용 격리 DB·주기적 reset 또는 커밋 경로 회피(actor 캡처를 다른 방식 검증) 검토.
+
 ## Deferred from: dev of 1-8-직원-계정-재직상태-관리-관리자 (2026-06-20)
 
 - ✅ **1.5 TOCTOU "권한평가+쓰기 동일 트랜잭션" 확장** — 1.7이 단일 DML로 확립한 패턴을 1.8이 **두 시스템(Supabase Auth ↔ Postgres) 오케스트레이션**으로 확장(`services/users.create_staff` = Auth 생성 → DB INSERT + 보상). 첫 외부+DB 복합 명령 + `services/` 계층 첫 사용.
