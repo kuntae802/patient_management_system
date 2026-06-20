@@ -17,8 +17,8 @@
 | `patient` | 환자 | `auth_uid` nullable(앱 미사용 환자) |
 | `guardian` | 보호자 | 성명·연락처·관계 |
 | `user` | 직원(사용자) | `id`=auth uid, 분리 프로필 |
-| `role` | 역할 | 6역할: 원무·의사·간호사·방사선사·관리자·환자 |
-| `permission` | 권한 | `리소스.동작` 코드 |
+| `role` | 역할 | 6역할 코드: `reception`·`doctor`·`nurse`·`radiologist`·`admin`·`patient` |
+| `permission` | 권한 | `<resource>.<action>` 코드(예: `patient.read`) |
 | `role_permission` | 역할_권한 | 역할↔권한 N:M |
 | `audit_log` | 감사로그 | append-only |
 | `department` | 진료과 | 마스터 |
@@ -72,3 +72,41 @@
 - 처치: `ordered`(지시) → `performed`(수행) → `completed`(완료)
 
 > 오더 상태 어휘 통일·전이표 full matrix는 해당 마이그레이션(`0009`) 작성 시 확정(다운스트림).
+
+## enum · CHECK — 신원·RBAC·감사 (Story 1.3, `0002`~`0004`)
+
+**`users.employment_status` (재직상태, CHECK)**
+
+| 값(영문) | 한글 표시명 |
+|---|---|
+| `active` | 재직 |
+| `on_leave` | 휴직 |
+| `terminated` | 퇴사 |
+
+**`users.license_type` (면허종류, CHECK, nullable)**
+
+| 값(영문) | 한글 표시명 |
+|---|---|
+| `doctor` | 의사 |
+| `radiologist` | 방사선사 |
+
+**`audit_logs.action` (감사 동작, CHECK)**
+
+| 값(영문) | 한글 표시명 | 비고 |
+|---|---|---|
+| `create` | 생성 | 트리거 자동(INSERT) |
+| `read` | 조회 | 앱이 기록(예: PII reveal — 1.9) |
+| `update` | 수정 | 트리거 자동(UPDATE) |
+| `delete` | 삭제 | 트리거 자동(DELETE) |
+| `login` | 로그인 | 앱이 기록 |
+
+## RLS 헬퍼 · 세션 변수 (Story 1.3)
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `auth_user_role()` | 함수(SECURITY DEFINER) | 현재 로그인 직원의 역할 코드(직원 아니면 NULL = 환자/비직원 경계) |
+| `has_permission(code)` | 함수(SECURITY DEFINER) | 현재 직원 역할의 권한 보유 여부(boolean). RBAC 데이터 권위 |
+| `audit_trigger_fn()` | 트리거 함수(SECURITY DEFINER) | 제네릭 감사 — 전/후 jsonb 스냅샷 + actor 캡처 |
+| `app.actor_id` | 세션 GUC(`set local`) | FastAPI(service_role)가 트랜잭션 행위자를 주입(감사 actor 캡처 계약 — Story 1.5). 미설정 시 `auth.uid()` 폴백 |
+
+> **권한 카탈로그(`permissions`)** 는 `0002`가 초기 버전을 시드하고, 리소스가 온라인될 때 각 에픽 마이그레이션이 확장한다. 역할별 grant(`role_permissions`) 토글 관리 UI는 **Story 1.7**. `0002`는 기본 grant로 `admin`=전체만 시드.
