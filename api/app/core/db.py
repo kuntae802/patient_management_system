@@ -478,3 +478,164 @@ async def fetch_audit_logs(
         return rows, total
 
     return await _run_authed(sub, _op)
+
+
+# ── 마스터(진료과·진료실) 쓰기(Story 2.1, FR-200·203) ───────────────────────────
+# 쓰기 권위 = FastAPI(service_role). 권한 재평가+쓰기를 동일 트랜잭션에서 수행(평가↔쓰기 TOCTOU
+# 차단, 1.5 이월·1.7/1.8 패턴). 0006 감사 트리거가 변경을 자동 기록(actor=app.actor_id=호출 관리자).
+# 앱은 감사 INSERT 를 직접 하지 않는다. 읽기(목록)는 web 이 Supabase 직접조회(전역 참조 데이터).
+# 컬럼 리스트는 고정 리터럴(사용자 입력 아님 → SQLi 무관), 값만 $n 바인딩.
+
+_DEPT_COLUMNS = "id, code, name, description, is_active, created_at, updated_at"
+_ROOM_COLUMNS = "id, code, name, department_id, is_active, created_at, updated_at"
+
+
+async def _require_master_manage(conn: asyncpg.Connection) -> None:
+    """쓰기 직전 동일 트랜잭션에서 master.manage 재평가(평가↔쓰기 TOCTOU 차단). 미보유 → 403."""
+    if not bool(await conn.fetchval("select public.has_permission('master.manage')")):
+        raise ForbiddenError(detail={"required_permission": "master.manage"})
+
+
+async def insert_department(
+    sub: UUID, *, code: str, name: str, description: str | None
+) -> asyncpg.Record:
+    """진료과 INSERT(자동 감사). code unique 위반 → 409 code_taken."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        try:
+            row = await conn.fetchrow(
+                f"insert into public.departments (code, name, description) "
+                f"values ($1, $2, $3) returning {_DEPT_COLUMNS}",
+                code,
+                name,
+                description,
+            )
+        except asyncpg.UniqueViolationError as exc:
+            raise ConflictError(
+                "이미 사용 중인 진료과 코드입니다.", code="code_taken", detail={"code": code}
+            ) from exc
+        assert row is not None  # RETURNING 은 항상 1행
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def update_department(
+    sub: UUID, department_id: UUID, *, name: str, description: str | None
+) -> asyncpg.Record:
+    """진료과 수정(name·description). updated_at 명시 갱신. 미존재 → 404."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        row = await conn.fetchrow(
+            f"update public.departments set name = $2, description = $3, updated_at = now() "
+            f"where id = $1 returning {_DEPT_COLUMNS}",
+            department_id,
+            name,
+            description,
+        )
+        if row is None:
+            raise NotFoundError(detail={"department_id": str(department_id)})
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def set_department_active(
+    sub: UUID, department_id: UUID, *, is_active: bool
+) -> asyncpg.Record:
+    """진료과 활성/비활성(soft delete) 토글. 물리 삭제 없이 is_active 만 갱신. 미존재 → 404."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        row = await conn.fetchrow(
+            f"update public.departments set is_active = $2, updated_at = now() "
+            f"where id = $1 returning {_DEPT_COLUMNS}",
+            department_id,
+            is_active,
+        )
+        if row is None:
+            raise NotFoundError(detail={"department_id": str(department_id)})
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def insert_room(
+    sub: UUID, *, code: str, name: str, department_id: UUID | None
+) -> asyncpg.Record:
+    """진료실 INSERT(자동 감사). code 중복 → 409, 미존재 department_id → 422 invalid_department."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        try:
+            row = await conn.fetchrow(
+                f"insert into public.rooms (code, name, department_id) "
+                f"values ($1, $2, $3) returning {_ROOM_COLUMNS}",
+                code,
+                name,
+                department_id,
+            )
+        except asyncpg.UniqueViolationError as exc:
+            raise ConflictError(
+                "이미 사용 중인 진료실 코드입니다.", code="code_taken", detail={"code": code}
+            ) from exc
+        except asyncpg.ForeignKeyViolationError as exc:
+            raise AppError(
+                "존재하지 않는 진료과입니다.",
+                code="invalid_department",
+                status_code=422,
+                detail={"department_id": str(department_id)},
+            ) from exc
+        assert row is not None
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def update_room(
+    sub: UUID, room_id: UUID, *, name: str, department_id: UUID | None
+) -> asyncpg.Record:
+    """진료실 수정(name·department_id). 미존재 진료과 → 422, 미존재 진료실 → 404."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        try:
+            row = await conn.fetchrow(
+                f"update public.rooms set name = $2, department_id = $3, updated_at = now() "
+                f"where id = $1 returning {_ROOM_COLUMNS}",
+                room_id,
+                name,
+                department_id,
+            )
+        except asyncpg.ForeignKeyViolationError as exc:
+            raise AppError(
+                "존재하지 않는 진료과입니다.",
+                code="invalid_department",
+                status_code=422,
+                detail={"department_id": str(department_id)},
+            ) from exc
+        if row is None:
+            raise NotFoundError(detail={"room_id": str(room_id)})
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def set_room_active(sub: UUID, room_id: UUID, *, is_active: bool) -> asyncpg.Record:
+    """진료실 활성/비활성(soft delete) 토글. 미존재 → 404."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        row = await conn.fetchrow(
+            f"update public.rooms set is_active = $2, updated_at = now() "
+            f"where id = $1 returning {_ROOM_COLUMNS}",
+            room_id,
+            is_active,
+        )
+        if row is None:
+            raise NotFoundError(detail={"room_id": str(room_id)})
+        return row
+
+    return await _run_authed(sub, _op)
