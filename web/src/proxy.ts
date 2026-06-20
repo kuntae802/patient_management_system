@@ -9,8 +9,16 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // 정적 자산·이미지·폰트·favicon 제외, 그 외 전 경로. (정적 분석 위해 상수)
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|woff2?)$).*)",
+    {
+      // api·정적 자산·이미지·폰트·favicon 제외. (정적 분석 위해 상수)
+      source:
+        "/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|avif|ico|css|js|mjs|map|json|txt|xml|woff2?)$).*)",
+      // prefetch 요청에는 세션 가드 미적용(실제 내비게이션에서만 평가 — 불필요한 Auth 왕복 방지).
+      missing: [
+        { type: "header", key: "next-router-prefetch" },
+        { type: "header", key: "purpose", value: "prefetch" },
+      ],
+    },
   ],
 };

@@ -2,7 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
 // 서버(RSC·route handler) Supabase 클라이언트. Next 16의 async `cookies()` 사용.
-// 세션 쿠키 갱신의 권위는 미들웨어(lib/supabase/middleware.ts) — RSC의 setAll 실패는 무시.
+// 세션 쿠키 갱신의 권위는 proxy(lib/supabase/proxy.ts, Next 16 미들웨어) — RSC의 setAll 실패는 무시.
 export async function createClient() {
   const cookieStore = await cookies();
 

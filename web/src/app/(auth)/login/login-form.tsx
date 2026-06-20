@@ -34,8 +34,9 @@ export function LoginForm() {
       setFormError(authErrorMessage(error));
       return;
     }
-    const { data: role } = await supabase.rpc("auth_user_role");
-    router.replace(landingPathForRole(role as string | null));
+    const { data: role, error: roleError } = await supabase.rpc("auth_user_role");
+    // RPC 실패 시 분기를 추정하지 않고 루트(/)로 — 서버 루트 페이지가 세션 기준 재평가.
+    router.replace(roleError ? "/" : landingPathForRole(role as string | null));
     router.refresh();
   }
 
