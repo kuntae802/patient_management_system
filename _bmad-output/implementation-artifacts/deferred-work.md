@@ -2,6 +2,11 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: code review of 1-7-rbac-권한-매트릭스-관리자 (2026-06-20)
+
+- **`apiFetch` 빈/204 본문 → `null`을 `T`로 반환** [web/src/lib/api/client.ts] — 2xx + 빈 본문 시 `body=null`을 `T`로 캐스트 반환. 현 엔드포인트(`PUT /v1/admin/rbac/grants`)는 항상 `GrantResult` 본문을 반환하고 현 호출부(`permission-matrix.tsx`)는 결과값을 사용하지 않아 무영향. 미래에 204/빈 본문 엔드포인트가 생기면 `await apiFetch<X>()`가 `null`을 `X`로 반환해 호출부 첫 프로퍼티 접근에서 NPE → 그 계약을 정의하는 스토리에서 `undefined` 반환 또는 `empty_body` 에러로 확정.
+- **`web/.env.example`가 `.gitignore`로 미추적(Story 1.1 선재)** [web/.gitignore] — `.env*` 패턴이 예시 템플릿까지 무시. Story 1.7이 `NEXT_PUBLIC_API_BASE_URL`을 디스크 `.env.example`에 추가했으나 파일이 버전관리에 없어 신규 기여자 클론 시 필수 env 문서가 전파되지 않음(env.ts의 `z.url` fail-fast로 부팅 실패 가능). → `.gitignore`에 `!.env.example` 네거티브 추가로 템플릿만 추적하도록 검토(웹·api 양쪽). 선재 이슈라 1.7 범위 밖.
+
 ## Deferred from: code review of 1-6-...-rbac-ui-게이트 (2026-06-20)
 
 - **(staff)/layout 인증·권한 라운드트립 최적화** [web/src/app/(staff)/layout.tsx] — 매 staff 렌더마다 proxy의 getUser + layout의 `requireStaff`(getUser + `auth_user_role` RPC) + `fetchUserPermissions`(users.role_id select + role_permissions select) = 3~4 왕복. `auth_user_role()`가 이미 users→roles를 조인하는데 `fetchUserPermissions`가 `users.role_id`를 다시 조회(중복). → role+permissions를 한 번에 돌려주는 통합 SECURITY DEFINER RPC, 또는 `requireStaff`가 role_id를 반환해 재사용하면 왕복 절감. 기능 정상, 성능 최적화이므로 MVP 수용.

@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-20T05:20:32+0000
+last_updated: 2026-06-20T06:45:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -50,7 +50,7 @@ development_status:
   1-4-분리-프로필-로그인-supabase-auth: done
   1-5-fastapi-인증-rbac-강제-jwks-권한-의존성: done
   1-6-미들웨어-가드-역할별-셸-노출-rbac-ui-게이트: done
-  1-7-rbac-권한-매트릭스-관리자: backlog
+  1-7-rbac-권한-매트릭스-관리자: done
   1-8-직원-계정-재직상태-관리-관리자: backlog
   1-9-주민번호-암호화-감사-reveal-프리미티브: backlog
   1-10-감사-로그-뷰어-관리자-append-only: backlog
