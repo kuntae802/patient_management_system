@@ -16,11 +16,13 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.db import close_pool, create_pool
 from app.core.errors import init_error_handlers
+from app.core.logging import configure_logging
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    """부팅 시 설정 검증(fail-fast) + asyncpg 풀 생성, 종료 시 풀 정리."""
+    """부팅 시 설정 검증(fail-fast) + PII 로그 마스킹 백스톱 + asyncpg 풀 생성, 종료 시 풀 정리."""
+    configure_logging()
     settings.validate_runtime()
     await create_pool()
     try:

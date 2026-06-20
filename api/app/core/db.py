@@ -348,3 +348,47 @@ async def fetch_staff_identity(sub: UUID) -> dict[str, str | None]:
         }
 
     return await _run_authed(sub, _op)
+
+
+# ── PII 암복호 프리미티브 래퍼(0005_crypto.sql) ───────────────────────────────
+# 키는 Vault, 함수는 service_role 한정 SECURITY DEFINER(직접 클라 호출 불가). 환자 테이블·컬럼은
+# Epic 3 가 만들고 이 래퍼들을 소비한다(본 스토리는 프리미티브 + 라운드트립/감사 검증까지).
+
+
+async def encrypt_sensitive(sub: UUID, plaintext: str) -> bytes:
+    """평문 PII → 암호문(bytea). 소비처(Epic 3)가 컬럼(`*_enc`)에 저장한다."""
+
+    async def _op(conn: asyncpg.Connection) -> bytes:
+        return await conn.fetchval("select public.encrypt_sensitive($1)", plaintext)
+
+    return await _run_authed(sub, _op)
+
+
+async def blind_index(sub: UUID, plaintext: str) -> str:
+    """정규화된 PII → 결정적 HMAC 해시(중복 매칭, FR-003). 소비처가 컬럼(`*_hash`)+UNIQUE 로 저장.
+
+    호출 전 `services.rrn.normalize_rrn` 등으로 정규화한 값을 넘긴다(같은 값 → 같은 해시 보장).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> str:
+        return await conn.fetchval("select public.blind_index($1)", plaintext)
+
+    return await _run_authed(sub, _op)
+
+
+async def decrypt_sensitive(
+    sub: UUID, *, ciphertext: bytes, target_table: str, target_id: str
+) -> str:
+    """암호문 → 평문 + 복호 자가-감사('read' 이벤트, actor = `app.actor_id` = sub).
+
+    복호 자체가 audit_logs 에 기록되므로(DB 강제) reveal 추적성이 보장된다. ⚠️ 반환 raw 값은 호출자가
+    `services.rrn.mask_rrn` 으로 마스킹한 뒤에만 응답·로그에 노출한다(PII 경계). reveal 권한
+    (`patient.reveal_rrn`) 게이트는 소비 엔드포인트(Epic 3/4)가 동일 트랜잭션에서 재평가한다.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> str:
+        return await conn.fetchval(
+            "select public.decrypt_sensitive($1, $2, $3)", ciphertext, target_table, target_id
+        )
+
+    return await _run_authed(sub, _op)
