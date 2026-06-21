@@ -194,7 +194,8 @@
 | `resident_no_masked` | 주민번호_마스킹 | `text` = `mask_rrn(raw)` = `710314-2******`. 비민감 표시값(읽기 시 복호 불요) |
 | `birth_date` / `sex` | 생년월일 / 성별 | 검증된 주민번호에서 **서버 파생**(`sex` ∈ `male`/`female`). 입력 불일치 제거 |
 | `insurance_type` / `insurance_no` | 보험유형 / 보험번호 | `insurance_type` ∈ `health_insurance`(건강보험)·`medical_aid`(의료급여)·`auto_insurance`(자동차보험)·`self_pay`(일반) |
-| `blood_type`·`allergies`·`chronic_diseases`·`medications`·`notes` | 혈액형·알레르기·기저질환·복용약·특이사항 | 임상 프로필 — 컬럼은 0009, 입력·조회 UI 는 Story 3.2(전부 nullable) |
+| `blood_type`·`allergies`·`chronic_diseases`·`medications`·`notes` | 혈액형·알레르기·기저질환·복용약·특이사항 | 임상 프로필 — 컬럼은 0009, 입력·조회 UI 는 Story 3.2(전부 nullable). `blood_type` 폐쇄어휘(A+/A-/B+/B-/O+/O-/AB+/AB-)는 앱 계층 강제(DB CHECK 아님) |
+| `clinical_profile` | 임상 프로필 | 환자 sub-resource(위 5필드 묶음). 갱신 = `PUT /patients/{id}/clinical-profile`(`patient.update` 게이트 + in-txn 재평가), 조회 = `GET /patients/{id}` 포함(Story 3.2) |
 | `auth_uid` | 인증 uid | nullable — 원무 등록=NULL, 앱 자가가입(3.4) 설정. RLS 본인행 앵커 |
 | `relationship` | 관계 | guardians — 보호자 관계(표시명, enum 미강제) |
 | `patients_chart_no_seq` | 차트번호 시퀀스 | chart_no 부여용 DB 시퀀스(service_role usage) |

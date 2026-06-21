@@ -2,6 +2,15 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: code review of 3-2-환자-임상-프로필-입력-조회 (2026-06-21)
+
+> 3레이어 적대적 리뷰. Acceptance Auditor: AC1~AC3 + 이월 인수 clean pass(위반 0). patch 1건(blood_type select 중복 defaultValue) 처리, dismiss 7, 아래는 defer.
+
+- **감사 스냅샷에 임상(건강민감) 데이터 평문 적재** [supabase/migrations/0009_patients.sql 감사 트리거] — 임상 프로필 UPDATE 가 `audit_logs.before/after_data` 에 `allergies`·`chronic_diseases`·`medications`·`notes`(건강민감)를 평문 적재. **A-3 교차절단의 연속**(전 PII 테이블) — 이미 본 파일 L144 "서버측 감사 PII 마스킹 정책"에 통합 추적 중이며 이 스토리에서 긴급도 갱신함. 중복 항목이므로 L144 에서 단일 처리(Epic 3 회고 또는 전용 감사-하드닝 스토리).
+- **환자 GET/UPDATE 가 `is_active`(soft-delete) 미필터** [api/app/core/db.py `fetch_patient`·`update_patient_clinical_profile`] — 비활성(soft-deleted) 환자도 조회·임상 갱신 가능. 단 **현재 환자 비활성화 플로우가 없어**(Epic 3 범위 밖) 도달 불가능한 잠재 항목이고, GET 미필터는 3.1 기존 동작(이번 변경이 도입한 회귀 아님). 환자 soft-delete/병합 기능 도입 스토리에서 GET·UPDATE 일관 정책(404 또는 read-only) 결정.
+- **임상 프로필 PUT 낙관적 동시성 부재(lost update)** [api/app/core/db.py `update_patient_clinical_profile`] — 전체 교체 PUT 에 버전/`If-Match`/`updated_at` 검사 없어 동시 편집 시 last-writer-wins 로 조용히 덮어씀. `update_department` 등 masters 와 **동일 패턴**이고, 낙관적 잠금(409)은 UX-DR 상 Epic 4+ stateful 임상/정산 쓰기의 교차절단 관심사. 프로필 편집은 MVP 에서 허용 가능 — 전역 낙관적 동시성 도입 시 함께 처리.
+- **`blood_type` DB 어휘 외 값 방어 부재** [web/src/lib/reception/patients.ts `bloodTypeLabel`·patient-detail.tsx select] — DB 에 CHECK 가 없어(의도적) 어휘 외 값이 저장되면 `bloodTypeLabel` 이 그대로 echo 하고 select 는 매칭 옵션이 없어 저장 시 초기화될 수 있음. 단 앱은 **모든 쓰기에서 어휘 강제**(Pydantic Literal + Zod)라 어휘 외 값은 DB 직접쓰기로만 유입 가능. 외부 환자 데이터 벌크 임포트 도입 시 방어적 표시 폴백 추가 검토.
+
 ## Deferred from: code review of 2-6-관리자-영역-보강-직원-배정-웹-하드닝 (2026-06-21)
 
 > 3레이어 적대적 리뷰. Acceptance Auditor: AC1~AC7 clean pass. patch 3건(users 페이지 결합 해소·임시직원 시드 진단성·생성 DB 검증) 처리, 아래는 defer.
@@ -142,3 +151,4 @@
 ## Deferred from: code review of 3-1-환자-레코드-생성-원무-직접-등록-암호화-rls-적용 (2026-06-21)
 
 - **서버측 감사 PII 마스킹 정책** [supabase/migrations/0009_patients.sql 감사 트리거 / api/app/schemas/audit.py] — patients/guardians 의 평문 PII 컬럼(`name`/`phone`/`address`/`email`)이 0004 제네릭 감사 트리거를 통해 `audit_logs.before_data`/`after_data` jsonb 에 평문으로 적재된다. raw 주민번호는 `resident_no_enc`(bytea)로만 들어가 평문 부재(안전)지만, 나머지 평문 PII 는 그대로 스냅샷됨. 현재 방어: `audit.read` 권한 게이트 + 뷰어 렌더 마스킹(1.10). 미해결: API 응답 본문·구조적 로그 레벨의 서버측 마스킹 또는 reveal 권한 게이트 응답 정책. **교차절단**(전 PII 테이블 영향, A-3 이월의 연속) — 환자 PII 가 처음 audit 에 유입되는 시점이라 정책 결정이 필요. Epic 3 내 또는 전용 감사-하드닝 스토리에서 처리 권장.
+  - **🔺 긴급도 상승 (Story 3.2, 2026-06-21):** 임상 프로필 갱신(`PUT /patients/{id}/clinical-profile`)이 `audit_logs` 스냅샷에 **건강민감 데이터**(`allergies`·`chronic_diseases`·`medications`·`notes`)를 처음으로 유입시킨다(기존 name/phone/address/email 평문 PII 에 더해). 일반 식별 PII보다 민감도가 높은 의료정보가 audit before/after 에 평문 적재되므로 서버측 마스킹/게이트 정책 결정의 우선순위가 올라감. 3.2 는 교차절단이라 범위에 넣지 않고 defer 유지 — **Epic 3 회고 또는 전용 감사-하드닝 스토리에서 우선 처리 권장.**
