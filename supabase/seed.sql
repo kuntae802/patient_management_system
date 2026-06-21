@@ -318,3 +318,45 @@ update public.users
   set department_id = (select id from public.departments where lower(code) = lower('IM'))
   where id = '000000a2-0000-4000-8000-0000000000a2'
     and department_id is null;
+
+-- ── (DEV/데모) 데모 의사 주간 근무표 + 샘플 휴진 (Story 6.1) ───────────────────────
+-- ⚠️ 파일 최하단 위치 필수: doctor_schedules·doctor_time_offs 가 users·departments·rooms 를 FK 참조
+--    하므로 마스터 시드(진료과·진료실)·의사 IM 배정 **이후**에 둔다(앞 grant 블록에 두면 FK 위반).
+-- 데모 의사(EMP0002)의 월–금 오전/오후 근무 + 미래 학회 휴진 1건으로 6.2 슬롯 계산 데모를 띄운다.
+-- master.manage 재사용 → 새 권한 grant 없음. 멱등(존재 검사 가드) · db reset 전용(운영 미반영).
+do $$
+declare
+  v_doctor constant uuid := '000000a2-0000-4000-8000-0000000000a2';
+  v_dept uuid;
+  v_room uuid;
+  v_wd smallint;
+begin
+  select id into v_dept from public.departments where lower(code) = lower('IM');
+  select id into v_room from public.rooms where lower(code) = lower('R101');
+  -- 의사·진료과·진료실이 모두 시드돼 있어야 진행(부분 시드 환경 보호 — 없으면 조용히 skip).
+  if v_dept is null or v_room is null
+     or not exists (select 1 from public.users where id = v_doctor) then
+    return;
+  end if;
+  -- 월(1)~금(5): 오전 09:00–12:30 · 오후 14:00–17:30. weekday=PG dow(0=일). 멱등 가드로 재삽입 방지.
+  for v_wd in 1..5 loop
+    if not exists (select 1 from public.doctor_schedules
+                   where doctor_id = v_doctor and weekday = v_wd and start_time = '09:00') then
+      insert into public.doctor_schedules
+        (doctor_id, department_id, room_id, weekday, start_time, end_time)
+        values (v_doctor, v_dept, v_room, v_wd, '09:00', '12:30');
+    end if;
+    if not exists (select 1 from public.doctor_schedules
+                   where doctor_id = v_doctor and weekday = v_wd and start_time = '14:00') then
+      insert into public.doctor_schedules
+        (doctor_id, department_id, room_id, weekday, start_time, end_time)
+        values (v_doctor, v_dept, v_room, v_wd, '14:00', '17:30');
+    end if;
+  end loop;
+  -- 샘플 휴진(미래 학회 1일). 멱등: 같은 의사·시작일 있으면 skip.
+  if not exists (select 1 from public.doctor_time_offs
+                 where doctor_id = v_doctor and start_at = '2030-05-01 00:00+09') then
+    insert into public.doctor_time_offs (doctor_id, start_at, end_at, reason)
+      values (v_doctor, '2030-05-01 00:00+09', '2030-05-02 00:00+09', '학회 참석');
+  end if;
+end $$;

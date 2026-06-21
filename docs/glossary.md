@@ -315,3 +315,24 @@
 | nurse → `order.read`·`examination.perform`·`treatment.perform` · doctor → `order.read`·`examination.complete` · radiologist → `order.read`·`examination.perform` | seed grant(`seed.sql`) | 직역 분담 오더 골든 패스. **오더 403 baseline = reception**(임상 오더 권한 0 — nurse 의 encounter/patient baseline 과 분리). 데모/통합테스트용(프로덕션=1.7 매트릭스) |
 
 > **오더 도메인 경계(Story 5.1 확정):** 유형별 per-table 상태머신(통합 orders 테이블 없음 — `order`=총칭 추상, 우 오더 패널 5.5 가 query/UI union). **오더 생성(처방 발행 5.2·검사/처치 지시 5.3/5.4) INSERT = service_role 직접**(walk-in/medical_records 선례·RPC 아님·API TOCTOU 권한 재평가) — 본 스토리는 스키마 + 초기상태 트리거 가드 + 전진 RPC만. 감사 스냅샷 = FK·플래그·숫자·짧은 구조화 텍스트(약품=`drug_id` FK 불투명·dose/frequency 는 조인 없이 무의미) → **`_SENSITIVE_KEY` 마스킹 집합 무변경**(encounter_diagnoses 동일 FK posture). 자유 임상 서사(판독 소견 5.9·처치 수행 내용 5.7)는 소유 스토리가 컬럼+마스킹 동반 추가(본 파일은 자유 서사 컬럼 0). **마이그 번호 0015**(에픽/아키 stale `0009_orders` — 실제 0015·Epic 5 블록 0015~0029 고정·Epic 6 워크트리 0030~ 비침범). 적용된 마이그레이션은 0001~0015. **수가 자동발생 트리거·`fee_mappings`=5.10·알레르기 교차검증=5.5·영상 업로드=5.8·dispense/order-cancel·내원상태 게이트·앱 낙관적 잠금=이월**.
+
+## 근무표 · 휴진 (Story 6.1, `0030_doctor_schedules.sql`)
+
+> ⚠️ **마이그 번호 0030**: Epic 6 = 병렬 worktree → 마이그 블록 0030~(main 0014/Epic5 0015~0029 와 충돌 회피). 에픽/아키 묶음 계획 `0011_scheduling.sql`(3테이블)을 **스토리별 분리**(4.6/4.7 선례) → 6.1 = 근무표·휴진 2테이블만, **예약(appointments)·예약 생성·`encounters.reservation_id` FK·더블부킹은 booking 스토리(6.2/6.3)** 소유.
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `doctor_schedules` | 테이블(0030) | 의사 주간 근무표 — `doctor_id`(users FK)·`department_id`(departments FK)·`room_id`(rooms FK, nullable)·`weekday`(smallint CHECK 0–6, **PG `extract(dow)` 정합: 0=일**)·`start_time`/`end_time`(time, CHECK start<end)·`is_active`. 비-PII/비-건강민감 → 감사 마스킹 불요 |
+| `doctor_time_offs` | 테이블(0030) | 휴진/예외 — `doctor_id`(users FK)·`start_at`/`end_at`(timestamptz, CHECK start<end)·`reason`(저민감 운영 사유, **임상/PII 자유텍스트 금지**=cancel_reason 정합)·`is_active`. 겹침 제약 없음(중첩 휴진 무해) |
+| `doctor_schedules_no_overlap` | EXCLUDE 제약(btree_gist) | 같은 `doctor_id`·`weekday`의 활성 시간블록 겹침 차단 — `tsrange(date+start, date+end) &&`(내장 timerange 부재 → date-anchored). `where (is_active)` 부분 제약(비활성 무시·재활성도 발화). 위반 23P01 → 409 `schedule_overlap` |
+| `master.manage` | 권한(재사용) | 근무표·휴진 쓰기 게이트 — **신규 권한 아님**(0002 기존·admin cross-join 보유). 진료과·진료실 masters 동형(관리자 관리 config). 읽기=전 직원 authenticated SELECT(슬롯 계산·예약). **schedule.* 신설·admin 부트 grant 재실행 없음** → `test_admin_role_has_all_permissions` 무영향 |
+| `schedule_overlap`(409) / `invalid_doctor`·`inactive_doctor`·`invalid_room`·`inactive_room`(422) | 도메인 에러코드 | 겹침(EXCLUDE 23P01 서비스 catch, `code_taken` 패턴) / FK 대상 검증(`_assert_doctor_assignable`=role=doctor·active, `_assert_room_assignable`, `_assert_department_assignable` 재사용). **`_map_pg_sqlstate` 변경 없음**(서비스 레이어 catch) |
+| `POST·PATCH·PATCH/active /v1/scheduling/doctor-schedules` | 엔드포인트 | 근무표 생성·수정(전 필드 교체)·비활성(soft delete). 게이트 `master.manage`. 겹침 409·미존재 404·FK 422 |
+| `POST·PATCH·PATCH/active /v1/scheduling/doctor-time-offs` | 엔드포인트 | 휴진·예외 생성·수정(기간·사유, doctor 불변)·비활성. 게이트 `master.manage` |
+| `GET /v1/scheduling/doctors` | 엔드포인트 | 근무표 폼 의사 피커용 재직 의사(`{id,name,department_id}`) — users RLS(본인행) 우회 service_role read(`count_department_dependents` 동형). 게이트 `master.manage` |
+| `DoctorSchedule*`·`DoctorTimeOff*`·`SchedulingDoctor` | 스키마(Pydantic)·웹 타입 | 응답·요청 거울(snake_case). `ActiveUpdate`(schemas.masters) 재사용. web `lib/admin/schedule.ts` |
+| `insert/update/set_*_active_doctor_schedule`·`_doctor_time_off`·`fetch_active_doctors` | db 래퍼(`core/db.py`) | service_role 직접 INSERT/UPDATE(masters insert_room 패턴·`_require_master_manage` TOCTOU·FK 활성 검증·EXCLUDE/FK catch) |
+| `ScheduleManager`·`DoctorScheduleForm`·`DoctorTimeOffForm`·`schedule.ts` | 웹(`components/admin/`·`lib/admin/`) | 근무표·휴진 탭 관리(masters-manager 미러: useState·apiFetch 쓰기·pendingIds·ConfirmDialog·부분 강등) / RHF+Zod+Base UI 폼 / 라우트 `/admin/schedule`(nav `requiredPermission: master.manage`). **의사 목록은 마운트 시 클라 apiFetch**(users RLS → RSC 직접조회 불가, StaffDirectory 패턴) |
+| doctor → 데모 근무표·휴진 | seed(`seed.sql`) | 데모 의사(EMP0002) 월–금 오전/오후 근무 + 미래 학회 휴진(파일 최하단·FK 순서·멱등·db reset 전용) |
+
+> **근무 스케줄 경계(Story 6.1 확정):** 근무표·휴진 = 관리자 관리 config(masters 동형·`master.manage` 재사용·전 직원 읽기). 겹침 불변식 = **DB EXCLUDE**(btree_gist·`tsrange` 관용구·`where(is_active)` 부분 제약) → 409 `schedule_overlap`(서비스 catch, `_map_pg_sqlstate` 무변경). 컬럼 비-PII/비-건강민감 → **감사 마스킹 집합 무변경**(0006/0010 동일). **appointments(예약 본체)·동적 슬롯 계산(근무−예외−기예약, FR-012)·더블부킹·SMS·노쇼·휴진 재배정 = 6.2~6.8**. `weekday`=PG dow(0=일) — 6.2 슬롯 계산이 예약일 dow 로 근무 전개.

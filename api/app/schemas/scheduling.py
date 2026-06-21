@@ -1,0 +1,103 @@
+"""근무표·휴진 스키마(Pydantic) — web Zod 의 거울. 전 필드 snake_case.
+
+근무표·휴진엔 불변 `code` 가 없어(masters 와 달리) Update 도 전 필드 교체다. PII 없음(의사
+uuid·요일·시각·운영 사유만). `reason` = 저민감 운영 사유(휴가·학회) — 임상/PII 자유텍스트 금지
+(0010 cancel_reason 정합). 시간 순서(start<end)는 즉시 검증(422 조기 차단); DB CHECK 가 최종선,
+겹침은 DB EXCLUDE(409 schedule_overlap).
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, time
+from typing import Annotated
+from uuid import UUID
+
+from pydantic import BaseModel, Field, StringConstraints, model_validator
+
+# 앞뒤 공백 제거 문자열 — web Zod `.trim()` 정합(masters._Stripped 동형).
+_Stripped = Annotated[str, StringConstraints(strip_whitespace=True)]
+
+
+class _ScheduleFields(BaseModel):
+    """근무표 공용 필드(Create·Update 공유) + 즉시 시간 순서 검증."""
+
+    doctor_id: UUID
+    department_id: UUID
+    room_id: UUID | None = None
+    weekday: int = Field(ge=0, le=6)  # 0=일 .. 6=토 (PG extract(dow) 정합)
+    start_time: time
+    end_time: time
+
+    @model_validator(mode="after")
+    def _check_time_order(self) -> _ScheduleFields:
+        if self.end_time <= self.start_time:
+            raise ValueError("종료 시각은 시작 시각보다 뒤여야 합니다.")
+        return self
+
+
+class DoctorScheduleCreate(_ScheduleFields):
+    """근무표 생성 요청."""
+
+
+class DoctorScheduleUpdate(_ScheduleFields):
+    """근무표 수정 — 불변 code 없음 → 전 필드 교체(doctor 재배정 포함)."""
+
+
+class DoctorScheduleResponse(BaseModel):
+    """근무표 응답(생성·수정·비활성 공용)."""
+
+    id: UUID
+    doctor_id: UUID
+    department_id: UUID
+    room_id: UUID | None = None
+    weekday: int
+    start_time: time
+    end_time: time
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class _TimeOffRange(BaseModel):
+    """휴진 기간 공용 필드 + 즉시 검증(end > start)."""
+
+    start_at: datetime
+    end_at: datetime
+    reason: _Stripped | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def _check_range(self) -> _TimeOffRange:
+        if self.end_at <= self.start_at:
+            raise ValueError("종료 시각은 시작 시각보다 뒤여야 합니다.")
+        return self
+
+
+class DoctorTimeOffCreate(_TimeOffRange):
+    """휴진·예외 생성 — doctor_id 는 생성 시에만(이후 불변; 변경은 삭제+재생성)."""
+
+    doctor_id: UUID
+
+
+class DoctorTimeOffUpdate(_TimeOffRange):
+    """휴진·예외 수정 — 기간·사유만(doctor 불변)."""
+
+
+class DoctorTimeOffResponse(BaseModel):
+    """휴진·예외 응답(생성·수정·비활성 공용)."""
+
+    id: UUID
+    doctor_id: UUID
+    start_at: datetime
+    end_at: datetime
+    reason: str | None = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class SchedulingDoctor(BaseModel):
+    """근무표 폼 의사 피커용 경량 응답(users RLS self-only → service_role read)."""
+
+    id: UUID
+    name: str
+    department_id: UUID | None = None
