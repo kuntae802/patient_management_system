@@ -218,3 +218,12 @@
 - **doctor "다음 진료" 히어로 정렬이 `called_at`(원무 개념) 기준** [web/src/components/encounters/waiting-board.tsx · lib/reception/encounters.ts `nextCallCandidate`] — 의사 보드의 "다음 진료" 히어로가 `nextCallCandidate`(미호출 우선)를 재사용. 의사 관점 "다음 볼 환자"는 '가장 오래 대기/이미 호출된' 환자 우선이 더 자연스럽다. Low UX(항상 유효한 startable registered 행 반환·표에서 모든 행 직접 시작 가능). 의사 전용 정렬 헬퍼가 필요해지는 스토리에서 정제.
 - **진료 계속(onResume) stale/status 가드 없음** [web/src/components/encounters/waiting-board.tsx] — `진료 계속` 버튼은 `runAction` 미경유 단순 `router.push`(isStale·status 무가드). 네비게이션 전용이라 허브 로드가 자가보정하며, 허브 status-aware 패널(4.4 코드리뷰 Patch 3) 적용 후 비-in_progress 는 정확히 표시. Low.
 - **진료 허브 back-link `/doctor/waiting` 하드코딩** [web/src/components/encounters/encounter-hub.tsx] — 허브 페이지 게이트가 `encounter.read`(reception 도 보유)라 reception 이 직접 URL 로 허브 도달 시 back-link 가 의사 보드를 가리킨다. reception UI 진입 경로 없음(원무 보드는 호출/접수만)·허브=의사 진입 화면이라 Low. 허브가 role 을 인지하거나 referrer 기반 back 으로 개선 가능.
+
+## Deferred from: code review of 4-5-진료-허브-환자-배너-과거-이력-활력-컨텍스트 (2026-06-21)
+
+- 감사 'read' 이벤트가 RRN reveal 과 연락처 reveal 을 구분하지 못함(action/target_table/target_id 동일). 1.9 `decrypt_sensitive` 의 'read' 관례 + 0004 action CHECK(create/read/update/delete/login)가 신규 action 을 불허하므로 구분하려면 CHECK 변경(별도 스코프). 감사 granularity 향상 시 처리.
+- soft-deleted(is_active=false) 환자도 `reveal_rrn`/`reveal_contact`·`fetch_patient` 로 조회 가능(is_active 미검사). 기존 전이 RPC(0010)·fetch_patient 전부 동일 posture, soft-delete UI 부재. 4.2/4.4 의 is_active TOCTOU 이월과 통합 처리.
+- 진료 허브 배너/좌패널의 by-id 로드(`patient-banner`·`patient-context-panel`)가 fetch abort·patientId 변경 시 state 초기화 부재 → 환자 전환 시 stale/오환자 데이터 순간 노출 가능. patient-detail.tsx 등 코드베이스 전반의 동일 패턴 — AbortController/mounted-ref/즉시 리셋 교차절단 하드닝으로 일괄 처리.
+- reveal 후 재마스킹 토글 부재(한 번 "표시"하면 영구 노출). UX-DR9 transient reveal+감사는 충족(접근 감사됨). 재마스킹/타임아웃 토글은 어깨너머 노출 완화 nice-to-have.
+- `ageFromBirthDate` 주석("KST 무관")과 실제 동작(로컬 타임존 의존) 불일치. KST 배포에선 정상이나 비-KST 환경 경계일 off-by-one 가능 — 명시적 UTC 파싱으로 정정 시 처리.
+- 과거 내원 이력의 예약(scheduled) 내원이 registered_at NULL → created_at 표시·nulls-last 정렬(예약일 미표시). 예약일 표시·정렬은 Epic 6(appointments) 소관(4.3 on_date=created_at defer 와 동일).

@@ -137,7 +137,7 @@
 | `fetchPermissionMatrix(supabase)` | 함수(web) | 매트릭스 데이터(roles[patient 제외·순서]·permissions[전수·resource 정렬]·grant 쌍)를 Supabase 직접 조회(authenticated SELECT, 0003) |
 | `PermissionMatrix` | 컴포넌트(web·클라) | 역할×권한 매트릭스 — 즉시 적용·낙관적 갱신+롤백·민감 권한 확인 다이얼로그·2D 화살표 roving 키보드(`<table>`+`<th scope>`) |
 | `ConfirmDialog` | 컴포넌트(web·클라) | 민감 권한 토글 확인(base-ui AlertDialog: 포커스 트랩·복원·Esc) |
-| `SENSITIVE_PERMISSIONS` / `RESOURCE_LABELS` / `MATRIX_ROLE_ORDER` | 상수(web) | 민감 권한 코드 Set(현 3종: `patient.reveal_rrn`·`rbac.manage`·`audit.read`) · resource→한글 도메인 라벨(그룹 헤더) · 열 순서(admin 최후미 고정) |
+| `SENSITIVE_PERMISSIONS` / `RESOURCE_LABELS` / `MATRIX_ROLE_ORDER` | 상수(web) | 민감 권한 코드 Set(현 4종: `patient.reveal_rrn`·`patient.reveal_contact`·`rbac.manage`·`audit.read`) · resource→한글 도메인 라벨(그룹 헤더) · 열 순서(admin 최후미 고정) |
 | `NEXT_PUBLIC_API_BASE_URL` | env(web 공개) | FastAPI 베이스 URL(`/v1` 미포함). dev=`http://localhost:8000` · prod=`…/patient_management_system/api`. CORS 화이트리스트(`config.cors_origins`)에 web origin 필요 |
 
 > **`requirePermission(code, fallback)` 정책 확정(Story 1.7, deferred-work 1.6 해소):** `(staff)` 하위 보호 라우트(예: `/admin/permissions`)는 부모 `(staff)/layout`이 이미 직원을 보장하므로 staff 재확인 불요. 권한 미보유 직원은 `fallback=STAFF_HOME(/home)`으로 강등. **매트릭스 읽기 = Supabase 직접 조회, 쓰기 = FastAPI(service_role)** — 0002가 authenticated 에 SELECT 만 grant하므로 토글은 FastAPI 경유가 유일 경로.
@@ -210,8 +210,10 @@
 | `get_current_patient` | 의존성(api·`core/security`) | 비직원(환자) 게이트 — active 직원 5역할이면 403(`get_current_staff` 반전). self-link/포털용 |
 | `simulate_identity_verification` | 함수(api·`services/identity`) | 본인인증(PASS) **시뮬 seam** — 실연동 자리. 현재 통과만, 사칭 방지 1차선은 self-link 성명 일치 가드 |
 | 전역 환자 검색 / `searchPatients` / `PatientSearchCommand` | 경로·함수·컴포넌트(Story 3.5, api·`patients`·web·`lib/reception/patients`·`components/shell/patient-search-command`) | 전역 `Ctrl K` 커맨드 팔레트 — `GET /patients?q=`(기존 목록 확장, `patient.read` 게이트) 이름·차트번호·연락처(자릿수) 검색. 결과=마스킹 `PatientListItem`(per-row reveal 없음, 오환자 단서=생년월일+마스킹 RRN+연락처) → 선택 시 `/patients/{id}` 이동. q 는 PII라 로그 미기록(신규 마이그레이션·인덱스 0건 — phone 성능 인덱스 이월) |
+| `patient.reveal_rrn` / `patient.reveal_contact` / `reveal_rrn` / `reveal_contact` | 권한·RPC(Story 4.5, `0002`/`0012`·api·`patients`) | 민감정보 열람 권한(둘 다 민감 = 토글 시 확인) + SECURITY DEFINER RPC. `POST /patients/{id}/reveal-rrn`(`reveal_rrn` → `has_permission` 재평가 + `decrypt_sensitive` 복호 = 'read' 자가-감사 → full RRN) / `POST /patients/{id}/reveal-contact`(`reveal_contact` → 권한 재평가 + 수동 'read' 감사 → full phone/address/email, 연락처 평문 유지). 부수효과(감사)=POST. service_role only. `reveal_contact` 는 0012 신규 권한(admin boot grant + 1.7 매트릭스) |
+| `GET /patients/{id}/encounters` / `fetch_patient_encounters` | 경로·함수(Story 4.5, api·`patients`·`core/db`) | 한 환자의 과거 내원 이력(진료 허브 좌 컨텍스트, FR-031). `_ENCOUNTER_LIST_COLUMNS` 조인 재사용·최근순·`encounter.read` 게이트. 안전 상한 100건(초과 시 패널이 절단 명시) — 진단/처방 per-visit 부착은 4.7/Epic5 |
 
-> **환자 PII 경계(Story 3.1 확정):** raw 주민번호는 `resident_no_enc`(bytea)로만 — 응답·로그·URL·감사 before/after 평문 부재. 응답은 `resident_no_masked`. **컬럼 GRANT 로 `_enc`/`_hash` 는 authenticated SELECT 제외**(RLS 행 + 컬럼 열 이중 차단). reveal(복호) 엔드포인트·UI 는 첫 노출처(3.3 보호자 PII / Epic 4 진료 허브 배너) — 본 스토리는 암호화+마스킹까지. 등록 시 동일 주민번호(hash) → 409 `patient_exists`(등록 시점 중복 차단; 앱 자가가입 자동연결은 3.4).
+> **환자 PII 경계(Story 3.1 확정):** raw 주민번호는 `resident_no_enc`(bytea)로만 — 응답·로그·URL·감사 before/after 평문 부재. 응답은 `resident_no_masked`. **컬럼 GRANT 로 `_enc`/`_hash` 는 authenticated SELECT 제외**(RLS 행 + 컬럼 열 이중 차단). reveal(복호) 엔드포인트·UI 는 **Story 4.5(진료 허브 배너)가 첫 소비처** — `reveal_rrn`/`reveal_contact` RPC(권한 게이트 + 'read' 자가-감사). 단 `GET /patients/{id}` 는 여전히 평문 연락처를 반환(서버측 연락처 마스킹은 이월). 등록 시 동일 주민번호(hash) → 409 `patient_exists`(등록 시점 중복 차단; 앱 자가가입 자동연결은 3.4).
 
 ## 내원 상태머신 · 전이 RPC (Story 4.1, `0010_encounters.sql`)
 
