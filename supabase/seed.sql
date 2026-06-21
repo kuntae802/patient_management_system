@@ -12,8 +12,9 @@
 --   실제 직원 계정 생성은 Story 1.8(관리자 UI). db reset 시 재생성됨.
 --   로컬 자격증명(로컬 전용, 절대 운영 사용 금지, 전부 비번 Staff1234):
 --     · admin@pms.local      role=admin     → 23권한 전부(Story 1.3 시드)  → require_permission 통과
---     · doctor@pms.local     role=doctor    → encounter.read/start 보유(하단 grant, Story 4.4) → 진료 대기·진찰 시작
---       골든 패스. rbac.manage 등 그 외 권한은 미보유 → /auth/check 등은 여전히 403(Story 1.5 매트릭스 검증).
+--     · doctor@pms.local     role=doctor    → encounter.read/start(4.4) + patient.read/reveal_rrn/reveal_contact(4.5)
+--       보유 → 진료 대기·진찰 시작 + 진료 허브 환자 배너·임상 프로필·RRN/연락처 reveal 골든 패스.
+--       rbac.manage 등 그 외 권한은 미보유 → /auth/check 등은 여전히 403(Story 1.5 매트릭스 검증).
 --     · nurse@pms.local      role=nurse     → 권한 0(간호 권한은 Epic 5)  → 무권한 baseline(403 통합 검증용, Story 4.4)
 --     · reception@pms.local  role=reception → encounter.register/read/call 보유(하단 grant) → walk-in 접수·호출
 --       골든 패스 가동(Story 4.2/4.3). 역할 grant 는 데모/통합테스트용 — 프로덕션은 1.7 매트릭스가 부여.
@@ -114,6 +115,19 @@ insert into public.role_permissions (role_id, permission_id)
 select r.id, p.id
 from public.roles r
 join public.permissions p on p.code in ('encounter.read', 'encounter.start')
+where r.code = 'doctor'
+on conflict (role_id, permission_id) do nothing;
+
+-- ── (DEV/데모) 의사(doctor) 역할 → 진료 허브 환자 컨텍스트 권한 grant (Story 4.5) ──────────────
+-- 진료 허브 배너·좌 컨텍스트는 의사 핵심 직무: 환자 신원·임상 프로필·과거 이력 조회(`patient.read`) +
+-- 임상 안전상 주민번호·연락처 reveal(`patient.reveal_rrn`/`patient.reveal_contact` — 권한 게이트 + 감사).
+-- reveal 권한 보유는 admin·doctor 뿐(reception 등은 1.7 매트릭스 소관). patient.read 는 0009, reveal_rrn 은
+-- 0002, reveal_contact 는 0012 시드 — 여기선 역할 매핑만. ★ 프로덕션 런타임 grant 는 1.7 매트릭스 UI 소유
+-- (rbac-ui-exposure-model: 민감·reveal 은 권한 게이트) — 이 시드는 로컬 db reset 전용(운영 db push 미반영). 멱등.
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code in ('patient.read', 'patient.reveal_rrn', 'patient.reveal_contact')
 where r.code = 'doctor'
 on conflict (role_id, permission_id) do nothing;
 
