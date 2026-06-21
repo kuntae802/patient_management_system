@@ -227,3 +227,14 @@
 - reveal 후 재마스킹 토글 부재(한 번 "표시"하면 영구 노출). UX-DR9 transient reveal+감사는 충족(접근 감사됨). 재마스킹/타임아웃 토글은 어깨너머 노출 완화 nice-to-have.
 - `ageFromBirthDate` 주석("KST 무관")과 실제 동작(로컬 타임존 의존) 불일치. KST 배포에선 정상이나 비-KST 환경 경계일 off-by-one 가능 — 명시적 UTC 파싱으로 정정 시 처리.
 - 과거 내원 이력의 예약(scheduled) 내원이 registered_at NULL → created_at 표시·nulls-last 정렬(예약일 미표시). 예약일 표시·정렬은 Epic 6(appointments) 소관(4.3 on_date=created_at defer 와 동일).
+
+## Deferred from: code review of story-4.6 (2026-06-21)
+
+- **PUT 전체 교체 낙관적 잠금 부재(lost update)** [api/app/core/db.py `update_medical_record`] — SOAP autosave PUT 가 버전/`updated_at`/`If-Unmodified-Since` 검사 없이 4 파트를 전부 덮어써, 동시 작성자(같은 내원·`medical_record.write` 보유)가 서로의 노트를 last-writer-wins 로 조용히 덮어쓴다. **임상 프로필 PUT 동시성 부재(deferred-work 기존 항목)와 동형 교차절단**이며 §6 의 "서버 author 강제 비적용"은 의도된 설계. 세션당 활성 내원 1개 가드가 동일 브라우저 케이스를 완화. 전역 낙관적 동시성(409) 도입 스토리에서 일괄 처리.
+- **`update_medical_record` 가 `is_active`(soft-delete) 미검사** [api/app/core/db.py] — 읽기(`fetch_medical_records`)는 `is_active=true` 필터하나 UPDATE 는 미필터 → soft-deleted 기록도 갱신·부활 가능. medical_records soft-delete/삭제 플로우가 아직 없어 **도달 불가능한 잠재 항목**(patients GET/UPDATE is_active 미필터 deferred 와 동형). soft-delete 기능 도입 시 GET·UPDATE 일관 정책으로 처리.
+- **superseded 탭 SoapLedger 편집 가능 유지·재활성화 후 자동 재저장 없음** [web/src/components/encounters/soap-ledger.tsx · encounter-hub.tsx] — 다른 탭이 활성 내원을 점유하면 이 탭의 autosave 는 `isActiveEncounter()` 로 거부되나, ledger 는 계속 편집 가능하고 ledger 자체엔 "보류 중" 표시가 없다(허브 상단 superseded 배너+재활성화 버튼이 1차 신호). 재활성화(takeOver) 후엔 키 입력 전까지 누적분이 재저장되지 않음. 안전속성(오환자 쓰기 차단)은 충족 — ledger 레벨 표시·재활성화 시 재저장은 MVP nice-to-have.
+- **전부-빈(all-null) POST 가 서버에서 빈 medical_records 행 생성** [api/app/services/encounters.py · api/app/core/db.py `insert_medical_record`] — 웹은 patch 후 `hasContent` 가드로 빈 저장을 막으나 직접 API `POST {}` 는 빈 행을 만든다. 스키마가 partial(4 파트 옵셔널) 허용 의도·유일 소비처=웹. 필요 시 서버측 all-empty 거부(422) 방어심층 추가.
+- **`fetch_medical_records` limit 200 무신호 절단** [api/app/core/db.py] — 한 내원 SOAP 기록 200건 초과 시 오래된 기록이 무신호로 누락(4.5 의 no-silent-cap 안내와 불일치). 한 내원 200 기록은 **도달 불가능**(4.5 의 100 은 환자 평생 내원이라 더 도달 가능) — 절단 안내/페이지네이션은 도달 가능 시점에 추가.
+- **"새 진료기록" 이 미저장 편집을 flush 없이 폐기** [web/src/components/encounters/soap-ledger.tsx `handleNewRecord`] — 디바운스 창(1.5s) 내 미저장 입력 후 "새 진료기록" 클릭 시 직전 입력이 유실. 스펙 명시 동작("활성 기록 초기화·미저장 초안")이고 patch 후 autosave 신뢰도 향상 — 필요 시 전환 전 flush.
+- **full-bleed `-mx-4`(좌우 테두리 없는 열린 캔버스) 미적용 — 카드 박싱** [web/src/components/encounters/soap-ledger.tsx] — UX-DR11 은 SOAP 섹션을 "테두리 없는 열린 캔버스(대비 강조)"로 요구하나 구현은 rounded 카드. 기능적 요소(1열 ledger·hairline·S/O/A/P 배지·132px·focus teal 액센트·"비어 있음" 빈상태) 전부 충족 — "열린 캔버스 vs 카드"는 Low 시각 충실도. 3-pane 일관성과의 균형은 UX 후속에서.
+- **SOAP 쓰기 서버측 status 게이트 없음** [api/app/core/db.py `insert_medical_record`/`update_medical_record`] — §4 설계결정대로 작성 윈도우 잠금(완료 후 addendum 만)은 deferred·웹이 in_progress 게이트. 비-in_progress/inactive 내원에 직접 API 작성이 가능(by-design). 완료 후 정정 정책 확정 시 status 기반 윈도우 도입.
