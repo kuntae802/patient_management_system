@@ -138,3 +138,7 @@
 - **`API_INTERNAL_URL` 내부경로 주의** [docker-compose.yml] — SSR 서버사이드 fetch는 컨테이너 내부 `http://api:8000/v1/...`(prefix 없음)로 호출해야 함. 외부 경로(`/patient_management_system/api/v1/...`)와 다르므로 혼동 주의. → **Story 1.4+**(SSR fetch 도입 시).
 - **WebView 에러/오프라인/네비게이션 핸들링 없음** [mobile/lib/webview_screen.dart] — `NavigationDelegate` 부재(onWebResourceError·로딩 상태·뒤로가기·오프라인 재시도 없음). 포털 불가 시 빈 화면. → 환자 포털이 라이브된 후(Story 8.x) 하드닝.
 - **CI `supabase db lint` 무신호 게이트** [.github/workflows/ci.yml] — `|| true`로 실패를 삼켜 신호 없음(로컬 DB·링크 부재). 골격 단계 의도. → CI 강화는 Post-MVP(아키텍처 명시).
+
+## Deferred from: code review of 3-1-환자-레코드-생성-원무-직접-등록-암호화-rls-적용 (2026-06-21)
+
+- **서버측 감사 PII 마스킹 정책** [supabase/migrations/0009_patients.sql 감사 트리거 / api/app/schemas/audit.py] — patients/guardians 의 평문 PII 컬럼(`name`/`phone`/`address`/`email`)이 0004 제네릭 감사 트리거를 통해 `audit_logs.before_data`/`after_data` jsonb 에 평문으로 적재된다. raw 주민번호는 `resident_no_enc`(bytea)로만 들어가 평문 부재(안전)지만, 나머지 평문 PII 는 그대로 스냅샷됨. 현재 방어: `audit.read` 권한 게이트 + 뷰어 렌더 마스킹(1.10). 미해결: API 응답 본문·구조적 로그 레벨의 서버측 마스킹 또는 reveal 권한 게이트 응답 정책. **교차절단**(전 PII 테이블 영향, A-3 이월의 연속) — 환자 PII 가 처음 audit 에 유입되는 시점이라 정책 결정이 필요. Epic 3 내 또는 전용 감사-하드닝 스토리에서 처리 권장.

@@ -180,3 +180,27 @@
 > **(Story 2.4 갱신) 확정 번호:** `0008_masters_code_ci_unique.sql`=마스터 5종 코드 대소문자 무관 unique(`lower(code)` 함수 인덱스로 교체, `<table>_code_key` 제약 drop — 참조 무결성/데이터 품질). 0008 을 코드 CI unique 가 차지하므로 **patients 는 0009 로 한 칸 더 cascade**(Epic 3 `0009_patients`). 적용된 마이그레이션은 0001~0008.
 >
 > **(Story 2.5 갱신) 마스터 시드:** `supabase/seed.sql` 이 5종 마스터(진료과 7·진료실 8·KCD 진단 22·EDI 수가 18·약품 17)를 **현재-유효 데이터**(`effective_from` 과거·`effective_to` NULL)로 적재 + DEV 의사를 내과(IM)에 배정. 멱등 `ON CONFLICT (lower(code)) DO NOTHING`(0008 함수 인덱스 추론 — `(code)` 아님). **신규 마이그레이션 없음**(시드는 DDL 아님 — 적용 번호 여전히 0001~0008, **patients 는 0009 유지**). 행위/진단 → 수가코드 **매핑(`fee_mappings`) 내용·테이블은 Epic 7**(다운스트림 — 본 스토리는 수가 *마스터 행*만).
+>
+> **(Story 3.1 확정) `0009_patients.sql` = patients + guardians + RLS·감사 인라인.** patients 가 0009 를 차지(드리프트 종결). **RLS 는 별도 `0014_rls_policies.sql` 파일 없이 본 마이그레이션에 인라인**(0006/0007 마스터 관례 계승 — 아키텍처 계획 맵의 0014 분리는 미실현). 다음 마이그레이션(내원 등 Epic 4)은 **0010**부터. 적용된 마이그레이션은 0001~0009.
+
+## 환자 컬럼·식별자 (Story 3.1, `0009_patients.sql`)
+
+| 식별자 | 한글 | 비고 |
+|---|---|---|
+| `chart_no` | 차트번호 | 사람용 식별자(라우트 안전·PII 아님). DB 시퀀스 `patients_chart_no_seq` → 8자리 zero-pad 기본값(race-free) |
+| `resident_no` | 주민등록번호 | raw 평문은 **미저장**(아래 3컬럼으로만). 외국인등록번호 포섭(성별자리 5–8) |
+| `resident_no_enc` | 주민번호_암호문 | `bytea` = `encrypt_sensitive(raw)`. 복호는 service_role RPC 만 |
+| `resident_no_hash` | 주민번호_blind index | `text` = `blind_index(normalize_rrn(raw))`. **UNIQUE** 중복 차단(FR-003) |
+| `resident_no_masked` | 주민번호_마스킹 | `text` = `mask_rrn(raw)` = `710314-2******`. 비민감 표시값(읽기 시 복호 불요) |
+| `birth_date` / `sex` | 생년월일 / 성별 | 검증된 주민번호에서 **서버 파생**(`sex` ∈ `male`/`female`). 입력 불일치 제거 |
+| `insurance_type` / `insurance_no` | 보험유형 / 보험번호 | `insurance_type` ∈ `health_insurance`(건강보험)·`medical_aid`(의료급여)·`auto_insurance`(자동차보험)·`self_pay`(일반) |
+| `blood_type`·`allergies`·`chronic_diseases`·`medications`·`notes` | 혈액형·알레르기·기저질환·복용약·특이사항 | 임상 프로필 — 컬럼은 0009, 입력·조회 UI 는 Story 3.2(전부 nullable) |
+| `auth_uid` | 인증 uid | nullable — 원무 등록=NULL, 앱 자가가입(3.4) 설정. RLS 본인행 앵커 |
+| `relationship` | 관계 | guardians — 보호자 관계(표시명, enum 미강제) |
+| `patients_chart_no_seq` | 차트번호 시퀀스 | chart_no 부여용 DB 시퀀스(service_role usage) |
+| `insert_patient` / `fetch_patients` / `fetch_patient` | 함수(api·`core/db`) | 환자 INSERT(권한 동일트랜잭션 재평가+encrypt+blind_index, hash UNIQUE 위반→409 `patient_exists`) / 목록·상세(마스킹 컬럼 투영, `_enc`/`_hash` 제외) |
+| `parse_rrn` | 함수(api·`services/rrn`) | 검증된 주민번호 → `(birth_date, sex)` 파생(순수). `normalize_rrn`/`validate_rrn`/`mask_rrn` 동반 |
+| `PatientCreate` / `PatientResponse` / `PatientListItem` | 스키마(api·`schemas/patients`) | 생성 요청(`resident_no` 필수, `birth_date`/`sex` 미수신=서버 파생) / 응답(마스킹, `_enc`·`_hash` 미포함) / 목록 경량 |
+| `patientCreateSchema` / `toPatientCreatePayload` / `rrnHardError` / `rrnChecksumOk` / `PatientRegister` | 상수·함수·컴포넌트(web·`lib/reception/patients`·`components/reception/patient-register`) | 등록 폼 Zod(Pydantic 거울) · 페이로드 변환 · RRN HARD 사전체크(차단)·체크섬 SOFT(경고) · RHF 풀페이지 폼(성공 시 chart_no+마스킹 확인) |
+
+> **환자 PII 경계(Story 3.1 확정):** raw 주민번호는 `resident_no_enc`(bytea)로만 — 응답·로그·URL·감사 before/after 평문 부재. 응답은 `resident_no_masked`. **컬럼 GRANT 로 `_enc`/`_hash` 는 authenticated SELECT 제외**(RLS 행 + 컬럼 열 이중 차단). reveal(복호) 엔드포인트·UI 는 첫 노출처(3.3 보호자 PII / Epic 4 진료 허브 배너) — 본 스토리는 암호화+마스킹까지. 등록 시 동일 주민번호(hash) → 409 `patient_exists`(등록 시점 중복 차단; 앱 자가가입 자동연결은 3.4).
