@@ -45,6 +45,24 @@ _DB_OUTAGE_ERRORS = (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, asy
 _pool: asyncpg.Pool | None = None
 
 
+def _map_pg_sqlstate(exc: asyncpg.PostgresError) -> AppError | None:
+    """DB SQLSTATE → 도메인 오류(Story 4.2 도입 — 내원 상태머신 RPC·전이 트리거 소비처).
+
+    PT409/PT404 = 0010 커스텀(코어 미사용 클래스 'PT' → 충돌 없음), 42501 = insufficient_privilege
+    (RPC has_permission 게이트 거부). 미매핑 SQLSTATE 는 None → 호출부가 일시 장애(503)로 폴백
+    (_DB_OUTAGE_ERRORS posture 유지). 4.4·Epic 6/7 이 동일 매핑 재사용(공유 인프라).
+    """
+    match getattr(exc, "sqlstate", None):
+        case "PT409":  # 잘못된 상태 전이(역행·건너뛰기·종결 재전이·비정상 초기상태·소스상태 불일치)
+            return ConflictError(code="invalid_transition")  # 409 "잘못된 상태 전이입니다."
+        case "PT404":  # 대상 내원 없음(RPC for-update not found)
+            return NotFoundError("내원을 찾을 수 없습니다.")
+        case "42501":  # insufficient_privilege — RPC has_permission 게이트 거부
+            return ForbiddenError()
+        case _:
+            return None
+
+
 async def _init_connection(conn: asyncpg.Connection) -> None:
     """새 물리 커넥션마다 jsonb 코덱 등록 — jsonb 컬럼을 raw text(str)가 아닌 dict/list 로 디코드.
 
@@ -52,9 +70,7 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
     코드베이스 최초의 jsonb 읽기 — 풀 단위로 한 번 등록해 이후 모든 jsonb 읽기가 파싱된 객체를 받게
     한다(per-query json.loads 산재 회피). 현재 jsonb 쓰기 경로는 없어 회귀 위험 없음.
     """
-    await conn.set_type_codec(
-        "jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
-    )
+    await conn.set_type_codec("jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
 
 
 async def create_pool() -> asyncpg.Pool:
@@ -114,7 +130,17 @@ async def _run_authed[T](sub: UUID, op: Callable[[asyncpg.Connection], Awaitable
     except RuntimeError as exc:  # 풀 미초기화(lifespan 미실행 등)
         logger.warning("DB 풀 미초기화: %s", exc)
         raise ServiceUnavailableError() from exc
-    except _DB_OUTAGE_ERRORS as exc:  # 연결 끊김·풀 고갈·타임아웃
+    except asyncpg.PostgresError as exc:
+        # 전이 RPC·트리거의 SQLSTATE(PT409/PT404/42501)는 도메인 오류로 매핑(4.2). 그 외 서버 오류는
+        # 일시 장애(503)로 폴백(_DB_OUTAGE_ERRORS posture 유지 — PostgresError 가 그 첫 원소).
+        mapped = _map_pg_sqlstate(exc)
+        if mapped is not None:
+            raise mapped from exc
+        # 미매핑 SQLSTATE(연결 오류·미처리 제약 등)는 503 폴백 — sqlstate 를 남겨 영구 결함을 인프라
+        # 장애로 오인하지 않게(메시지엔 PII 가능 → __name__·sqlstate 만, 본문 비노출).
+        logger.warning("DB 접근 실패: %s (sqlstate=%s)", type(exc).__name__, exc.sqlstate)
+        raise ServiceUnavailableError() from exc
+    except _DB_OUTAGE_ERRORS as exc:  # 연결 끊김·풀 고갈·타임아웃(InterfaceError/OSError/Timeout)
         logger.warning("DB 접근 실패: %s", type(exc).__name__)
         raise ServiceUnavailableError() from exc
 
@@ -290,9 +316,7 @@ async def insert_staff_profile(
     return await _run_authed(sub, _op)
 
 
-async def update_employment_status(
-    sub: UUID, *, user_id: UUID, status: str
-) -> asyncpg.Record:
+async def update_employment_status(sub: UUID, *, user_id: UUID, status: str) -> asyncpg.Record:
     """`users.employment_status` 를 갱신한다 — 권한 재평가 + 자가-락아웃 가드 + 자동 감사.
 
     DB 헬퍼(`has_permission`/`auth_user_role`)가 active 만 권한·역할을 인정하므로 이 UPDATE 한 번이
@@ -602,9 +626,7 @@ async def set_department_active(
     return await _run_authed(sub, _op)
 
 
-async def _assert_department_assignable(
-    conn: asyncpg.Connection, department_id: UUID
-) -> None:
+async def _assert_department_assignable(conn: asyncpg.Connection, department_id: UUID) -> None:
     """신규 배정 대상 진료과가 존재 + 활성인지 동일 트랜잭션에서 검증(Story 2.4 / AC3 참조 무결성).
 
     미존재 → 422 invalid_department(FK 백스톱과 동일 코드). 비활성 → 422 inactive_department
@@ -832,9 +854,7 @@ async def update_diagnosis(
     return await _run_authed(sub, _op)
 
 
-async def set_diagnosis_active(
-    sub: UUID, diagnosis_id: UUID, *, is_active: bool
-) -> asyncpg.Record:
+async def set_diagnosis_active(sub: UUID, diagnosis_id: UUID, *, is_active: bool) -> asyncpg.Record:
     """KCD 진단 활성/비활성(soft delete) 토글. 미존재 → 404."""
 
     async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
@@ -1183,10 +1203,7 @@ async def fetch_patients(
             offset,
         )
         total = int(
-            await conn.fetchval(
-                f"select count(*) from public.patients where {where}", *params
-            )
-            or 0
+            await conn.fetchval(f"select count(*) from public.patients where {where}", *params) or 0
         )
         return rows, total
 
@@ -1307,8 +1324,7 @@ async def link_self_patient(
         if row is None:
             # 0행 = 동시 연결 레이스. 누가 선점했는지 재조회(같은 계정 더블서밋=멱등 vs 타 계정).
             winner = await conn.fetchrow(
-                f"select auth_uid, {_SELF_SUMMARY_COLUMNS} "
-                f"from public.patients where id = $1",
+                f"select auth_uid, {_SELF_SUMMARY_COLUMNS} from public.patients where id = $1",
                 target["id"],
             )
             if winner is not None and winner["auth_uid"] == sub:
@@ -1433,6 +1449,133 @@ async def delete_guardian(sub: UUID, patient_id: UUID, guardian_id: UUID) -> UUI
             "delete from public.guardians where id = $1 and patient_id = $2 returning id",
             guardian_id,
             patient_id,
+        )
+
+    return await _run_authed(sub, _op)
+
+
+# ── 내원(encounters) — walk-in 접수 생성 + 전이 RPC 소비(Story 4.2). 상태머신·감사는 DB(0010). ──
+# 쓰기 권위 = FastAPI(service_role). walk-in 은 register_encounter RPC 미경유 직접 INSERT(초기상태
+# 가드가 registered 허용) — registered_at·created_by 를 INSERT 시 충전(4.1 handoff: RPC 미경유라
+# 그대로면 NULL). 예약(reserved) 접수는 register_encounter RPC(scheduled→registered). 전이 트리거·
+# 감사 트리거(0010)가 상태머신·append-only 감사를 강제하므로 앱은 오케스트레이션만(재구현 금지).
+# encounters 는 비-PII(patient_id=FK·encounter_no=사람용 번호) → 컬럼 투영 자유(마스킹 불요).
+_ENCOUNTER_COLUMNS = (
+    "id, encounter_no, patient_id, department_id, room_id, doctor_id, "
+    "visit_type, status, cancel_reason, registered_at, consult_started_at, "
+    "completed_at, cancelled_at, no_show_at, created_by, is_active, created_at, updated_at"
+)
+
+
+async def _require_encounter_register(conn: asyncpg.Connection) -> None:
+    """쓰기 직전 동일 트랜잭션에서 encounter.register 재평가(평가↔쓰기 TOCTOU 차단). 미보유 → 403.
+
+    라우터 require_permission 게이트는 방어심층 — 진짜 권위는 이 동일 트랜잭션 재평가(권한 변경과
+    쓰기 사이 레이스 차단, insert_patient 선례). 예약 접수(register_encounter RPC)는 RPC 내부
+    has_permission 이 동일 역할을 하므로 본 헬퍼는 walk-in 직접 INSERT 전용.
+    """
+    if not bool(await conn.fetchval("select public.has_permission('encounter.register')")):
+        raise ForbiddenError(detail={"required_permission": "encounter.register"})
+
+
+async def insert_walk_in_encounter(
+    sub: UUID,
+    *,
+    patient_id: UUID,
+    department_id: UUID,
+    created_by: UUID,
+    room_id: UUID | None = None,
+) -> asyncpg.Record:
+    """walk-in 내원 INSERT(status='registered'·visit_type='walk_in', 자동 감사·대기열 진입).
+
+    INSERT 자체가 대기열 등록(department_id + status='registered' 행 = 그 진료과 대기열, 4.3 소비).
+    registered_at=now()·created_by 충전(4.1 handoff). 환자·진료과는 존재+활성을 동일 트랜잭션에서
+    선검사(FK 위반 전에 명시 오류) — 미존재 404, 비활성(soft-deleted/폐과) 422. 권한은 INSERT 직전
+    재평가(TOCTOU). 비정상 초기상태 등은 0010 전이 트리거가 PT409(→409) 최종 차단(방어심층).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_encounter_register(conn)
+        # 환자 존재+활성(비활성=soft-deleted 환자 접수 차단). is_active 이월의 생성 경로분 청산.
+        patient_active = await conn.fetchval(
+            "select is_active from public.patients where id = $1", patient_id
+        )
+        if patient_active is None:
+            raise NotFoundError("환자를 찾을 수 없습니다.", detail={"patient_id": str(patient_id)})
+        if not patient_active:
+            raise AppError(
+                "비활성 환자는 접수할 수 없습니다.",
+                code="patient_inactive",
+                status_code=422,
+                detail={"patient_id": str(patient_id)},
+            )
+        # 진료과 존재+활성(폐과 대기열 진입 차단).
+        dept_active = await conn.fetchval(
+            "select is_active from public.departments where id = $1", department_id
+        )
+        if dept_active is None:
+            raise NotFoundError(
+                "진료과를 찾을 수 없습니다.", detail={"department_id": str(department_id)}
+            )
+        if not dept_active:
+            raise AppError(
+                "비활성 진료과로는 접수할 수 없습니다.",
+                code="department_inactive",
+                status_code=422,
+                detail={"department_id": str(department_id)},
+            )
+        try:
+            row = await conn.fetchrow(
+                f"insert into public.encounters "
+                f"(patient_id, department_id, room_id, visit_type, status, "
+                f"registered_at, created_by) "
+                f"values ($1, $2, $3, 'walk_in', 'registered', now(), $4) "
+                f"returning {_ENCOUNTER_COLUMNS}",
+                patient_id,
+                department_id,
+                room_id,
+                created_by,
+            )
+        except asyncpg.ForeignKeyViolationError as exc:
+            # 명시 백스톱(insert_room 패턴) — room_id 미선검사(미배정 허용·4.4 배정): 미존재 진료실
+            # 지정 시 FK 위반(23503). patient/dept 는 선검사하나 동시 삭제 레이스 시 여기로.
+            # 23503 은 _map_pg_sqlstate 미매핑 → 백스톱 없으면 503 오분류(입력 오류는 422).
+            raise AppError(
+                "참조 대상이 올바르지 않습니다(진료실 등).",
+                code="invalid_reference",
+                status_code=422,
+            ) from exc
+        assert row is not None  # RETURNING 은 항상 1행
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def call_register_encounter(sub: UUID, encounter_id: UUID) -> asyncpg.Record:
+    """register_encounter RPC 호출(scheduled→registered, 예약 환자 도착 접수).
+
+    RPC 내부 has_permission(42501)·소스상태/종결 재전이(PT409)·not-found(PT404)를 raise →
+    _run_authed 의 _map_pg_sqlstate 가 Forbidden/Conflict/NotFound 로 변환(여기 try/except 불요).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        row = await conn.fetchrow("select * from public.register_encounter($1)", encounter_id)
+        assert row is not None  # RPC 성공 시 returns encounters → 항상 1행
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_encounter(sub: UUID, encounter_id: UUID) -> asyncpg.Record | None:
+    """내원 단건 조회(접수 결과·상세 확인). 0행 → None(서비스가 404). 목록·대기 현황판은 4.3.
+
+    service_role 경로라 RLS 우회 — 조회 권위는 라우터 require_permission('encounter.read')
+    (읽기 TOCTOU 저위험 → 재평가 불요, fetch_patient 동형). RLS 는 web 직접조회 방어심층(0010).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record | None:
+        return await conn.fetchrow(
+            f"select {_ENCOUNTER_COLUMNS} from public.encounters where id = $1", encounter_id
         )
 
     return await _run_authed(sub, _op)

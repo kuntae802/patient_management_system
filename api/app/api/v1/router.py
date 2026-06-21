@@ -6,7 +6,7 @@ masters · admin · dashboard)는 후속 스토리가 등록한다.
 
 from fastapi import APIRouter
 
-from app.api.v1 import admin, auth, masters, patients
+from app.api.v1 import admin, auth, encounters, masters, patients
 
 api_router = APIRouter()
 
@@ -22,6 +22,5 @@ api_router.include_router(masters.router)
 # 환자 등록·조회(Story 3.1). 외부 경로: /patient_management_system/api/v1/patients/*
 api_router.include_router(patients.router)
 
-# 후속 스토리에서 include 예:
-#   from app.api.v1 import encounters
-#   api_router.include_router(encounters.router)
+# 내원 접수·조회(Story 4.2). 외부 경로: /patient_management_system/api/v1/encounters/*
+api_router.include_router(encounters.router)
