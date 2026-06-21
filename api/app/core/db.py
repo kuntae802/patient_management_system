@@ -1742,3 +1742,133 @@ async def call_start_consult(sub: UUID, encounter_id: UUID) -> asyncpg.Record:
         return row
 
     return await _run_authed(sub, _op)
+
+
+# ── SOAP 진료기록(medical_records, Story 4.6) — 0013 테이블 직접 INSERT/UPDATE/SELECT ──
+# 쓰기는 service_role 직접 쓰기(전이 RPC 아님 — SOAP 는 상태머신/불변식 없는 자유텍스트). 권한은
+# INSERT/UPDATE 직전 동일 트랜잭션 재평가(TOCTOU, insert_walk_in_encounter 선례). 감사=0013 트리거.
+_MEDICAL_RECORD_COLUMNS = (
+    "id, encounter_id, author_id, subjective, objective, assessment, plan, "
+    "is_active, created_at, updated_at"
+)
+
+
+async def _require_medical_record_write(conn: asyncpg.Connection) -> None:
+    """쓰기 직전 동일 트랜잭션에서 medical_record.write 재평가(평가↔쓰기 TOCTOU 차단). 미보유 → 403.
+
+    라우터 require_permission 게이트는 방어심층 — 진짜 권위는 이 동일 트랜잭션 재평가
+    (_require_encounter_register 선례).
+    """
+    if not bool(await conn.fetchval("select public.has_permission('medical_record.write')")):
+        raise ForbiddenError(detail={"required_permission": "medical_record.write"})
+
+
+async def insert_medical_record(
+    sub: UUID,
+    *,
+    encounter_id: UUID,
+    author_id: UUID,
+    subjective: str | None,
+    objective: str | None,
+    assessment: str | None,
+    plan: str | None,
+) -> asyncpg.Record:
+    """SOAP 진료기록 INSERT(한 내원 1:N, 자동 감사). author_id=작성 의사(jwt sub).
+
+    내원 존재를 동일 트랜잭션에서 선검사(미존재 404 — FK 위반 전 명시 오류). status 하드 게이트는
+    두지 않는다(§결정 4 — 작성 윈도우 잠금은 deferred; 웹이 in_progress 에서만 노출). 권한은 INSERT
+    직전 재평가(TOCTOU). 동시 삭제 레이스 등 FK 위반(23503)은 422 백스톱(insert_walk_in 선례).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_medical_record_write(conn)
+        exists = await conn.fetchval(
+            "select true from public.encounters where id = $1", encounter_id
+        )
+        if exists is None:
+            raise NotFoundError(
+                "내원을 찾을 수 없습니다.", detail={"encounter_id": str(encounter_id)}
+            )
+        try:
+            row = await conn.fetchrow(
+                f"insert into public.medical_records "
+                f"(encounter_id, author_id, subjective, objective, assessment, plan) "
+                f"values ($1, $2, $3, $4, $5, $6) "
+                f"returning {_MEDICAL_RECORD_COLUMNS}",
+                encounter_id,
+                author_id,
+                subjective,
+                objective,
+                assessment,
+                plan,
+            )
+        except asyncpg.ForeignKeyViolationError as exc:
+            # 선검사 후 동시 삭제 레이스 등 23503 → 입력 오류 422(미매핑 시 503 오분류).
+            raise AppError(
+                "참조 대상이 올바르지 않습니다(내원 등).",
+                code="invalid_reference",
+                status_code=422,
+            ) from exc
+        assert row is not None  # RETURNING 은 항상 1행
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def update_medical_record(
+    sub: UUID,
+    *,
+    encounter_id: UUID,
+    record_id: UUID,
+    subjective: str | None,
+    objective: str | None,
+    assessment: str | None,
+    plan: str | None,
+) -> asyncpg.Record:
+    """SOAP 진료기록 UPDATE(autosave 전체 교체 — 4 파트 전부 세팅, clinical-profile PUT 선례).
+
+    `where id=record_id and encounter_id=encounter_id`(경로 일관·교차 내원 갱신 차단). 미존재/불일치
+    → 404. author 강제는 미적용(같은 내원 권한 보유 의사면 갱신 허용 — 작성자 스코프는 웹 UX 가 활성
+    기록 선택으로 보장; 서버 author 강제는 over-restrictive). updated_at=감사 'update' 행.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_medical_record_write(conn)
+        row = await conn.fetchrow(
+            f"update public.medical_records "
+            f"set subjective = $1, objective = $2, assessment = $3, plan = $4, updated_at = now() "
+            f"where id = $5 and encounter_id = $6 "
+            f"returning {_MEDICAL_RECORD_COLUMNS}",
+            subjective,
+            objective,
+            assessment,
+            plan,
+            record_id,
+            encounter_id,
+        )
+        if row is None:
+            raise NotFoundError(
+                "진료기록을 찾을 수 없습니다.", detail={"record_id": str(record_id)}
+            )
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_medical_records(sub: UUID, encounter_id: UUID) -> list[asyncpg.Record]:
+    """한 내원의 SOAP 진료기록 목록(최근순·활성만, 안전 상한 200).
+
+    service_role 경로라 RLS 우회 — 조회 권위는 라우터 require_permission('medical_record.read')
+    (읽기 TOCTOU 저위험 → 재평가 불요, fetch_encounter 동형). 한 내원 기록 수가 적어 페이지네이션 X.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+        return await conn.fetch(
+            f"select {_MEDICAL_RECORD_COLUMNS} from public.medical_records "
+            f"where encounter_id = $1 and is_active = true "
+            f"order by created_at desc, id desc "  # id 타이브레이커(동일 타임스탬프 결정적 정렬)
+            f"limit 200",
+            encounter_id,
+        )
+
+    return await _run_authed(sub, _op)

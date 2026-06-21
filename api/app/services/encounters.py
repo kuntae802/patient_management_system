@@ -23,6 +23,8 @@ from app.schemas.encounters import (
     EncounterPage,
     EncounterPageMeta,
     EncounterResponse,
+    MedicalRecordResponse,
+    MedicalRecordWrite,
 )
 
 # 대기 현황판 "오늘" 기준 = 병원 운영 시간대(KST). timestamptz 는 UTC 저장 → KST 날짜로 환산해 조회.
@@ -105,3 +107,50 @@ async def start_consult(sub: UUID, encounter_id: UUID) -> EncounterResponse:
     (전부 RPC SQLSTATE → core/db 매핑). consult_started_at·doctor_id 세팅 반영 행 반환."""
     row = await db.call_start_consult(sub, encounter_id)
     return _to_encounter(row)
+
+
+# ── SOAP 진료기록(medical_records, Story 4.6) ─────────────────────────────────
+def _to_medical_record(row: asyncpg.Record) -> MedicalRecordResponse:
+    return MedicalRecordResponse.model_validate(dict(row))
+
+
+async def create_medical_record(
+    sub: UUID, encounter_id: UUID, payload: MedicalRecordWrite
+) -> MedicalRecordResponse:
+    """SOAP 진료기록 생성(autosave 첫 저장). author_id=작성 의사(sub).
+
+    미존재 내원 → 404, FK 위반 → 422, 권한 미보유 → 403(db 가 동일 트랜잭션 검증)."""
+    row = await db.insert_medical_record(
+        sub,
+        encounter_id=encounter_id,
+        author_id=sub,
+        subjective=payload.subjective,
+        objective=payload.objective,
+        assessment=payload.assessment,
+        plan=payload.plan,
+    )
+    return _to_medical_record(row)
+
+
+async def update_medical_record(
+    sub: UUID, encounter_id: UUID, record_id: UUID, payload: MedicalRecordWrite
+) -> MedicalRecordResponse:
+    """SOAP 진료기록 갱신(autosave 전체 교체). 미존재 기록 → 404, 권한 미보유 → 403."""
+    row = await db.update_medical_record(
+        sub,
+        encounter_id=encounter_id,
+        record_id=record_id,
+        subjective=payload.subjective,
+        objective=payload.objective,
+        assessment=payload.assessment,
+        plan=payload.plan,
+    )
+    return _to_medical_record(row)
+
+
+async def list_medical_records(
+    sub: UUID, encounter_id: UUID
+) -> list[MedicalRecordResponse]:
+    """한 내원의 SOAP 진료기록 목록(최근순·1:N). 게이트=라우터(medical_record.read)."""
+    rows = await db.fetch_medical_records(sub, encounter_id)
+    return [_to_medical_record(r) for r in rows]

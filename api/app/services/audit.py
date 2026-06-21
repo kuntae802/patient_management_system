@@ -22,10 +22,12 @@ from app.schemas.audit import AuditLogEntry, AuditLogPage, AuditPageMeta
 # 값을 마스킹해 API 본문·구조적 로그로 평문 PII 가 새지 않게 한다(1차 권위; 웹 렌더 마스킹 1.10 은
 # 방어심층). 필드명 기반(table-agnostic)·중첩 재귀 — 웹 `SENSITIVE_KEY`/`maskDeep` 의 거울.
 # ⚠️ 이 키 집합은 web `audit.ts SENSITIVE_KEY` 와 **동일 유지**(한쪽만 바꾸면 드리프트).
-# 항상-민감 키(table-agnostic) — 연락처·건강민감·암호/비밀. 어느 테이블에 와도 마스킹.
+# 항상-민감 키(table-agnostic) — 연락처·건강민감(프로필·SOAP)·암호/비밀. 어느 테이블이든 마스킹.
+# SOAP(subjective/objective/assessment/plan) = medical_records 자유텍스트(Story 4.6).
 _SENSITIVE_KEY = re.compile(
     r"(resident_no|rrn|ssn|password|passwd|secret|token|email|phone|address|guardian"
     r"|allergies|chronic_diseases|medications|notes|insurance_no"
+    r"|subjective|objective|assessment|plan"
     r"|_enc$|_hash$|_blind_index$|ciphertext)",
     re.IGNORECASE,
 )

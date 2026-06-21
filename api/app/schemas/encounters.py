@@ -12,9 +12,12 @@ visit_type·전이 타임스탬프는 **DB·서버 소유**(클라 입력 금지
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+
+_Stripped = Annotated[str, StringConstraints(strip_whitespace=True)]
 
 
 class EncounterCreate(BaseModel):
@@ -98,3 +101,43 @@ class EncounterPage(BaseModel):
 
     data: list[EncounterListItem]
     meta: EncounterPageMeta
+
+
+class MedicalRecordWrite(BaseModel):
+    """SOAP 진료기록 작성·갱신 요청(Story 4.6, FR-040). POST·PUT 공용 — 4 파트 전체 페이로드.
+
+    S/O/A/P 전부 옵셔널(일부만 채운 기록 허용). 임상 자유텍스트는 암호화 대상 아님(평문 저장)이나,
+    감사 스냅샷에선 마스킹된다(services/audit.py `_SENSITIVE_KEY` — 0013 트리거 유입분). web soap
+    입력 거울. max_length 는 DoS 상한(임상기록 장문 허용).
+    """
+
+    subjective: _Stripped | None = Field(default=None, max_length=20000)
+    objective: _Stripped | None = Field(default=None, max_length=20000)
+    assessment: _Stripped | None = Field(default=None, max_length=20000)
+    plan: _Stripped | None = Field(default=None, max_length=20000)
+
+    @field_validator("subjective", "objective", "assessment", "plan", mode="after")
+    @classmethod
+    def _empty_to_none(cls, v: str | None) -> str | None:
+        """빈 옵셔널을 None 으로 정규화(직접 API 호출의 "" 적재 방지, NULL=값없음 일관)."""
+        return v or None
+
+
+class MedicalRecordResponse(BaseModel):
+    """SOAP 진료기록 응답(0013 medical_records 전 컬럼). snake_case 유지 — camelCase 변환 금지.
+
+    임상 텍스트는 reveal 대상이 아니라 권한 게이트(medical_record.read)로 보호된다(비-마스킹 응답).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    encounter_id: UUID
+    author_id: UUID
+    subjective: str | None = None
+    objective: str | None = None
+    assessment: str | None = None
+    plan: str | None = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime

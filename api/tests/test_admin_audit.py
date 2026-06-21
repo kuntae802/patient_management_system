@@ -197,6 +197,33 @@ def test_mask_snapshot_masks_sensitive_preserves_others() -> None:
     assert out["is_active"] is True
 
 
+def test_mask_snapshot_masks_soap_clinical_text() -> None:
+    """medical_records 감사 스냅샷: SOAP 자유텍스트(S/O/A/P) 마스킹, 비민감 식별자 보존(4.6).
+
+    0013 트리거가 SOAP 평문을 audit_logs 에 유입 → 읽기시점 마스킹이 4 컬럼을 가린다. 웹 거울
+    (audit.ts SENSITIVE_KEY)도 동일 4종 마스킹(드리프트 가드 — 양쪽 test 단언)."""
+    snap = {
+        "id": "r1",
+        "encounter_id": "e1",
+        "author_id": "d1",
+        "subjective": "두통 3일",
+        "objective": "BP 140/90",
+        "assessment": "고혈압 의증",
+        "plan": "암로디핀 5mg",
+        "is_active": True,
+        "created_at": "2026-06-21T00:00:00Z",
+    }
+    out = mask_snapshot(snap, "medical_records")
+    assert out is not None
+    for key in ("subjective", "objective", "assessment", "plan"):
+        assert out[key] == _MASK, f"{key} 미마스킹(SOAP 평문 누출)"
+    # 비민감 식별자/플래그는 보존(diff 가독성).
+    assert out["encounter_id"] == "e1"
+    assert out["author_id"] == "d1"
+    assert out["is_active"] is True
+    assert out["created_at"] == "2026-06-21T00:00:00Z"
+
+
 def test_mask_snapshot_name_is_table_aware() -> None:
     """`name` 은 환자/보호자만 PII — masters(진료과명)·roles 라벨은 보존(감사 가독성)."""
     # 환자/보호자: name 마스킹.

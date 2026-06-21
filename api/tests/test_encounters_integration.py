@@ -562,3 +562,179 @@ def test_start_consult_forbidden_without_start_permission(
     eid = _create_walk_in(client, admin_token, pid, dept_id)
     res = client.post(f"{_ENCOUNTERS_URL}/{eid}/start-consult", headers=_bearer(nurse_token))
     assert res.status_code == 403, res.text
+
+
+# ── Story 4.6: SOAP 진료기록 POST/PUT/GET /encounters/{id}/medical-records ──────────────
+# 서버는 SOAP 쓰기에 status 게이트 없음(§결정 4) → registered walk-in 내원에 바로 작성 가능.
+# 쓰기=medical_record.write(doctor/admin 보유, nurse 미보유)·조회=medical_record.read(동일).
+
+
+def _records_url(eid: str) -> str:
+    return f"{_ENCOUNTERS_URL}/{eid}/medical-records"
+
+
+def test_create_medical_record_doctor_golden_path(
+    client, admin_token, doctor_token, doctor_id, dept_id
+):
+    """doctor(seed medical_record.write 보유, 4.6) → 201 + author_id=doctor uid + SOAP 필드 반영."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.post(
+        _records_url(eid),
+        json={"subjective": "두통 3일", "objective": "BP 140/90"},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["encounter_id"] == eid
+    assert body["author_id"] == doctor_id  # 작성자 = 호출 의사
+    assert body["subjective"] == "두통 3일"
+    assert body["objective"] == "BP 140/90"
+    assert body["assessment"] is None and body["plan"] is None  # 미전송 파트 = None
+    assert body["is_active"] is True
+
+
+def test_create_medical_record_forbidden_without_write(
+    client, admin_token, nurse_token, dept_id
+):
+    """medical_record.write 미보유(nurse baseline) → SOAP 작성 403(게이트가 본문 처리 전 차단)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.post(
+        _records_url(eid), json={"subjective": "x"}, headers=_bearer(nurse_token)
+    )
+    assert res.status_code == 403, res.text
+
+
+def test_create_medical_record_nonexistent_encounter_404(client, doctor_token):
+    """미존재 내원에 SOAP 작성 → 404(FK 위반 전 명시 선검사 — 422 아님)."""
+    res = client.post(
+        _records_url(str(uuid.uuid4())),
+        json={"subjective": "x"},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 404, res.text
+
+
+def test_create_medical_record_empty_string_normalized_to_none(
+    client, admin_token, doctor_token, dept_id
+):
+    """빈 문자열 SOAP 파트 → None 정규화(직접 API 호출의 "" 적재 방지)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.post(
+        _records_url(eid),
+        json={"subjective": "두통", "objective": "   ", "assessment": ""},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["subjective"] == "두통"
+    assert body["objective"] is None  # 공백만 → strip → "" → None
+    assert body["assessment"] is None
+
+
+def test_create_medical_record_audited(client, admin_token, doctor_token, dept_id, psql):
+    """SOAP 작성 → audit_logs 에 action='create'·target_table='medical_records' 행(0013 트리거)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.post(
+        _records_url(eid), json={"subjective": "감사 테스트"}, headers=_bearer(doctor_token)
+    )
+    assert res.status_code == 201, res.text
+    rid = res.json()["id"]
+    count = psql.scalar(
+        "select count(*) from public.audit_logs "
+        f"where target_table='medical_records' and target_id='{rid}' and action='create';"
+    )
+    assert count == "1", f"감사 create 행 기대=1, 실제={count}"
+
+
+def test_update_medical_record_full_replace(
+    client, admin_token, doctor_token, dept_id
+):
+    """PUT 전체 교체(autosave) — 미전송 파트는 None 으로 덮임(부분 PATCH 아님)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    created = client.post(
+        _records_url(eid),
+        json={"subjective": "초안", "objective": "초기소견"},
+        headers=_bearer(doctor_token),
+    )
+    assert created.status_code == 201, created.text
+    rid = created.json()["id"]
+    # 갱신: assessment 만 전송 → subjective/objective 는 None 으로 교체(전체 교체 의미).
+    updated = client.put(
+        f"{_records_url(eid)}/{rid}",
+        json={"assessment": "고혈압 의증"},
+        headers=_bearer(doctor_token),
+    )
+    assert updated.status_code == 200, updated.text
+    body = updated.json()
+    assert body["id"] == rid
+    assert body["assessment"] == "고혈압 의증"
+    assert body["subjective"] is None and body["objective"] is None
+
+
+def test_update_medical_record_forbidden_without_write(
+    client, admin_token, doctor_token, nurse_token, dept_id
+):
+    """medical_record.write 미보유(nurse) → SOAP 갱신 403."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    created = client.post(
+        _records_url(eid), json={"subjective": "x"}, headers=_bearer(doctor_token)
+    )
+    rid = created.json()["id"]
+    res = client.put(
+        f"{_records_url(eid)}/{rid}", json={"plan": "y"}, headers=_bearer(nurse_token)
+    )
+    assert res.status_code == 403, res.text
+
+
+def test_update_medical_record_nonexistent_404(client, admin_token, doctor_token, dept_id):
+    """미존재 기록 PUT → 404."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.put(
+        f"{_records_url(eid)}/{uuid.uuid4()}",
+        json={"plan": "y"},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 404, res.text
+
+
+def test_list_medical_records_one_to_many(
+    client, admin_token, doctor_token, doctor_id, dept_id
+):
+    """한 내원에 SOAP 2건(1:N, FR-041) → GET 길이 2·최근순·각 author_id=doctor·활성."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    first = client.post(
+        _records_url(eid), json={"subjective": "기록1"}, headers=_bearer(doctor_token)
+    )
+    second = client.post(
+        _records_url(eid), json={"assessment": "기록2"}, headers=_bearer(doctor_token)
+    )
+    assert first.status_code == 201 and second.status_code == 201
+    res = client.get(_records_url(eid), headers=_bearer(doctor_token))
+    assert res.status_code == 200, res.text
+    rows = res.json()
+    assert len(rows) == 2
+    # 최근순(created_at desc) → 두 번째 작성이 먼저.
+    assert rows[0]["id"] == second.json()["id"]
+    assert rows[1]["id"] == first.json()["id"]
+    for r in rows:
+        assert r["author_id"] == doctor_id
+        assert r["is_active"] is True
+
+
+def test_list_medical_records_forbidden_without_read(
+    client, admin_token, doctor_token, nurse_token, dept_id
+):
+    """medical_record.read 미보유(nurse) → SOAP 목록 403(★ encounter.read 아닌 별도 게이트)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    client.post(_records_url(eid), json={"subjective": "x"}, headers=_bearer(doctor_token))
+    res = client.get(_records_url(eid), headers=_bearer(nurse_token))
+    assert res.status_code == 403, res.text
