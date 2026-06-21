@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Query, status
 
 from app.core.security import CurrentUser, require_permission
 from app.schemas.patients import (
+    PatientClinicalProfileUpdate,
     PatientCreate,
     PatientPage,
     PatientPageMeta,
@@ -27,6 +28,7 @@ router = APIRouter(prefix="/patients", tags=["patients"])
 # 권한 의존성은 모듈 로드 시 1회 생성(요청마다 팩토리 호출 회피).
 require_patient_create = require_permission("patient.create")
 require_patient_read = require_permission("patient.read")
+require_patient_update = require_permission("patient.update")
 
 
 @router.post("", response_model=PatientResponse, status_code=status.HTTP_201_CREATED)
@@ -58,5 +60,18 @@ async def get_patient(
     patient_id: UUID,
     user: CurrentUser = Depends(require_patient_read),
 ) -> PatientResponse:
-    """환자 상세(마스킹). 미존재 → 404."""
+    """환자 상세(마스킹 + 임상 프로필). 미존재 → 404."""
     return await patients_service.get_patient(user.sub, patient_id)
+
+
+@router.put("/{patient_id}/clinical-profile", response_model=PatientResponse)
+async def update_clinical_profile(
+    patient_id: UUID,
+    payload: PatientClinicalProfileUpdate,
+    user: CurrentUser = Depends(require_patient_update),
+) -> PatientResponse:
+    """임상 프로필 갱신(혈액형·알레르기·기저질환·복용약·특이사항, FR-004).
+
+    sub-resource action(상태 PATCH 아님) — 5필드 전체 교체(PUT). 게이트 patient.update → 403,
+    실제 쓰기는 동일 트랜잭션 권한 재평가(TOCTOU). 미존재 → 404. 갱신=0009 감사 트리거 기록."""
+    return await patients_service.update_clinical_profile(user.sub, patient_id, payload)

@@ -1031,10 +1031,11 @@ async def set_drug_active(sub: UUID, drug_id: UUID, *, is_active: bool) -> async
 # RLS 행 + 컬럼 GRANT(0009)에 더한 응답 투영 방어심층). 0009 감사 트리거가 변경을 자동 기록.
 # 컬럼 리스트는 고정 리터럴(사용자 입력 아님), 값만 $n 바인딩.
 
-# 응답·RETURNING 투영(절대 resident_no_enc/_hash 미포함 — PII 경계).
+# 응답·RETURNING 투영(절대 resident_no_enc/_hash 미포함 — PII 경계). 임상 5필드 포함(Story 3.2).
 _PATIENT_COLUMNS = (
     "id, chart_no, name, birth_date, sex, resident_no_masked, "
     "phone, address, email, insurance_type, insurance_no, "
+    "blood_type, allergies, chronic_diseases, medications, notes, "
     "is_active, created_at, updated_at"
 )
 _PATIENT_LIST_COLUMNS = (
@@ -1046,6 +1047,12 @@ async def _require_patient_create(conn: asyncpg.Connection) -> None:
     """쓰기 직전 동일 트랜잭션에서 patient.create 재평가(평가↔쓰기 TOCTOU 차단). 미보유 → 403."""
     if not bool(await conn.fetchval("select public.has_permission('patient.create')")):
         raise ForbiddenError(detail={"required_permission": "patient.create"})
+
+
+async def _require_patient_update(conn: asyncpg.Connection) -> None:
+    """쓰기 직전 동일 트랜잭션에서 patient.update 재평가(평가↔쓰기 TOCTOU 차단). 미보유 → 403."""
+    if not bool(await conn.fetchval("select public.has_permission('patient.update')")):
+        raise ForbiddenError(detail={"required_permission": "patient.update"})
 
 
 async def insert_patient(
@@ -1136,11 +1143,47 @@ async def fetch_patients(
 
 
 async def fetch_patient(sub: UUID, patient_id: UUID) -> asyncpg.Record | None:
-    """환자 상세(마스킹 컬럼만). 미존재 → None(서비스가 404 매핑)."""
+    """환자 상세(마스킹 + 임상 프로필 컬럼). 미존재 → None(서비스가 404 매핑)."""
 
     async def _op(conn: asyncpg.Connection) -> asyncpg.Record | None:
         return await conn.fetchrow(
             f"select {_PATIENT_COLUMNS} from public.patients where id = $1", patient_id
+        )
+
+    return await _run_authed(sub, _op)
+
+
+async def update_patient_clinical_profile(
+    sub: UUID,
+    patient_id: UUID,
+    *,
+    blood_type: str | None,
+    allergies: str | None,
+    chronic_diseases: str | None,
+    medications: str | None,
+    notes: str | None,
+) -> asyncpg.Record | None:
+    """임상 프로필 갱신(Story 3.2, FR-004). 5필드 전체 교체(PUT 의미) + updated_at 명시 갱신.
+
+    쓰기 권위 = service_role(authenticated 는 patients UPDATE 권한 없음, 0009). 게이트(라우터
+    require_permission)는 방어심층, **진짜 권위는 _op 안 _require_patient_update 동일 트랜잭션
+    재평가(TOCTOU 차단, insert_patient 동형)**. 미존재 → None(서비스가 404). 갱신은 0009 감사
+    트리거가 자동 기록(actor=GUC sub). 임상필드는 암호화 대상 아님(평문 저장).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record | None:
+        await _require_patient_update(conn)
+        return await conn.fetchrow(
+            f"update public.patients set "
+            f"blood_type = $2, allergies = $3, chronic_diseases = $4, "
+            f"medications = $5, notes = $6, updated_at = now() "
+            f"where id = $1 returning {_PATIENT_COLUMNS}",
+            patient_id,
+            blood_type,
+            allergies,
+            chronic_diseases,
+            medications,
+            notes,
         )
 
     return await _run_authed(sub, _op)

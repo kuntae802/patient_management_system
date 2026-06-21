@@ -21,6 +21,10 @@ _Stripped = Annotated[str, StringConstraints(strip_whitespace=True)]
 # 보험유형 — DB CHECK(0009)와 동일 집합. 한국어 표시는 UI 라벨(web).
 InsuranceType = Literal["health_insurance", "medical_aid", "auto_insurance", "self_pay"]
 
+# 혈액형(ABO+Rh) — 폐쇄 어휘. DB 컬럼은 의도적 text(0009) → **앱 계층(Pydantic Literal + web Zod)이
+# 강제**(검증 서버 tier 권위, DB CHECK 미도입=마이그레이션 회피). 미상=None/생략.
+BloodType = Literal["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"]
+
 # 이메일 형식(dep-free — EmailStr 미도입). web Zod refine 의 거울(빈 값=옵셔널 허용).
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -58,8 +62,32 @@ class PatientCreate(BaseModel):
         return v
 
 
+class PatientClinicalProfileUpdate(BaseModel):
+    """임상 프로필 갱신 요청(Story 3.2, FR-004). 5필드 옵셔널 — PUT 전체 교체(미전송=None=값없음).
+
+    `blood_type` 은 폐쇄어휘(BloodType Literal) — 비정상 값은 422. 자유텍스트 4종은 max_length
+    가드만. 임상필드는 암호화 대상 아님(평문 저장·반환). web Zod `clinicalProfileSchema` 의 거울.
+    """
+
+    blood_type: BloodType | None = None
+    allergies: _Stripped | None = Field(default=None, max_length=1000)
+    chronic_diseases: _Stripped | None = Field(default=None, max_length=1000)
+    medications: _Stripped | None = Field(default=None, max_length=1000)
+    notes: _Stripped | None = Field(default=None, max_length=2000)
+
+    @field_validator("allergies", "chronic_diseases", "medications", "notes", mode="after")
+    @classmethod
+    def _empty_to_none(cls, v: str | None) -> str | None:
+        """빈 옵셔널을 None 으로 정규화(직접 API 호출의 "" 저장 방지, NULL=값없음 일관)."""
+        return v or None
+
+
 class PatientResponse(BaseModel):
-    """환자 응답 — 마스킹된 주민번호만(raw·암호문·blind index 미포함, PII 경계)."""
+    """환자 응답(상세) — 마스킹 주민번호 + 임상 프로필(raw·암호문·blind index 미포함, PII 경계).
+
+    임상 5필드(`blood_type`·`allergies`·`chronic_diseases`·`medications`·`notes`)는 Story 3.2 에서
+    노출 — 컬럼은 0009 에 존재(전부 nullable). 생성 직후엔 NULL(등록은 임상필드를 받지 않음).
+    """
 
     id: UUID
     chart_no: str
@@ -72,6 +100,12 @@ class PatientResponse(BaseModel):
     email: str | None = None
     insurance_type: str
     insurance_no: str | None = None
+    # 임상 프로필(Story 3.2) — 자유텍스트 4종 + 폐쇄어휘 blood_type. 전부 nullable.
+    blood_type: str | None = None
+    allergies: str | None = None
+    chronic_diseases: str | None = None
+    medications: str | None = None
+    notes: str | None = None
     is_active: bool
     created_at: datetime
     updated_at: datetime

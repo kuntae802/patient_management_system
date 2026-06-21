@@ -324,3 +324,116 @@ def test_rls_authenticated_cannot_select_ciphertext_columns(client, admin_token,
             "rollback;"
         )
         assert "permission denied" in err.lower(), f"{col} 컬럼 접근이 차단되지 않음: {err}"
+
+
+# ── Story 3.2: 임상 프로필 입력·조회·권한·감사 (AC1·2·3) ────────────────────────
+
+_CLINICAL_PAYLOAD = {
+    "blood_type": "A+",
+    "allergies": "페니실린, 아스피린",
+    "chronic_diseases": "고혈압",
+    "medications": "와파린 5mg",
+    "notes": "고령 환자, 보호자 동반",
+}
+
+
+def _create_patient(client, token: str) -> str:
+    res = client.post(_PATIENTS_URL, json=_create_payload(_unique_rrn()), headers=_bearer(token))
+    assert res.status_code == 201, res.text
+    return res.json()["id"]
+
+
+def test_update_clinical_profile_persists_and_returns(client, admin_token, psql):
+    """AC1: 갱신 → 200 + 응답 반영 + DB 영속. AC2: GET 상세가 임상필드 반환. PII 경계 유지."""
+    pid = _create_patient(client, admin_token)
+    res = client.put(
+        f"{_PATIENTS_URL}/{pid}/clinical-profile",
+        json=_CLINICAL_PAYLOAD,
+        headers=_bearer(admin_token),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["blood_type"] == "A+"
+    assert body["allergies"] == "페니실린, 아스피린"
+    # DB 영속(응답 echo 아님 — 직접 조회).
+    persisted = psql.scalar(
+        f"select blood_type || '|' || allergies from public.patients where id='{pid}'"
+    )
+    assert "A+|페니실린" in persisted, persisted
+    # AC2: GET 상세가 임상필드 반환.
+    got = client.get(f"{_PATIENTS_URL}/{pid}", headers=_bearer(admin_token))
+    assert got.status_code == 200, got.text
+    assert got.json()["chronic_diseases"] == "고혈압"
+    # PII 경계: _enc/_hash 미노출.
+    assert "resident_no_enc" not in res.text and "resident_no_hash" not in res.text
+
+
+def test_update_clinical_profile_full_replace_clears_omitted(client, admin_token):
+    """PUT 전체 교체: 미전송 필드는 None 으로 비워진다(부분 PATCH 아님)."""
+    pid = _create_patient(client, admin_token)
+    first = client.put(
+        f"{_PATIENTS_URL}/{pid}/clinical-profile",
+        json=_CLINICAL_PAYLOAD,
+        headers=_bearer(admin_token),
+    )
+    assert first.status_code == 200, first.text
+    # 두 번째 PUT 은 blood_type 만 — 나머지는 미전송 → null(전체 교체 의미).
+    res = client.put(
+        f"{_PATIENTS_URL}/{pid}/clinical-profile",
+        json={"blood_type": "O-"},
+        headers=_bearer(admin_token),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["blood_type"] == "O-"
+    assert body["allergies"] is None
+    assert body["medications"] is None
+
+
+def test_update_clinical_profile_invalid_blood_type_422(client, admin_token):
+    """blood_type 폐쇄어휘 위반 → 422(검증 서버 tier)."""
+    pid = _create_patient(client, admin_token)
+    res = client.put(
+        f"{_PATIENTS_URL}/{pid}/clinical-profile",
+        json={"blood_type": "Z+"},
+        headers=_bearer(admin_token),
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_update_clinical_profile_not_found_404(client, admin_token):
+    """미존재 환자 → 404."""
+    res = client.put(
+        f"{_PATIENTS_URL}/{uuid.uuid4()}/clinical-profile",
+        json=_CLINICAL_PAYLOAD,
+        headers=_bearer(admin_token),
+    )
+    assert res.status_code == 404, res.text
+
+
+def test_update_clinical_profile_forbidden_without_permission(client, admin_token, doctor_token):
+    """AC3: patient.update 미보유(doctor 권한 0) → 403. 환자는 admin 으로 생성."""
+    pid = _create_patient(client, admin_token)
+    res = client.put(
+        f"{_PATIENTS_URL}/{pid}/clinical-profile",
+        json=_CLINICAL_PAYLOAD,
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 403, res.text
+    assert res.json()["error"]["code"] == "forbidden"
+
+
+def test_update_clinical_profile_is_audited(client, admin_token, psql):
+    """갱신은 0009 감사 트리거가 자동 기록(action='update', target_table='patients')."""
+    pid = _create_patient(client, admin_token)
+    res = client.put(
+        f"{_PATIENTS_URL}/{pid}/clinical-profile",
+        json=_CLINICAL_PAYLOAD,
+        headers=_bearer(admin_token),
+    )
+    assert res.status_code == 200, res.text
+    count = psql.scalar(
+        "select count(*) from public.audit_logs "
+        f"where target_table='patients' and target_id='{pid}' and action='update'"
+    )
+    assert int(count) >= 1, "임상 프로필 갱신이 감사 로그에 기록되지 않음"

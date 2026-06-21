@@ -15,7 +15,12 @@ import asyncpg
 
 from app.core import db
 from app.core.errors import AppError, NotFoundError
-from app.schemas.patients import PatientCreate, PatientListItem, PatientResponse
+from app.schemas.patients import (
+    PatientClinicalProfileUpdate,
+    PatientCreate,
+    PatientListItem,
+    PatientResponse,
+)
 from app.services import rrn
 
 
@@ -68,8 +73,26 @@ async def list_patients(
 
 
 async def get_patient(sub: UUID, patient_id: UUID) -> PatientResponse:
-    """환자 상세(마스킹). 미존재 → 404."""
+    """환자 상세(마스킹 + 임상 프로필). 미존재 → 404."""
     row = await db.fetch_patient(sub, patient_id)
+    if row is None:
+        raise NotFoundError("환자를 찾을 수 없습니다.")
+    return _to_patient(row)
+
+
+async def update_clinical_profile(
+    sub: UUID, patient_id: UUID, payload: PatientClinicalProfileUpdate
+) -> PatientResponse:
+    """임상 프로필 갱신(Story 3.2, FR-004). 5필드 전체 교체. 미존재 → 404. 게이트=라우터."""
+    row = await db.update_patient_clinical_profile(
+        sub,
+        patient_id,
+        blood_type=payload.blood_type,
+        allergies=payload.allergies,
+        chronic_diseases=payload.chronic_diseases,
+        medications=payload.medications,
+        notes=payload.notes,
+    )
     if row is None:
         raise NotFoundError("환자를 찾을 수 없습니다.")
     return _to_patient(row)
