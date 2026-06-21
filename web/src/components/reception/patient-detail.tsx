@@ -7,6 +7,7 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 
 import { PermissionGate } from "@/components/auth/permission-gate";
+import { PatientGuardians } from "@/components/reception/patient-guardians";
 import { apiFetch, ApiError } from "@/lib/api/client";
 import {
   BLOOD_TYPES,
@@ -130,6 +131,9 @@ export function PatientDetail({ patientId }: { patientId: string }) {
           <ClinicalProfileView patient={patient} />
         )}
       </div>
+
+      {/* 보호자(Story 3.3) — 목록 + 추가/수정/삭제(patient.update 게이트). 연락처 평문(reveal 이월). */}
+      <PatientGuardians patientId={patient.id} />
     </section>
   );
 }
