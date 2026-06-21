@@ -6,11 +6,14 @@ import {
   createWalkInEncounter,
   type Encounter,
   ENCOUNTER_STATUS_META,
+  encounterHubPath,
   type EncounterListItem,
   type EncounterStatus,
+  fetchEncounter,
   fetchEncounters,
   nextCallCandidate,
   registerEncounter,
+  startConsult,
   walkInIntakeSchema,
   waitMinutes,
 } from "./encounters";
@@ -166,6 +169,27 @@ describe("callEncounter / registerEncounter", () => {
     mockApiFetch.mockResolvedValueOnce(ENCOUNTER);
     await registerEncounter("e1");
     expect(mockApiFetch).toHaveBeenCalledWith("/v1/encounters/e1/register", { method: "POST" });
+  });
+});
+
+// ── 진찰 시작(Story 4.4) — start-consult 액션 + 단건 조회 + 허브 경로 ──────────────────
+
+describe("startConsult / fetchEncounter / encounterHubPath", () => {
+  it("진찰 시작 = POST /v1/encounters/{id}/start-consult, in_progress 반환", async () => {
+    mockApiFetch.mockResolvedValueOnce({ ...ENCOUNTER, status: "in_progress" });
+    const result = await startConsult("e1");
+    expect(result.status).toBe("in_progress");
+    expect(mockApiFetch).toHaveBeenCalledWith("/v1/encounters/e1/start-consult", { method: "POST" });
+  });
+
+  it("단건 조회 = GET /v1/encounters/{id}", async () => {
+    mockApiFetch.mockResolvedValueOnce(ENCOUNTER);
+    await fetchEncounter("e1");
+    expect(mockApiFetch).toHaveBeenCalledWith("/v1/encounters/e1");
+  });
+
+  it("허브 경로는 불투명 encounter_id 키", () => {
+    expect(encounterHubPath("e1")).toBe("/encounter/e1");
   });
 });
 

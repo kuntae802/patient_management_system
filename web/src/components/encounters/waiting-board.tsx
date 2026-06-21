@@ -1,13 +1,16 @@
 "use client";
 
 import {
+  ArrowRight,
   ChevronLeft,
   ChevronRight,
   Megaphone,
   Phone,
   RefreshCw,
+  Stethoscope,
   WifiOff,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -18,11 +21,13 @@ import { ApiError } from "@/lib/api/client";
 import {
   callEncounter,
   ENCOUNTER_STATUS_META,
+  encounterHubPath,
   type EncounterListItem,
   type EncounterStatus,
   fetchEncounters,
   nextCallCandidate,
   registerEncounter,
+  startConsult,
   STATUS_GROUP_ORDER,
   TERMINAL_STATUSES,
   waitMinutes,
@@ -82,6 +87,7 @@ function actionMessage(err: unknown, fallback: string): string {
 }
 
 export function WaitingBoard({ role }: { role: "reception" | "doctor" }) {
+  const router = useRouter();
   const [departments, setDepartments] = useState<Department[]>([]);
   const [departmentId, setDepartmentId] = useState("");
   const [deptError, setDeptError] = useState<string | null>(null);
@@ -175,6 +181,7 @@ export function WaitingBoard({ role }: { role: "reception" | "doctor" }) {
     fn: (id: string) => Promise<unknown>,
     okMsg: string,
     failMsg: string,
+    afterSuccess?: () => void,
   ) {
     if (inFlight.current.has(id)) return; // 재진입 차단(렌더 갭 이중 제출)
     if (isStale) {
@@ -186,7 +193,9 @@ export function WaitingBoard({ role }: { role: "reception" | "doctor" }) {
     try {
       await fn(id);
       toast.success(okMsg);
-      await load(); // 즉시 반영(실시간 수신도 곧 동일 refetch)
+      // afterSuccess(예: 진료 허브 네비)가 있으면 그쪽으로 — 이 경우 곧 언마운트되므로 refetch 생략.
+      if (afterSuccess) afterSuccess();
+      else await load(); // 즉시 반영(실시간 수신도 곧 동일 refetch)
     } catch (err) {
       toast.error(actionMessage(err, failMsg));
     } finally {
@@ -199,6 +208,13 @@ export function WaitingBoard({ role }: { role: "reception" | "doctor" }) {
     runAction(item.id, callEncounter, `${item.patient_name} · ${item.encounter_no}번 호출`, "호출하지 못했습니다.");
   const onRegister = (item: EncounterListItem) =>
     runAction(item.id, registerEncounter, `${item.patient_name} 접수 완료`, "접수하지 못했습니다.");
+  // 진찰 시작(의사) — start_consult RPC 성공 시 진료 허브로 진입(FR-030, Story 4.4).
+  const onStart = (item: EncounterListItem) =>
+    runAction(item.id, startConsult, `${item.patient_name} 진료 시작`, "진료를 시작하지 못했습니다.", () =>
+      router.push(encounterHubPath(item.id)),
+    );
+  // 진료 계속(의사) — 이미 진행중인 내원의 허브로 복귀(전이 RPC 없음, 단순 네비).
+  const onResume = (item: EncounterListItem) => router.push(encounterHubPath(item.id));
 
   // ── 파생 데이터 ──────────────────────────────────────────────────────────────
   const rows = useMemo(() => members ?? [], [members]);
@@ -255,6 +271,7 @@ export function WaitingBoard({ role }: { role: "reception" | "doctor" }) {
   const activeCount = counts.registered + counts.in_progress + counts.scheduled;
   const dateLabel = onDate === todayKST() ? "오늘" : onDate;
   const heroDept = heroNext && departments.find((d) => d.id === heroNext.department_id)?.name;
+  const isDoctor = role === "doctor";
 
   // ── 렌더 ─────────────────────────────────────────────────────────────────────
   return (
@@ -348,14 +365,20 @@ export function WaitingBoard({ role }: { role: "reception" | "doctor" }) {
         </div>
       )}
 
-      {/* "다음 호출" 히어로 */}
+      {/* "다음 호출"(원무) / "다음 진료"(의사) 히어로 — 역할별 주 CTA */}
       {heroNext && (
         <div className="flex items-center gap-4 rounded-xl border border-primary/30 bg-primary/[0.06] px-5 py-3.5">
           <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/15 text-primary">
-            <Megaphone className="size-5" aria-hidden />
+            {isDoctor ? (
+              <Stethoscope className="size-5" aria-hidden />
+            ) : (
+              <Megaphone className="size-5" aria-hidden />
+            )}
           </div>
           <div className="min-w-0">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-primary">다음 호출</div>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-primary">
+              {isDoctor ? "다음 진료" : "다음 호출"}
+            </div>
             <div className="text-[14px] text-foreground">
               <b className="tabular-nums">{heroNext.encounter_no}번 {heroNext.patient_name}</b>
               <span className="text-muted-foreground">
@@ -372,12 +395,21 @@ export function WaitingBoard({ role }: { role: "reception" | "doctor" }) {
           </div>
           <button
             type="button"
-            onClick={() => onCall(heroNext)}
+            onClick={() => (isDoctor ? onStart(heroNext) : onCall(heroNext))}
             disabled={pending.has(heroNext.id) || isStale}
             className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-2 text-[13px] font-medium text-white hover:bg-primary-hover disabled:opacity-60"
           >
-            <Phone className="size-4" aria-hidden />
-            호출
+            {isDoctor ? (
+              <>
+                <Stethoscope className="size-4" aria-hidden />
+                진료 시작
+              </>
+            ) : (
+              <>
+                <Phone className="size-4" aria-hidden />
+                호출
+              </>
+            )}
           </button>
         </div>
       )}
@@ -479,8 +511,11 @@ export function WaitingBoard({ role }: { role: "reception" | "doctor" }) {
                       nowMs={nowMs}
                       pending={pending}
                       isStale={isStale}
+                      role={role}
                       onCall={onCall}
                       onRegister={onRegister}
+                      onStart={onStart}
+                      onResume={onResume}
                     />
                   );
                 })}
@@ -510,8 +545,11 @@ function GroupRows({
   nowMs,
   pending,
   isStale,
+  role,
   onCall,
   onRegister,
+  onStart,
+  onResume,
 }: {
   status: EncounterStatus;
   label: string;
@@ -522,8 +560,11 @@ function GroupRows({
   nowMs: number;
   pending: Set<string>;
   isStale: boolean;
+  role: "reception" | "doctor";
   onCall: (item: EncounterListItem) => void;
   onRegister: (item: EncounterListItem) => void;
+  onStart: (item: EncounterListItem) => void;
+  onResume: (item: EncounterListItem) => void;
 }) {
   const terminal = TERMINAL_STATUSES.has(status);
   return (
@@ -553,8 +594,11 @@ function GroupRows({
             nowMs={nowMs}
             busy={pending.has(m.id)}
             isStale={isStale}
+            role={role}
             onCall={onCall}
             onRegister={onRegister}
+            onStart={onStart}
+            onResume={onResume}
           />
         ))}
     </>
@@ -566,15 +610,21 @@ function EncounterRow({
   nowMs,
   busy,
   isStale,
+  role,
   onCall,
   onRegister,
+  onStart,
+  onResume,
 }: {
   item: EncounterListItem;
   nowMs: number;
   busy: boolean;
   isStale: boolean;
+  role: "reception" | "doctor";
   onCall: (item: EncounterListItem) => void;
   onRegister: (item: EncounterListItem) => void;
+  onStart: (item: EncounterListItem) => void;
+  onResume: (item: EncounterListItem) => void;
 }) {
   const wait =
     item.status === "in_progress"
@@ -626,26 +676,54 @@ function EncounterRow({
       </td>
       <td className={cn("border-b border-border px-3 py-2 tabular-nums", waitClass)}>{waitText}</td>
       <td className="border-b border-border px-3 py-2 text-right">
-        {item.status === "registered" && (
-          <button
-            type="button"
-            onClick={() => onCall(item)}
-            disabled={disabled}
-            className="inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/[0.07] px-2.5 py-1 text-[12px] font-semibold text-primary hover:bg-primary/15 disabled:opacity-50"
-          >
-            <Phone className="size-3.5" aria-hidden />
-            {item.called_at ? "재호출" : "호출"}
-          </button>
-        )}
-        {item.status === "scheduled" && (
-          <button
-            type="button"
-            onClick={() => onRegister(item)}
-            disabled={disabled}
-            className="rounded-md border border-border bg-card px-2.5 py-1 text-[12px] font-medium text-foreground hover:bg-muted disabled:opacity-50"
-          >
-            접수
-          </button>
+        {role === "reception" ? (
+          <>
+            {item.status === "registered" && (
+              <button
+                type="button"
+                onClick={() => onCall(item)}
+                disabled={disabled}
+                className="inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/[0.07] px-2.5 py-1 text-[12px] font-semibold text-primary hover:bg-primary/15 disabled:opacity-50"
+              >
+                <Phone className="size-3.5" aria-hidden />
+                {item.called_at ? "재호출" : "호출"}
+              </button>
+            )}
+            {item.status === "scheduled" && (
+              <button
+                type="button"
+                onClick={() => onRegister(item)}
+                disabled={disabled}
+                className="rounded-md border border-border bg-card px-2.5 py-1 text-[12px] font-medium text-foreground hover:bg-muted disabled:opacity-50"
+              >
+                접수
+              </button>
+            )}
+          </>
+        ) : (
+          <>
+            {item.status === "registered" && (
+              <button
+                type="button"
+                onClick={() => onStart(item)}
+                disabled={disabled}
+                className="inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/[0.07] px-2.5 py-1 text-[12px] font-semibold text-primary hover:bg-primary/15 disabled:opacity-50"
+              >
+                <Stethoscope className="size-3.5" aria-hidden />
+                진료 시작
+              </button>
+            )}
+            {item.status === "in_progress" && (
+              <button
+                type="button"
+                onClick={() => onResume(item)}
+                className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2.5 py-1 text-[12px] font-medium text-foreground hover:bg-muted"
+              >
+                진료 계속
+                <ArrowRight className="size-3.5" aria-hidden />
+              </button>
+            )}
+          </>
         )}
       </td>
     </tr>

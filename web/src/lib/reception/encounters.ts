@@ -178,6 +178,22 @@ export async function registerEncounter(encounterId: string): Promise<Encounter>
   return apiFetch<Encounter>(`/v1/encounters/${encounterId}/register`, { method: "POST" });
 }
 
+/** 진찰 시작(POST /v1/encounters/{id}/start-consult, Story 4.4) — registered→in_progress, 담당의=호출자. */
+export async function startConsult(encounterId: string): Promise<Encounter> {
+  return apiFetch<Encounter>(`/v1/encounters/${encounterId}/start-consult`, { method: "POST" });
+}
+
+/** 내원 단건 조회(GET /v1/encounters/{id}) — 진료 허브 셸 로드용(Story 4.4). 미존재 → ApiError(404). */
+export async function fetchEncounter(encounterId: string): Promise<Encounter> {
+  return apiFetch<Encounter>(`/v1/encounters/${encounterId}`);
+}
+
+/** 진료 허브 라우트 경로(단일 진실) — 불투명 encounter_id 키(URL=PII 불가·새로고침 안전, Story 4.4).
+ * UX 원문 `/encounter/{date}/{chart_no}` 와의 차이는 deferred(코스메틱 URL). */
+export function encounterHubPath(encounterId: string): string {
+  return `/encounter/${encounterId}`;
+}
+
 /** 대기 경과 분(from 이후 now 까지). from 없으면 null. 음수 방지(미래 시각 → 0). */
 export function waitMinutes(fromIso: string | null, nowMs: number = Date.now()): number | null {
   if (!fromIso) return null;

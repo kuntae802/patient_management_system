@@ -1,0 +1,171 @@
+"use client";
+
+import { AlertTriangle, ArrowLeft } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+
+import { StatusBadge } from "@/components/encounters/status-badge";
+import { useActiveEncounter } from "@/hooks/use-active-encounter";
+import { ApiError } from "@/lib/api/client";
+import {
+  type Encounter,
+  ENCOUNTER_STATUS_META,
+  fetchEncounter,
+} from "@/lib/reception/encounters";
+
+// 진료 허브 셸(Story 4.4) — 진찰 시작(start_consult) 후 진입하는 진료 화면. 이 스토리는 셸 진입 +
+// 세션당 활성 내원 1개 가드(UX-DR21⑨)까지. 콘텐츠(환자 배너·과거 이력·활력=4.5 / SOAP=4.6 / 진단
+// =4.7 / 오더 패널=Epic5)는 후속 스토리가 채운다(placeholder 명시 — 은폐 아님). encounters 는 비-PII
+// (환자명 없음) — 단건은 encounter_no·status·시작시각만 표시(환자 배너 PII reveal 은 4.5).
+
+function timeHmKST(iso: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleTimeString("ko-KR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Seoul",
+  });
+}
+
+const PANES: { key: string; title: string; note: string }[] = [
+  { key: "context", title: "환자 컨텍스트", note: "과거 이력·활력·임상 프로필 (Story 4.5)" },
+  { key: "soap", title: "SOAP 진료기록", note: "S/O/A/P 작성·자동저장 (Story 4.6) · 진단 부착 (Story 4.7)" },
+  { key: "orders", title: "오더", note: "처방·검사·영상·처치 (Epic 5)" },
+];
+
+export function EncounterHub({ encounterId }: { encounterId: string }) {
+  const [encounter, setEncounter] = useState<Encounter | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const enc = await fetchEncounter(encounterId);
+      setEncounter(enc);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "진료 정보를 불러오지 못했습니다.");
+    }
+  }, [encounterId]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- load 의 setState 는 await 이후(비동기)
+    void load();
+  }, [load]);
+
+  // 세션당 활성 내원 1개 가드(UX-DR21⑨). id 기준 점유, encounter_no 는 표시용(로드 전 빈 문자열).
+  const { conflict, superseded, active, takeOver } = useActiveEncounter(
+    encounterId,
+    encounter?.encounter_no ?? "",
+  );
+
+  return (
+    <div className="space-y-4">
+      {/* 헤더 — 대기로 복귀 + 내원 식별 */}
+      <div className="flex flex-wrap items-center gap-3">
+        <a
+          href="/doctor/waiting"
+          className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2.5 py-1 text-[12.5px] text-muted-foreground hover:bg-muted"
+        >
+          <ArrowLeft className="size-3.5" aria-hidden />
+          진료 대기
+        </a>
+        {encounter && (
+          <>
+            <h1 className="text-[18px] font-semibold tracking-[-0.02em] text-foreground tabular-nums">
+              내원 {encounter.encounter_no}
+            </h1>
+            <StatusBadge status={encounter.status} />
+            <span className="text-[12.5px] text-muted-foreground">
+              진료 시작 {timeHmKST(encounter.consult_started_at)}
+            </span>
+          </>
+        )}
+      </div>
+
+      {/* 세션 가드 배너 — 다른 내원이 활성(conflict) / 다른 탭이 가져감(superseded) */}
+      {superseded ? (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center gap-3 rounded-lg border border-status-cancelled/40 bg-status-cancelled/10 px-4 py-2.5 text-[12.5px] text-status-cancelled"
+        >
+          <AlertTriangle className="size-4 shrink-0" aria-hidden />
+          <span className="font-medium">이 진료는 다른 탭에서 활성화되어 보류되었습니다.</span>
+          <span className="text-muted-foreground">
+            잘못된 환자에 작업이 새는 것을 막기 위해 한 세션에 진료 1개만 활성화됩니다.
+          </span>
+          <button
+            type="button"
+            onClick={takeOver}
+            className="ml-auto rounded-md border border-border bg-card px-2.5 py-1 text-[12px] font-medium text-foreground hover:bg-muted"
+          >
+            이 진료 다시 활성화
+          </button>
+        </div>
+      ) : conflict ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-status-received/40 bg-status-received/10 px-4 py-2.5 text-[12.5px] text-status-received-ink">
+          <AlertTriangle className="size-4 shrink-0" aria-hidden />
+          <span className="font-medium">
+            다른 진료가 이미 열려 있습니다{active ? ` (내원 ${active.encounter_no})` : ""}.
+          </span>
+          <span className="text-muted-foreground">
+            이 진료를 활성화하면 기존 진료 탭은 보류됩니다.
+          </span>
+          <button
+            type="button"
+            onClick={takeOver}
+            className="ml-auto rounded-md border border-primary/40 bg-primary/[0.07] px-2.5 py-1 text-[12px] font-semibold text-primary hover:bg-primary/15"
+          >
+            이 진료 활성화
+          </button>
+        </div>
+      ) : null}
+
+      {/* 로드 상태 */}
+      {error ? (
+        <div className="flex flex-col items-center gap-3 rounded-xl border border-border bg-card px-4 py-10 text-center">
+          <p className="text-[13px] text-muted-foreground">{error}</p>
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="rounded-md border border-border bg-card px-3 py-1.5 text-[13px] font-medium text-foreground hover:bg-muted"
+          >
+            다시 시도
+          </button>
+        </div>
+      ) : encounter === null ? (
+        <div className="space-y-2 rounded-xl border border-border bg-card p-4" aria-busy="true" aria-label="진료 정보 불러오는 중">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="h-10 animate-pulse rounded-md bg-muted" />
+          ))}
+        </div>
+      ) : encounter.status !== "in_progress" ? (
+        // 진행중이 아닌 내원(종결/예약 — 직접 URL·북마크 진입) → 진료 화면 대신 안내(오표시 방지, Patch P3).
+        <div className="flex flex-col items-center gap-3 rounded-xl border border-border bg-card px-4 py-10 text-center">
+          <p className="text-[13px] text-muted-foreground">
+            이 내원은 진행중이 아닙니다(현재 {ENCOUNTER_STATUS_META[encounter.status].label}). 진료 화면은
+            진찰을 시작한 진행중 내원에서만 열립니다.
+          </p>
+          <a
+            href="/doctor/waiting"
+            className="rounded-md border border-border bg-card px-3 py-1.5 text-[13px] font-medium text-foreground hover:bg-muted"
+          >
+            진료 대기로
+          </a>
+        </div>
+      ) : (
+        // placeholder 3-pane(콘텐츠는 후속 스토리). 좌 컨텍스트 / 중앙 SOAP / 우 오더.
+        <div className="grid gap-3 md:grid-cols-[280px_1fr_320px]">
+          {PANES.map((p) => (
+            <section
+              key={p.key}
+              className="rounded-xl border border-dashed border-border bg-card/60 px-4 py-6"
+            >
+              <h2 className="text-[13px] font-semibold text-foreground">{p.title}</h2>
+              <p className="mt-1.5 text-[12px] text-muted-foreground">{p.note}</p>
+            </section>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
