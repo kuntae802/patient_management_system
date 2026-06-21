@@ -2,12 +2,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { apiFetch } from "@/lib/api/client";
 import {
+  ageFromBirthDate,
   bloodTypeLabel,
   type ClinicalProfileValues,
   clinicalProfileSchema,
+  fetchPatientEncounters,
+  maskPhone,
   normalizeRrn,
   patientCreateSchema,
   type PatientListItem,
+  revealContact,
+  revealRrn,
   rrnChecksumOk,
   rrnHardError,
   searchPatients,
@@ -256,5 +261,65 @@ describe("searchPatients", () => {
       `/v1/patients?q=${encodeURIComponent("010-1234")}&page_size=5`,
       { signal: ctrl.signal },
     );
+  });
+});
+
+// ── Story 4.5: reveal·이력 헬퍼 + 마스킹·나이(진료 허브 배너·좌패널) ──────────────
+
+describe("revealRrn", () => {
+  it("POST /v1/patients/{id}/reveal-rrn 로 호출하고 full RRN 을 반환한다", async () => {
+    mockApiFetch.mockResolvedValueOnce({ resident_no: "9001011234567" });
+    const result = await revealRrn("pid-1");
+    expect(result).toEqual({ resident_no: "9001011234567" });
+    expect(mockApiFetch).toHaveBeenCalledWith("/v1/patients/pid-1/reveal-rrn", { method: "POST" });
+  });
+});
+
+describe("revealContact", () => {
+  it("POST /v1/patients/{id}/reveal-contact 로 호출하고 full 연락처를 반환한다", async () => {
+    mockApiFetch.mockResolvedValueOnce({ phone: "010-1234-5678", address: "서울", email: null });
+    const result = await revealContact("pid-2");
+    expect(result.phone).toBe("010-1234-5678");
+    expect(mockApiFetch).toHaveBeenCalledWith("/v1/patients/pid-2/reveal-contact", {
+      method: "POST",
+    });
+  });
+});
+
+describe("fetchPatientEncounters", () => {
+  it("GET /v1/patients/{id}/encounters 로 호출하고 배열을 반환한다(최근순 이력)", async () => {
+    mockApiFetch.mockResolvedValueOnce([{ id: "e1" }, { id: "e2" }]);
+    const result = await fetchPatientEncounters("pid-3");
+    expect(result).toHaveLength(2);
+    expect(mockApiFetch).toHaveBeenCalledWith("/v1/patients/pid-3/encounters");
+  });
+});
+
+describe("maskPhone (UX-DR9 기본 마스킹)", () => {
+  it("휴대폰 11자리 → 가운데 4자리 가림(마지막 4 노출)", () => {
+    expect(maskPhone("010-1234-5678")).toBe("010-****-5678");
+    expect(maskPhone("01012345678")).toBe("010-****-5678");
+  });
+
+  it("10자리 → 가운데 가림(마지막 4 노출)", () => {
+    expect(maskPhone("010-123-4567")).toBe("010-***-4567");
+  });
+
+  it("빈 값 → '—', 형식 불명(짧음)은 보수적 폴백", () => {
+    expect(maskPhone(null)).toBe("—");
+    expect(maskPhone("")).toBe("—");
+    expect(maskPhone("12345")).toBe("***-2345");
+  });
+});
+
+describe("ageFromBirthDate (만 나이)", () => {
+  it("생일 지난 경우/안 지난 경우 만 나이 계산", () => {
+    const now = new Date("2026-06-21T00:00:00+09:00").getTime();
+    expect(ageFromBirthDate("1990-01-01", now)).toBe(36); // 생일 지남
+    expect(ageFromBirthDate("1990-12-31", now)).toBe(35); // 생일 안 지남
+  });
+
+  it("잘못된 날짜 → null", () => {
+    expect(ageFromBirthDate("not-a-date")).toBeNull();
   });
 });

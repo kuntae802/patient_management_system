@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { apiFetch } from "@/lib/api/client";
+import type { EncounterListItem } from "@/lib/reception/encounters";
 
 // 환자 등록(Story 3.1) — 타입·Zod 스키마(Pydantic PatientCreate 거울)·페이로드 변환.
 // 읽기/쓰기 모두 FastAPI(apiFetch). 주민번호는 raw 로 서버에 보내고(서버가 정규화·암호화), 클라는
@@ -74,6 +75,45 @@ export async function searchPatients(
     { signal },
   );
   return page.data;
+}
+
+/** 환자 상세 조회(GET /v1/patients/{id}) — 진료 허브 배너·좌패널 로드(Story 4.5). 미존재 → ApiError(404). */
+export async function fetchPatient(patientId: string): Promise<Patient> {
+  return apiFetch<Patient>(`/v1/patients/${patientId}`);
+}
+
+/** 주민번호 reveal(POST /v1/patients/{id}/reveal-rrn, Story 4.5) — 권한 게이트 + 감사(서버 RPC). full RRN.
+ *  🚫 반환 full RRN 은 로그·toast 에 남기지 않는다(화면 인라인 표시 전용 — PII 경계, UX-DR9). */
+export async function revealRrn(patientId: string): Promise<{ resident_no: string }> {
+  return apiFetch<{ resident_no: string }>(`/v1/patients/${patientId}/reveal-rrn`, {
+    method: "POST",
+  });
+}
+
+/** 연락처 reveal(POST /v1/patients/{id}/reveal-contact, Story 4.5) — 권한 게이트 + 감사(서버 RPC). full 연락처. */
+export async function revealContact(
+  patientId: string,
+): Promise<{ phone: string | null; address: string | null; email: string | null }> {
+  return apiFetch<{ phone: string | null; address: string | null; email: string | null }>(
+    `/v1/patients/${patientId}/reveal-contact`,
+    { method: "POST" },
+  );
+}
+
+/** 환자 과거 내원 이력(GET /v1/patients/{id}/encounters, Story 4.5) — 진료 허브 좌 컨텍스트 타임라인. 최근순. */
+export async function fetchPatientEncounters(patientId: string): Promise<EncounterListItem[]> {
+  return apiFetch<EncounterListItem[]>(`/v1/patients/${patientId}/encounters`);
+}
+
+/** 연락처(휴대폰) 가운데 가림 — `010-1234-5678` → `010-****-5678`. reveal 전 기본 마스킹(UX-DR9).
+ *  형식 불명/짧으면 마지막 4자리만 노출(보수적 폴백). 빈 값 → "—". */
+export function maskPhone(phone: string | null): string {
+  if (!phone) return "—";
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length === 11) return `${digits.slice(0, 3)}-****-${digits.slice(7)}`;
+  if (digits.length === 10) return `${digits.slice(0, 3)}-***-${digits.slice(6)}`;
+  if (digits.length >= 4) return `***-${digits.slice(-4)}`;
+  return "****";
 }
 
 // ── 혈액형(ABO+Rh) 폐쇄 어휘 — Pydantic BloodType Literal 의 거울 ───────────────
@@ -178,6 +218,17 @@ export function insuranceLabel(value: string): string {
 /** 성별 코드 → 한글. */
 export function sexLabel(sex: string): string {
   return sex === "male" ? "남" : sex === "female" ? "여" : sex;
+}
+
+/** 만 나이(생년월일 기준, KST 무관 — 날짜만). 잘못된 날짜 → null. 진료 허브 배너 표시용(Story 4.5). */
+export function ageFromBirthDate(birthDate: string, nowMs: number = Date.now()): number | null {
+  const b = new Date(birthDate);
+  if (Number.isNaN(b.getTime())) return null;
+  const now = new Date(nowMs);
+  let age = now.getFullYear() - b.getFullYear();
+  const m = now.getMonth() - b.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < b.getDate())) age -= 1;
+  return age >= 0 ? age : null;
 }
 
 // ── 임상 프로필(Story 3.2) — Zod 스키마(Pydantic PatientClinicalProfileUpdate 거울, 3중 검증 1선) ──

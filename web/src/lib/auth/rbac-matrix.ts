@@ -22,6 +22,7 @@ export const ADMIN_ROLE = "admin";
 // (AC3의 "환자 삭제·수가 조정"은 아직 permissions 카탈로그에 부재 → 등장 시 등록.)
 export const SENSITIVE_PERMISSIONS = new Set<string>([
   "patient.reveal_rrn",
+  "patient.reveal_contact",
   "rbac.manage",
   "audit.read",
 ]);

@@ -3,6 +3,8 @@
 import { AlertTriangle, ArrowLeft } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
+import { PatientBanner } from "@/components/encounters/patient-banner";
+import { PatientContextPanel } from "@/components/encounters/patient-context-panel";
 import { StatusBadge } from "@/components/encounters/status-badge";
 import { useActiveEncounter } from "@/hooks/use-active-encounter";
 import { ApiError } from "@/lib/api/client";
@@ -12,10 +14,10 @@ import {
   fetchEncounter,
 } from "@/lib/reception/encounters";
 
-// 진료 허브 셸(Story 4.4) — 진찰 시작(start_consult) 후 진입하는 진료 화면. 이 스토리는 셸 진입 +
-// 세션당 활성 내원 1개 가드(UX-DR21⑨)까지. 콘텐츠(환자 배너·과거 이력·활력=4.5 / SOAP=4.6 / 진단
-// =4.7 / 오더 패널=Epic5)는 후속 스토리가 채운다(placeholder 명시 — 은폐 아님). encounters 는 비-PII
-// (환자명 없음) — 단건은 encounter_no·status·시작시각만 표시(환자 배너 PII reveal 은 4.5).
+// 진료 허브 셸(Story 4.4) + 환자 배너·좌 컨텍스트(Story 4.5). 진찰 시작(start_consult) 후 진입.
+// 세션당 활성 내원 1개 가드(UX-DR21⑨). 상시 환자 배너(신원·민감정보 reveal·알레르기 can't-miss)는
+// 3-pane 위에, 좌 컨텍스트(임상 프로필·과거 이력·활력)는 좌 pane. 중앙 SOAP(4.6)·우 오더(Epic5)는
+// placeholder 유지(은폐 아닌 명시). 헤더는 encounter_no·status·시작시각(환자명 PII 는 배너가 다룸).
 
 function timeHmKST(iso: string | null): string {
   if (!iso) return "—";
@@ -26,12 +28,6 @@ function timeHmKST(iso: string | null): string {
     timeZone: "Asia/Seoul",
   });
 }
-
-const PANES: { key: string; title: string; note: string }[] = [
-  { key: "context", title: "환자 컨텍스트", note: "과거 이력·활력·임상 프로필 (Story 4.5)" },
-  { key: "soap", title: "SOAP 진료기록", note: "S/O/A/P 작성·자동저장 (Story 4.6) · 진단 부착 (Story 4.7)" },
-  { key: "orders", title: "오더", note: "처방·검사·영상·처치 (Epic 5)" },
-];
 
 export function EncounterHub({ encounterId }: { encounterId: string }) {
   const [encounter, setEncounter] = useState<Encounter | null>(null);
@@ -153,17 +149,27 @@ export function EncounterHub({ encounterId }: { encounterId: string }) {
           </a>
         </div>
       ) : (
-        // placeholder 3-pane(콘텐츠는 후속 스토리). 좌 컨텍스트 / 중앙 SOAP / 우 오더.
-        <div className="grid gap-3 md:grid-cols-[280px_1fr_320px]">
-          {PANES.map((p) => (
-            <section
-              key={p.key}
-              className="rounded-xl border border-dashed border-border bg-card/60 px-4 py-6"
-            >
-              <h2 className="text-[13px] font-semibold text-foreground">{p.title}</h2>
-              <p className="mt-1.5 text-[12px] text-muted-foreground">{p.note}</p>
+        <div className="space-y-4">
+          {/* 상시 환자 배너(Story 4.5) — 신원·민감정보 reveal·알레르기 can't-miss. 3-pane 위. */}
+          <PatientBanner encounter={encounter} />
+
+          {/* 3-pane: 좌 컨텍스트(4.5 실콘텐츠) / 중앙 SOAP(4.6) / 우 오더(Epic5 placeholder). */}
+          <div className="grid gap-3 md:grid-cols-[280px_1fr_320px]">
+            <PatientContextPanel
+              patientId={encounter.patient_id}
+              currentEncounterId={encounter.id}
+            />
+            <section className="rounded-xl border border-dashed border-border bg-card/60 px-4 py-6">
+              <h2 className="text-[13px] font-semibold text-foreground">SOAP 진료기록</h2>
+              <p className="mt-1.5 text-[12px] text-muted-foreground">
+                S/O/A/P 작성·자동저장 (Story 4.6) · 진단 부착 (Story 4.7)
+              </p>
             </section>
-          ))}
+            <section className="rounded-xl border border-dashed border-border bg-card/60 px-4 py-6">
+              <h2 className="text-[13px] font-semibold text-foreground">오더</h2>
+              <p className="mt-1.5 text-[12px] text-muted-foreground">처방·검사·영상·처치 (Epic 5)</p>
+            </section>
+          </div>
         </div>
       )}
     </div>
