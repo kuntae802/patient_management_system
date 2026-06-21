@@ -18,7 +18,10 @@ import asyncpg
 from app.core import db
 from app.core.errors import NotFoundError
 from app.schemas.encounters import (
+    DiagnosisAttach,
+    DiagnosisPrimaryUpdate,
     EncounterCreate,
+    EncounterDiagnosisResponse,
     EncounterListItem,
     EncounterPage,
     EncounterPageMeta,
@@ -148,9 +151,60 @@ async def update_medical_record(
     return _to_medical_record(row)
 
 
-async def list_medical_records(
-    sub: UUID, encounter_id: UUID
-) -> list[MedicalRecordResponse]:
+async def list_medical_records(sub: UUID, encounter_id: UUID) -> list[MedicalRecordResponse]:
     """한 내원의 SOAP 진료기록 목록(최근순·1:N). 게이트=라우터(medical_record.read)."""
     rows = await db.fetch_medical_records(sub, encounter_id)
     return [_to_medical_record(r) for r in rows]
+
+
+# ── 내원진단(encounter_diagnoses, Story 4.7) ──────────────────────────────────
+def _to_encounter_diagnosis(row: asyncpg.Record) -> EncounterDiagnosisResponse:
+    return EncounterDiagnosisResponse.model_validate(dict(row))
+
+
+async def attach_diagnosis(
+    sub: UUID, encounter_id: UUID, payload: DiagnosisAttach
+) -> EncounterDiagnosisResponse:
+    """KCD 진단 부착(FR-042). recorded_by=부착 의사(sub). 주상병 시 기존 강등(db 동일 트랜잭션).
+
+    미존재 내원 → 404, 같은 코드 중복 → 409, 잘못된 diagnosis_id → 422, 권한 미보유 → 403."""
+    row = await db.attach_diagnosis(
+        sub,
+        encounter_id=encounter_id,
+        diagnosis_id=payload.diagnosis_id,
+        is_primary=payload.is_primary,
+        recorded_by=sub,
+    )
+    return _to_encounter_diagnosis(row)
+
+
+async def set_diagnosis_primary(
+    sub: UUID, encounter_id: UUID, ed_id: UUID, payload: DiagnosisPrimaryUpdate
+) -> EncounterDiagnosisResponse:
+    """주/부상병 토글. is_primary=true 면 기존 주상병 강등(db 동일 트랜잭션). 미존재 → 404."""
+    row = await db.set_diagnosis_primary(
+        sub, encounter_id=encounter_id, ed_id=ed_id, is_primary=payload.is_primary
+    )
+    return _to_encounter_diagnosis(row)
+
+
+async def remove_diagnosis(sub: UUID, encounter_id: UUID, ed_id: UUID) -> None:
+    """부착 진단 제거(soft delete). 미존재 → 404, 권한 미보유 → 403."""
+    await db.remove_diagnosis(sub, encounter_id=encounter_id, ed_id=ed_id)
+
+
+async def list_encounter_diagnoses(
+    sub: UUID, encounter_id: UUID
+) -> list[EncounterDiagnosisResponse]:
+    """한 내원의 부착 진단 목록(주상병 우선·부착순). 게이트=라우터(diagnosis.read)."""
+    rows = await db.fetch_encounter_diagnoses(sub, encounter_id)
+    return [_to_encounter_diagnosis(r) for r in rows]
+
+
+async def complete_encounter(sub: UUID, encounter_id: UUID) -> EncounterResponse:
+    """진료 완료(complete_encounter RPC — in_progress→completed, 주상병 게이트; FR-042·UX-DR18).
+
+    주상병 미지정 → 422, 잘못된 전이(비-in_progress) → 409, 미존재 → 404, 권한 미보유 → 403
+    (전부 RPC SQLSTATE → core/db 매핑). completed_at 세팅 반영 행 반환."""
+    row = await db.call_complete_encounter(sub, encounter_id)
+    return _to_encounter(row)

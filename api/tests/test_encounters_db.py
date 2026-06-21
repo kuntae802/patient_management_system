@@ -83,6 +83,18 @@ def _encounter_sql(eid: str, pid: str, status: str, *, visit: str = "walk_in") -
     )
 
 
+def _primary_diagnosis_sql(eid: str, recorded_by: str) -> str:
+    """주상병 1개 부착 — complete_encounter 게이트(주상병 미지정 PT422) 충족(Story 4.7).
+
+    시드 KCD I10 참조(recorded_by=admin). complete_encounter 호출 직전에 삽입한다."""
+    return (
+        "insert into public.encounter_diagnoses"
+        "(encounter_id, diagnosis_id, is_primary, recorded_by) "
+        "select '" + eid + "', d.id, true, '" + recorded_by + "' "
+        "from public.diagnoses d where lower(d.code)='i10' limit 1;"
+    )
+
+
 def _claims(uid: str) -> str:
     """RPC 권한 평가용 GUC 주입(role 전환 불요 — SECURITY DEFINER RPC 가 auth.uid() 를 읽음)."""
     claims = '{"sub":"' + uid + '","role":"authenticated"}'
@@ -193,6 +205,7 @@ def test_legal_transition_chain(psql: Psql, admin_id: str):
         + "select public.start_consult('"
         + eid
         + "');"
+        + _primary_diagnosis_sql(eid, admin_id)  # 주상병 게이트 충족(4.7)
         + "select public.complete_encounter('"
         + eid
         + "');"
@@ -273,7 +286,8 @@ def _seed_to_status(eid: str, pid: str, status: str, admin_id: str) -> str:
         walk += (
             "select public.register_encounter('" + eid + "');"
             "select public.start_consult('" + eid + "');"
-            "select public.complete_encounter('" + eid + "');"
+            + _primary_diagnosis_sql(eid, admin_id)  # 주상병 게이트 충족(4.7)
+            + "select public.complete_encounter('" + eid + "');"
         )
     elif status == "cancelled":
         walk += "select public.cancel_encounter('" + eid + "','t');"

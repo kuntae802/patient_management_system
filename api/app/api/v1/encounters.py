@@ -17,7 +17,10 @@ from fastapi import APIRouter, Depends, Query, status
 
 from app.core.security import CurrentUser, require_permission
 from app.schemas.encounters import (
+    DiagnosisAttach,
+    DiagnosisPrimaryUpdate,
     EncounterCreate,
+    EncounterDiagnosisResponse,
     EncounterPage,
     EncounterResponse,
     MedicalRecordResponse,
@@ -42,6 +45,11 @@ require_encounter_start = require_permission("encounter.start")
 # 의사 임상기록 최소권한 — encounter.read 가 아님). 원무가 의사 SOAP 를 읽지 못하게.
 require_medical_record_write = require_permission("medical_record.write")
 require_medical_record_read = require_permission("medical_record.read")
+# 진단 부착(Story 4.7): 쓰기(부착/토글/제거)=diagnosis.attach(0002 기존)·조회=diagnosis.read(0014
+# 신규, 진단 최소권한 — 원무·간호 미열람). 완료=encounter.complete(0002 기존, 주상병 게이트 동반).
+require_diagnosis_attach = require_permission("diagnosis.attach")
+require_diagnosis_read = require_permission("diagnosis.read")
+require_encounter_complete = require_permission("encounter.complete")
 
 
 @router.post("", response_model=EncounterResponse, status_code=status.HTTP_201_CREATED)
@@ -173,3 +181,79 @@ async def list_medical_records(
     ★ 읽기 게이트 = medical_record.read(encounter.read 아님 — 원무·간호 임상 SOAP 미열람, 최소권한).
     작은 sub-collection → 직접 배열(GET /patients/{id}/encounters 선례)."""
     return await encounters_service.list_medical_records(user.sub, encounter_id)
+
+
+# ── 내원진단(encounter_diagnoses) — Story 4.7 / FR-042 ──────────────────────────
+# sub-resource(내원의 진단). 쓰기=POST(부착)·PATCH(주상병 토글)·DELETE(제거), 조회=GET(주상병 우선).
+# 진단 부착=마스터 FK(free-text 차단). 경로가 달라 기존 라우트와 충돌 없음(SQLSTATE 매핑 재사용).
+@router.get(
+    "/{encounter_id}/diagnoses",
+    response_model=list[EncounterDiagnosisResponse],
+)
+async def list_encounter_diagnoses(
+    encounter_id: UUID,
+    user: CurrentUser = Depends(require_diagnosis_read),
+) -> list[EncounterDiagnosisResponse]:
+    """한 내원의 부착 진단 목록(주상병 우선·부착순, FR-042). 게이트 diagnosis.read.
+
+    ★ 읽기 게이트 = diagnosis.read(encounter.read 아님 — 원무·간호 진단 미열람, 최소권한)."""
+    return await encounters_service.list_encounter_diagnoses(user.sub, encounter_id)
+
+
+@router.post(
+    "/{encounter_id}/diagnoses",
+    response_model=EncounterDiagnosisResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def attach_diagnosis(
+    encounter_id: UUID,
+    payload: DiagnosisAttach,
+    user: CurrentUser = Depends(require_diagnosis_attach),
+) -> EncounterDiagnosisResponse:
+    """KCD 진단 부착(FR-042). 게이트 diagnosis.attach. recorded_by=부착 의사(sub).
+
+    주상병 부착 시 기존 주상병 강등(서버 동일 트랜잭션). 미존재 내원 → 404, 같은 코드 중복 → 409,
+    잘못된 diagnosis_id → 422(FK), 권한 미보유 → 403."""
+    return await encounters_service.attach_diagnosis(user.sub, encounter_id, payload)
+
+
+@router.patch(
+    "/{encounter_id}/diagnoses/{ed_id}",
+    response_model=EncounterDiagnosisResponse,
+)
+async def set_diagnosis_primary(
+    encounter_id: UUID,
+    ed_id: UUID,
+    payload: DiagnosisPrimaryUpdate,
+    user: CurrentUser = Depends(require_diagnosis_attach),
+) -> EncounterDiagnosisResponse:
+    """주/부상병 토글(FR-042). 게이트 diagnosis.attach. is_primary=true 면 기존 주상병 강등.
+
+    미존재/내원 불일치 진단 → 404, 권한 미보유 → 403."""
+    return await encounters_service.set_diagnosis_primary(user.sub, encounter_id, ed_id, payload)
+
+
+@router.delete(
+    "/{encounter_id}/diagnoses/{ed_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def remove_diagnosis(
+    encounter_id: UUID,
+    ed_id: UUID,
+    user: CurrentUser = Depends(require_diagnosis_attach),
+) -> None:
+    """부착 진단 제거(soft delete, FR-042). 게이트 diagnosis.attach. 미존재 404·권한 미보유 403."""
+    await encounters_service.remove_diagnosis(user.sub, encounter_id, ed_id)
+
+
+@router.post("/{encounter_id}/complete", response_model=EncounterResponse)
+async def complete_encounter(
+    encounter_id: UUID,
+    user: CurrentUser = Depends(require_encounter_complete),
+) -> EncounterResponse:
+    """진료 완료 — complete_encounter RPC(in_progress→completed, 주상병 게이트; FR-042·UX-DR18).
+
+    게이트 encounter.complete. 액션 엔드포인트(status PATCH 아님). 주상병(is_primary) 미지정 → 422
+    primary_diagnosis_required(웹이 진단 필드 포커스+인라인), 비-in_progress → 409, 미존재 → 404,
+    권한 미보유 → 403. ⚠️ 완료→수납 액션바·flow stepper·신원 확인은 Epic 7(수납)."""
+    return await encounters_service.complete_encounter(user.sub, encounter_id)
