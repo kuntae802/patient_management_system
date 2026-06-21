@@ -10,10 +10,12 @@
 -- ════════════════════════════════════════════════════════════════════════════
 -- ⚠️ DEV ONLY — 로그인·인증/권한 검증용 테스트 직원 계정 (프로덕션 시드 아님)
 --   실제 직원 계정 생성은 Story 1.8(관리자 UI). db reset 시 재생성됨.
---   로컬 자격증명(로컬 전용, 절대 운영 사용 금지, 둘 다 비번 Staff1234):
---     · admin@pms.local   role=admin   → 23권한 전부(Story 1.3 시드)  → require_permission 통과
---     · doctor@pms.local  role=doctor  → 권한 0(1.7 매트릭스 전)       → require_permission 403
+--   로컬 자격증명(로컬 전용, 절대 운영 사용 금지, 전부 비번 Staff1234):
+--     · admin@pms.local      role=admin     → 23권한 전부(Story 1.3 시드)  → require_permission 통과
+--     · doctor@pms.local     role=doctor    → 권한 0(1.7 매트릭스 전)       → require_permission 403
 --       (Story 1.5 의 401/403/200 인증·권한 매트릭스 통합 검증용)
+--     · reception@pms.local  role=reception → encounter.register/read 보유(하단 grant) → walk-in 접수
+--       골든 패스 가동(Story 4.2). 역할 grant 는 데모/통합테스트용 — 프로덕션은 1.7 매트릭스가 부여.
 --   ★ 안전: seed.sql 은 로컬 `supabase db reset` 에서만 실행된다. 운영 배포는 `supabase db push`
 --     (마이그레이션만, seed 미실행)이므로 클라우드에 이 계정이 생기지 않는다.
 --     🚫 `supabase db reset --linked`(클라우드 대상)는 절대 실행 금지 — DB 전체가 초기화된다.
@@ -26,7 +28,9 @@ declare
     jsonb_build_object('uid','000000a1-0000-4000-8000-0000000000a1',
       'email','admin@pms.local','employee_no','EMP0001','name','관리자(테스트)','role','admin'),
     jsonb_build_object('uid','000000a2-0000-4000-8000-0000000000a2',
-      'email','doctor@pms.local','employee_no','EMP0002','name','의사(테스트)','role','doctor')
+      'email','doctor@pms.local','employee_no','EMP0002','name','의사(테스트)','role','doctor'),
+    jsonb_build_object('uid','000000a3-0000-4000-8000-0000000000a3',
+      'email','reception@pms.local','employee_no','EMP0003','name','원무(테스트)','role','reception')
   );
   v_acct jsonb;
   v_uid uuid;
@@ -74,6 +78,18 @@ begin
     on conflict (id) do nothing;
   end loop;
 end $$;
+
+-- ── (DEV/데모) 원무(reception) 역할 → 내원 접수 권한 grant (Story 4.2) ──────────────────────
+-- 접수(encounter.register)·내원 조회(encounter.read)는 원무 직무 본질(walk-in 접수 골든 패스 가동).
+-- 0002/0010 의 admin cross-join grant 패턴 미러 · 멱등. ★ 프로덕션 런타임 grant 는 Story 1.7 RBAC
+-- 매트릭스 UI 소유(rbac-ui-exposure-model: 직무 핵심은 역할 노출) — 이 시드는 로컬 db reset 전용
+-- (데모·통합테스트 가동, 운영 db push 엔 미반영). encounter.register 는 0002, read 는 0010 시드.
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code in ('encounter.register', 'encounter.read')
+where r.code = 'reception'
+on conflict (role_id, permission_id) do nothing;
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- 마스터 시드 (Story 2.5) — 진료과 · 진료실 · KCD 진단 · EDI 수가 · 약품
