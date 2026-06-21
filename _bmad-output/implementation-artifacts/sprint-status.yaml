@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-22T01:30:00+0000
+last_updated: 2026-06-22T02:15:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -92,7 +92,7 @@ development_status:
 
   # ── Epic 5: 오더 · 수행 — 처방·검사·처치·간호·방사선 ──
   epic-5: in-progress
-  5-1-오더-생명주기-스키마-상태머신-db: review
+  5-1-오더-생명주기-스키마-상태머신-db: done
   5-2-처방-오더-발행-중복-경고: backlog
   5-3-검사-영상-오더: backlog
   5-4-처치-오더: backlog
