@@ -12,10 +12,17 @@ describe("filterNav", () => {
     expect(labels(items)).not.toContain("대기 현황"); // reception 전용
   });
 
-  it("admin 인데 권한 0 → requiredPermission 항목 숨김, 무권한 항목만", () => {
+  it("admin 인데 권한 0 → requiredPermission 항목(근무 스케줄 포함) 모두 숨김", () => {
     const items = filterNav(STAFF_NAV, "admin", () => false);
     expect(labels(items)).not.toContain("권한"); // rbac.manage 필요
-    expect(labels(items)).toContain("근무 스케줄"); // 권한 불필요
+    expect(labels(items)).not.toContain("근무 스케줄"); // master.manage 필요(Story 6.1 게이트)
+  });
+
+  it("admin + master.manage → 마스터·근무 스케줄 노출(nav 게이트↔API 게이트 일치)", () => {
+    const items = filterNav(STAFF_NAV, "admin", (p) => p === "master.manage");
+    expect(labels(items)).toContain("마스터");
+    expect(labels(items)).toContain("근무 스케줄");
+    expect(labels(items)).not.toContain("권한"); // rbac.manage 는 여전히 필요
   });
 
   it("reception 권한 0 → 직무 항목(환자 등록·검색·수납 포함) 모두 노출, 관리 항목 제외", () => {

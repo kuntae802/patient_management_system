@@ -79,7 +79,7 @@ export const STAFF_NAV: NavItem[] = [
   { section: "관리", label: "운영/대시보드", icon: BarChart3, href: "/admin/dashboard", roles: ["admin"], requiredPermission: "dashboard.read" },
   { section: "관리", label: "마스터", icon: Database, href: "/admin/masters", roles: ["admin"], requiredPermission: "master.manage" },
   { section: "관리", label: "권한", icon: ShieldCheck, href: "/admin/permissions", roles: ["admin"], requiredPermission: "rbac.manage" },
-  { section: "관리", label: "근무 스케줄", icon: CalendarClock, href: "/admin/schedule", roles: ["admin"] },
+  { section: "관리", label: "근무 스케줄", icon: CalendarClock, href: "/admin/schedule", roles: ["admin"], requiredPermission: "master.manage" },
   { section: "관리", label: "직원 계정", icon: Users, href: "/admin/users", roles: ["admin"], requiredPermission: "user.manage" },
   { section: "관리", label: "감사 로그", icon: ScrollText, href: "/admin/audit-logs", roles: ["admin"], requiredPermission: "audit.read" },
 ];
