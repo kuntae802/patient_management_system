@@ -437,3 +437,82 @@ def test_rls_anon_cannot_select(psql: Psql):
         "begin;set local role anon;select count(*) from public.encounters;rollback;"
     )
     assert "permission denied" in err.lower() and "encounters" in err.lower(), err
+
+
+# ── 4.3 호출 상태 기록 record_encounter_call (0011) ───────────────────────────
+
+
+def test_call_records_on_registered(psql: Psql, admin_id: str):
+    """registered 호출 → called_at·call_count·last_called_by 기록 + 재호출 시 count 증가.
+
+    호출은 상태 전이 아님(status 불변 registered) — 트리거 same-status 통과 활용."""
+    pid, eid = str(uuid.uuid4()), str(uuid.uuid4())
+    out = psql.scalar(
+        "begin;"
+        + _patient_sql(pid)
+        + _encounter_sql(eid, pid, "registered")
+        + _claims(admin_id)
+        + "select public.record_encounter_call('" + eid + "');"  # 1차 호출
+        + "select public.record_encounter_call('" + eid + "');"  # 재호출(허용 — count++)
+        + "select 'V:cnt='||call_count::text||'|at='||(called_at is not null)::text"
+        "||'|by='||(last_called_by::text='" + admin_id + "')::text||'|st='||status "
+        "  from public.encounters where id='" + eid + "';"
+        "rollback;"
+    )
+    assert _verdict(out) == "cnt=2|at=true|by=true|st=registered", out
+
+
+@pytest.mark.parametrize(
+    "status", ["scheduled", "in_progress", "completed", "cancelled", "no_show"]
+)
+def test_call_on_non_registered_rejected(psql: Psql, admin_id: str, status: str):
+    """미접수/진행중/종결 내원 호출 → PT409(호출 대상은 접수 대기 환자만)."""
+    pid, eid = str(uuid.uuid4()), str(uuid.uuid4())
+    _assert_sqlstate(
+        psql,
+        setup=_patient_sql(pid) + _seed_to_status(eid, pid, status, admin_id),
+        op="perform public.record_encounter_call('" + eid + "');",
+        sqlstate="PT409",
+        claims_uid=admin_id,
+    )
+
+
+def test_call_permission_denied_for_doctor(psql: Psql, doctor_id: str):
+    """encounter.call 미보유(doctor 기본 권한 0) → insufficient_privilege(42501 → 403)."""
+    pid, eid = str(uuid.uuid4()), str(uuid.uuid4())
+    _assert_sqlstate(
+        psql,
+        setup=_patient_sql(pid) + _encounter_sql(eid, pid, "registered"),
+        op="perform public.record_encounter_call('" + eid + "');",
+        sqlstate="42501",
+        claims_uid=doctor_id,
+    )
+
+
+def test_call_not_found(psql: Psql, admin_id: str):
+    """존재하지 않는 내원 호출 → PT404."""
+    _assert_sqlstate(
+        psql,
+        setup="",
+        op="perform public.record_encounter_call('" + str(uuid.uuid4()) + "');",
+        sqlstate="PT404",
+        claims_uid=admin_id,
+    )
+
+
+def test_call_is_audited_with_actor(psql: Psql, admin_id: str):
+    """호출 UPDATE 가 audit_logs 에 actor 와 함께 기록(FR-023 호출 기록 — 0010 감사 트리거 자동)."""
+    pid, eid = str(uuid.uuid4()), str(uuid.uuid4())
+    out = psql.scalar(
+        "begin;"
+        + _claims(admin_id)
+        + _patient_sql(pid)
+        + _encounter_sql(eid, pid, "registered")
+        + "select public.record_encounter_call('" + eid + "');"
+        + "select 'V:upd='||(count(*) filter (where action='update'))::text"
+        "||'|actor='||coalesce(bool_and(actor_id::text='" + admin_id + "'),false)::text "
+        "  from public.audit_logs where target_table='encounters' and target_id='" + eid + "';"
+        "rollback;"
+    )
+    v = _verdict(out)
+    assert "upd=1" in v and "actor=true" in v, v

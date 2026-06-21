@@ -347,3 +347,134 @@ def test_get_encounter_forbidden_without_read(client, admin_token, doctor_token,
     eid = created.json()["id"]
     res = client.get(f"{_ENCOUNTERS_URL}/{eid}", headers=_bearer(doctor_token))
     assert res.status_code == 403, res.text
+
+
+# ── Story 4.3: 대기 현황판 목록 GET /encounters ──────────────────────────────────────
+
+
+def _create_walk_in(client: TestClient, token: str, pid: str, dept_id: str) -> str:
+    res = client.post(
+        _ENCOUNTERS_URL,
+        json={"patient_id": pid, "department_id": dept_id},
+        headers=_bearer(token),
+    )
+    assert res.status_code == 201, res.text
+    return res.json()["id"]
+
+
+def test_list_encounters_returns_walk_in_with_denormalized(client, admin_token, dept_id):
+    """GET /encounters → 200 {data, meta} + walk-in 행 + 조인 표시 필드(환자명·진료과명 등)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.get(
+        _ENCOUNTERS_URL, params={"department_id": dept_id}, headers=_bearer(admin_token)
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert "data" in body and "meta" in body
+    assert body["meta"]["total"] >= 1
+    row = next((r for r in body["data"] if r["id"] == eid), None)
+    assert row is not None, "생성한 내원이 목록에 없음"
+    assert row["patient_name"] == "접수테스트환자"
+    assert row["chart_no"] and row["department_name"]  # 조인 표시 필드
+    assert row["status"] == "registered"
+    assert row["call_count"] == 0 and row["called_at"] is None  # 호출 전
+
+
+def test_list_encounters_status_filter(client, admin_token, dept_id):
+    """status=registered 필터는 walk-in 포함 / status=completed 필터는 미포함."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    inc = client.get(
+        _ENCOUNTERS_URL,
+        params={"department_id": dept_id, "status": ["registered"]},
+        headers=_bearer(admin_token),
+    )
+    assert any(r["id"] == eid for r in inc.json()["data"]), inc.text
+    exc = client.get(
+        _ENCOUNTERS_URL,
+        params={"department_id": dept_id, "status": ["completed"]},
+        headers=_bearer(admin_token),
+    )
+    assert all(r["id"] != eid for r in exc.json()["data"]), exc.text
+
+
+def test_list_encounters_forbidden_without_read(client, doctor_token, dept_id):
+    """encounter.read 미보유(doctor 권한 0) → 목록 403."""
+    res = client.get(
+        _ENCOUNTERS_URL, params={"department_id": dept_id}, headers=_bearer(doctor_token)
+    )
+    assert res.status_code == 403, res.text
+
+
+def test_list_encounters_invalid_status_422(client, admin_token, dept_id):
+    """잘못된/빈 status 값 → 422(Literal 검증, 무음 빈 보드 방지). 코드리뷰 patch."""
+    bad = client.get(
+        _ENCOUNTERS_URL,
+        params={"department_id": dept_id, "status": ["bogus"]},
+        headers=_bearer(admin_token),
+    )
+    assert bad.status_code == 422, bad.text
+    empty = client.get(
+        f"{_ENCOUNTERS_URL}?department_id={dept_id}&status=", headers=_bearer(admin_token)
+    )
+    assert empty.status_code == 422, empty.text
+
+
+def test_list_encounters_reception_golden_path(client, admin_token, reception_token, dept_id):
+    """reception(seed encounter.read 보유)은 대기 현황판 목록 조회 가능(공유 화면 골든 패스)."""
+    pid = _create_patient(client, admin_token)
+    _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.get(
+        _ENCOUNTERS_URL, params={"department_id": dept_id}, headers=_bearer(reception_token)
+    )
+    assert res.status_code == 200, res.text
+
+
+# ── Story 4.3: 환자 호출 POST /encounters/{id}/call ──────────────────────────────────
+
+
+def test_call_encounter_records(client, admin_token, dept_id):
+    """호출 → 200 + called_at 세팅·call_count=1·status 불변(registered). 재호출 → call_count=2."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    first = client.post(f"{_ENCOUNTERS_URL}/{eid}/call", headers=_bearer(admin_token))
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["called_at"] is not None
+    assert body["call_count"] == 1
+    assert body["status"] == "registered"  # 호출은 전이 아님
+    second = client.post(f"{_ENCOUNTERS_URL}/{eid}/call", headers=_bearer(admin_token))
+    assert second.status_code == 200 and second.json()["call_count"] == 2, second.text
+
+
+def test_call_non_registered_conflict_409(client, admin_token, dept_id, psql):
+    """미접수(scheduled) 내원 호출 → 409 invalid_transition(호출 대상은 접수 환자만)."""
+    pid = _create_patient(client, admin_token)
+    eid = _insert_scheduled(psql, pid, dept_id)
+    res = client.post(f"{_ENCOUNTERS_URL}/{eid}/call", headers=_bearer(admin_token))
+    assert res.status_code == 409, res.text
+    assert res.json()["error"]["code"] == "invalid_transition", res.text
+
+
+def test_call_nonexistent_encounter_404(client, admin_token):
+    """미존재 내원 호출 → 404(PT404 → NotFoundError 매핑)."""
+    res = client.post(f"{_ENCOUNTERS_URL}/{uuid.uuid4()}/call", headers=_bearer(admin_token))
+    assert res.status_code == 404, res.text
+
+
+def test_call_forbidden_without_call_permission(client, admin_token, doctor_token, dept_id):
+    """encounter.call 미보유(doctor 권한 0) → 호출 403(게이트가 본문 처리 전 차단)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.post(f"{_ENCOUNTERS_URL}/{eid}/call", headers=_bearer(doctor_token))
+    assert res.status_code == 403, res.text
+
+
+def test_reception_can_call(client, admin_token, reception_token, dept_id):
+    """reception(seed encounter.call 보유)은 환자 호출 가능 → 200(호출 골든 패스)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.post(f"{_ENCOUNTERS_URL}/{eid}/call", headers=_bearer(reception_token))
+    assert res.status_code == 200, res.text
+    assert res.json()["call_count"] == 1

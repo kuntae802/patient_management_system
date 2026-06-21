@@ -1463,7 +1463,25 @@ async def delete_guardian(sub: UUID, patient_id: UUID, guardian_id: UUID) -> UUI
 _ENCOUNTER_COLUMNS = (
     "id, encounter_no, patient_id, department_id, room_id, doctor_id, "
     "visit_type, status, cancel_reason, registered_at, consult_started_at, "
-    "completed_at, cancelled_at, no_show_at, created_by, is_active, created_at, updated_at"
+    "completed_at, cancelled_at, no_show_at, called_at, call_count, last_called_by, "
+    "created_by, is_active, created_at, updated_at"
+)
+
+# 대기 현황판 목록(Story 4.3) — 내원 + 호출 상태 + denormalized 표시 필드(조인). 컬럼/별칭은 고정
+# 리터럴(사용자 입력 아님 → SQLi 무관), 값만 $n 바인딩. raw RRN/연락처 미투영(비-PII, UX-DR22).
+_ENCOUNTER_LIST_COLUMNS = (
+    "e.id, e.encounter_no, e.patient_id, e.department_id, e.room_id, e.doctor_id, "
+    "e.visit_type, e.status, e.registered_at, e.consult_started_at, e.called_at, "
+    "e.call_count, e.is_active, e.created_at, "
+    "p.name as patient_name, p.chart_no, d.name as department_name, "
+    "rm.name as room_name, doc.name as doctor_name"
+)
+
+# 활성도 순 그룹 정렬키(대기판 UX-DR7). 6값을 0~5 로 매핑:
+# in_progress→registered→scheduled→completed→cancelled→no_show.
+_ENCOUNTER_ACTIVITY_ORDER = (
+    "case e.status when 'in_progress' then 0 when 'registered' then 1 "
+    "when 'scheduled' then 2 when 'completed' then 3 when 'cancelled' then 4 else 5 end"
 )
 
 
@@ -1577,5 +1595,75 @@ async def fetch_encounter(sub: UUID, encounter_id: UUID) -> asyncpg.Record | Non
         return await conn.fetchrow(
             f"select {_ENCOUNTER_COLUMNS} from public.encounters where id = $1", encounter_id
         )
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_encounters(
+    sub: UUID,
+    *,
+    department_id: UUID,
+    statuses: list[str] | None = None,
+    on_date: date,
+    page: int = 1,
+    page_size: int = 200,
+) -> tuple[list[asyncpg.Record], int]:
+    """대기 현황판 목록(진료과 × 일자 × 상태, 활성도 순) + 필터 적용 전체 건수(Story 4.3).
+
+    반환: (행 리스트, total). idx_encounters_dept_status(0010)가 진료과×상태 조회를 받친다. WHERE 는
+    동적 조립하되 **컬럼·연산자는 고정 리터럴**, 값만 $n 바인딩(SQLi 차단, fetch_audit_logs 패턴).
+    일자는 created_at 의 KST 날짜(walk-in 은 created_at≈registered_at). 표시 필드는 조인이지만
+    필터·count 는 e.* 만 참조(무조인 count). 게이트=라우터 encounter.read(읽기 TOCTOU 저위험).
+    """
+    clauses: list[str] = []
+    values: list[object] = []
+
+    def _add(frag_left: str, val: object, frag_right: str = "") -> None:
+        values.append(val)
+        clauses.append(f"{frag_left}${len(values)}{frag_right}")
+
+    _add("e.department_id = ", department_id)
+    _add("(e.created_at at time zone 'Asia/Seoul')::date = ", on_date)
+    _add("e.is_active = ", True)
+    if statuses:
+        _add("e.status = any(", statuses, "::text[])")  # 상태 필터(미지정 시 전체 6값)
+
+    where_sql = " where " + " and ".join(clauses)
+    limit_pos = len(values) + 1
+    offset_pos = len(values) + 2
+    offset = (page - 1) * page_size
+
+    list_sql = (
+        f"select {_ENCOUNTER_LIST_COLUMNS} from public.encounters e "
+        "join public.patients p on p.id = e.patient_id "
+        "join public.departments d on d.id = e.department_id "
+        "left join public.rooms rm on rm.id = e.room_id "
+        "left join public.users doc on doc.id = e.doctor_id"
+        f"{where_sql} order by {_ENCOUNTER_ACTIVITY_ORDER}, "
+        f"e.registered_at asc nulls last, e.encounter_no asc "
+        f"limit ${limit_pos} offset ${offset_pos}"
+    )
+    count_sql = f"select count(*) from public.encounters e{where_sql}"
+
+    async def _op(conn: asyncpg.Connection) -> tuple[list[asyncpg.Record], int]:
+        rows = await conn.fetch(list_sql, *values, page_size, offset)
+        total = int(await conn.fetchval(count_sql, *values) or 0)
+        return rows, total
+
+    return await _run_authed(sub, _op)
+
+
+async def call_encounter(sub: UUID, encounter_id: UUID) -> asyncpg.Record:
+    """record_encounter_call RPC 호출(호출 상태 기록 — registered 행에 called_at/count 갱신).
+
+    호출은 상태 전이가 아님(status 불변) — RPC 가 has_permission(42501)·소스상태(PT409)·not-found
+    (PT404)를 raise → _map_pg_sqlstate 가 Forbidden/Conflict/NotFound 로 변환(여기 try/except 불요,
+    call_register_encounter 동형). returns public.encounters → 호출 컬럼 포함 전체 행 반환.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        row = await conn.fetchrow("select * from public.record_encounter_call($1)", encounter_id)
+        assert row is not None  # RPC 성공 시 returns encounters → 항상 1행
+        return row
 
     return await _run_authed(sub, _op)
