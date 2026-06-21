@@ -330,6 +330,44 @@ async def update_employment_status(
     return await _run_authed(sub, _op)
 
 
+async def update_user_department(
+    sub: UUID, *, user_id: UUID, department_id: UUID | None
+) -> asyncpg.Record:
+    """`users.department_id` 배정/변경/해제 — 권한 재평가 + 진료과 배정 가능성 검증 + 자동 감사.
+
+    대상 미존재 → 404. `department_id` 비-null 이면 `_assert_department_assignable` 로 미존재 422
+    `invalid_department` · 비활성 422 `inactive_department`(insert_room/update_room 과 동일 가드 —
+    단일 진실). None → 소속 해제(검증 불요). 검증·UPDATE 는 동일 트랜잭션(TOCTOU 차단). 변경은
+    0004 감사 트리거가 자동 기록한다(actor = 호출 관리자).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        if not bool(await conn.fetchval("select public.has_permission('user.manage')")):
+            raise ForbiddenError(detail={"required_permission": "user.manage"})
+
+        exists = await conn.fetchval("select 1 from public.users where id = $1", user_id)
+        if exists is None:
+            raise NotFoundError(detail={"user_id": str(user_id)})
+
+        if department_id is not None:
+            await _assert_department_assignable(conn, department_id)
+
+        row = await conn.fetchrow(
+            "update public.users u set department_id = $2, updated_at = now() "
+            "where u.id = $1 "
+            "returning u.id, u.employee_no, u.name, "
+            "(select code from public.roles r where r.id = u.role_id) as role_code, "
+            "u.employment_status, u.license_no, u.license_type, u.phone, u.hire_date, "
+            "u.department_id, u.created_at, u.updated_at",
+            user_id,
+            department_id,
+        )
+        assert row is not None
+        return row
+
+    return await _run_authed(sub, _op)
+
+
 async def fetch_staff_list(sub: UUID) -> list[asyncpg.Record]:
     """전 직원 프로필 목록(사번 순). service_role/postgres 풀이 RLS(본인행) 를 우회해 전원 반환.
 

@@ -21,7 +21,12 @@ from app.core import db
 from app.core.errors import AppError
 from app.core.security import CurrentUser, require_permission
 from app.schemas.audit import AuditAction, AuditLogPage
-from app.schemas.users import EmploymentStatusUpdate, StaffCreate, StaffResponse
+from app.schemas.users import (
+    DepartmentAssign,
+    EmploymentStatusUpdate,
+    StaffCreate,
+    StaffResponse,
+)
 from app.services import audit as audit_service
 from app.services import users as users_service
 
@@ -105,6 +110,16 @@ async def update_user_employment_status(
 ) -> StaffResponse:
     """재직상태 변경 — 휴직/퇴사=접근·로그인 차단, 재직=복원. 자가-락아웃 → 409, 미존재 → 404."""
     return await users_service.change_employment_status(user.sub, user_id, payload)
+
+
+@router.patch("/users/{user_id}/department", response_model=StaffResponse)
+async def assign_user_department(
+    user_id: UUID,
+    payload: DepartmentAssign,
+    user: CurrentUser = Depends(require_user_manage),
+) -> StaffResponse:
+    """소속 진료과 배정/변경/해제 — 비활성/미존재 진료과 → 422, 미존재 직원 → 404."""
+    return await users_service.assign_department(user.sub, user_id, payload)
 
 
 # ── 감사 로그 조회 (Story 1.10, FR-243) ───────────────────────────────────────────

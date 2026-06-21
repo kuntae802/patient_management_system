@@ -339,41 +339,49 @@ def test_department_dependents_count(
     assert base.status_code == 200, base.text
     assert base.json() == {"rooms": 2, "staff": 0}
 
-    # 재직 직원 1명 임시 배정 → staff 1. 휴직도 재직이라 카운트됨을 함께 검증(퇴사만 제외).
-    # try/finally 로 department_id·employment_status 원복(시드 오염 방지).
-    # ⚠️ admin 제외: 호출 토큰 주체(admin)를 on_leave/terminated 로 바꾸면 자기 접근이 끊겨 403 이 된다.
-    emp = psql.scalar(
-        "select u.id::text from public.users u join public.roles r on r.id=u.role_id "
-        "where u.employment_status='active' and r.code <> 'admin' limit 1"
-    )
-    if emp and emp not in ("", "\\N"):
-        prev_dept = psql.scalar(
-            f"select coalesce(department_id::text,'') from public.users where id='{emp}';"
+    # 재직 직원 1명 → staff 1. 휴직도 재직이라 카운트(퇴사만 제외).
+    # Story 2.6/AC6: 시드 doctor 차용 금지 — **전용 임시 직원**(auth.users+public.users)을 그 진료과
+    # 소속으로 생성. finally 에서 auth.users 삭제(→ users CASCADE). 크래시 시에도 throwaway uid 라
+    # 시드 직원(doctor/admin)은 무오염 — 2.5 의 doctor→IM 배정에 의존하지 않는다.
+    temp_uid = str(uuid.uuid4())
+    temp_emp = f"ITEST26DEP{uuid.uuid4().hex[:6]}"
+    temp_email = f"itest-2-6-dep-{uuid.uuid4().hex[:8]}@pms.local"
+    try:
+        # 시드는 try 안에서(부분 커밋 시에도 finally 가 정리). returncode 검사로 시드 실패를
+        # 다운스트림 단언 혼선 대신 명확한 메시지로 드러낸다(psql.run 은 자체 검사 안 함).
+        seed = psql.run(
+            "insert into auth.users (instance_id, id, aud, role, email, encrypted_password, "
+            "email_confirmed_at, created_at, updated_at, raw_app_meta_data, raw_user_meta_data, "
+            "is_super_admin, confirmation_token, recovery_token, email_change, "
+            "email_change_token_new, email_change_token_current, phone_change, "
+            "phone_change_token, reauthentication_token) "
+            "values ('00000000-0000-0000-0000-000000000000', '" + temp_uid + "', 'authenticated', "
+            "'authenticated', '" + temp_email + "', '', now(), now(), now(), '{}', '{}', false, "
+            "'', '', '', '', '', '', '', ''); "
+            "insert into public.users (id, employee_no, name, role_id, department_id) values ('"
+            + temp_uid + "', '" + temp_emp + "', '의존성임시직원', "
+            "(select id from public.roles where code='nurse'), '" + dept_id + "');"
         )
-        try:
-            psql.run(f"update public.users set department_id='{dept_id}' where id='{emp}';")
-            active_staff = client.get(
-                f"{_DEPT_URL}/{dept_id}/dependents", headers=_bearer(admin_token)
-            )
-            assert active_staff.json()["staff"] == 1, active_staff.text
-            # 휴직 전환 → 여전히 그 진료과 소속이므로 재직 카운트에 포함(퇴사만 제외).
-            psql.run(f"update public.users set employment_status='on_leave' where id='{emp}';")
-            on_leave_staff = client.get(
-                f"{_DEPT_URL}/{dept_id}/dependents", headers=_bearer(admin_token)
-            )
-            assert on_leave_staff.json()["staff"] == 1, on_leave_staff.text
-            # 퇴사 전환 → 카운트 제외(더는 소속 아님).
-            psql.run(f"update public.users set employment_status='terminated' where id='{emp}';")
-            terminated_staff = client.get(
-                f"{_DEPT_URL}/{dept_id}/dependents", headers=_bearer(admin_token)
-            )
-            assert terminated_staff.json()["staff"] == 0, terminated_staff.text
-        finally:
-            restore = f"'{prev_dept}'" if prev_dept and prev_dept not in ("", "\\N") else "null"
-            psql.run(
-                f"update public.users set department_id={restore}, "
-                f"employment_status='active' where id='{emp}';"
-            )
+        assert seed.returncode == 0, f"임시 직원 시드 실패: {seed.stderr.strip()}"
+
+        active_staff = client.get(
+            f"{_DEPT_URL}/{dept_id}/dependents", headers=_bearer(admin_token)
+        )
+        assert active_staff.json()["staff"] == 1, active_staff.text
+        # 휴직 전환 → 여전히 그 진료과 소속이므로 재직 카운트에 포함(퇴사만 제외).
+        psql.run(f"update public.users set employment_status='on_leave' where id='{temp_uid}';")
+        on_leave_staff = client.get(
+            f"{_DEPT_URL}/{dept_id}/dependents", headers=_bearer(admin_token)
+        )
+        assert on_leave_staff.json()["staff"] == 1, on_leave_staff.text
+        # 퇴사 전환 → 카운트 제외(더는 소속 아님).
+        psql.run(f"update public.users set employment_status='terminated' where id='{temp_uid}';")
+        terminated_staff = client.get(
+            f"{_DEPT_URL}/{dept_id}/dependents", headers=_bearer(admin_token)
+        )
+        assert terminated_staff.json()["staff"] == 0, terminated_staff.text
+    finally:
+        psql.run(f"delete from auth.users where id='{temp_uid}';")  # CASCADE → public.users
 
 
 def test_department_dependents_forbidden_for_doctor(

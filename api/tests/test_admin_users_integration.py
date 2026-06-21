@@ -12,6 +12,7 @@ skip. 검증:
 from __future__ import annotations
 
 import os
+import uuid
 from collections.abc import Iterator
 
 import httpx
@@ -219,5 +220,102 @@ def test_patient_role_unprocessable(client: TestClient, admin_token: str, cleanu
 def test_doctor_forbidden(client: TestClient, doctor_token: str, cleanup: None) -> None:
     # doctor 는 user.manage 미보유 → 403(쓰기 도달 전 게이트 차단).
     res = _post(client, doctor_token, email=_EMAIL_A, employee_no="ITEST18A")
+    assert res.status_code == 403
+    assert res.json()["error"]["code"] == "forbidden"
+
+
+# ── 직원 진료과 배정 (Story 2.6, AC1·AC2) ─────────────────────────────────────────
+
+
+def test_department_assignment(
+    client: TestClient, admin_token: str, psql: Psql, cleanup: None
+) -> None:
+    """생성 시 진료과 배정(AC1) + 재배정·해제·비활성/미존재 진료과·미존재 직원(AC2)."""
+    im_id = psql.scalar("select id from public.departments where lower(code)=lower('IM')")
+    fm_id = psql.scalar("select id from public.departments where lower(code)=lower('FM')")
+    assert im_id and fm_id, "시드 진료과(IM·FM) 미존재 — 'supabase db reset' 필요"
+
+    # ── 생성 시 진료과 배정 (AC1) ── 전용 이메일(cleanup 패턴 itest-1-8-% 매칭, 타 테스트와 불충돌)
+    res = _post(
+        client, admin_token,
+        email="itest-1-8-dept@pms.local", employee_no="ITEST26A", department_id=im_id,
+    )
+    assert res.status_code == 201, res.text
+    new_id = res.json()["id"]
+    assert res.json()["department_id"] == im_id
+    # 응답 echo 뿐 아니라 DB 에 실제 영속됐는지 읽기-검증(AC1 — echo-만-맞고-미영속 위양성 차단).
+    assert psql.scalar(f"select department_id from public.users where id='{new_id}'") == im_id
+
+    # ── 재배정 (AC2) ──
+    res = client.patch(
+        f"{_USERS_URL}/{new_id}/department",
+        headers=_bearer(admin_token),
+        json={"department_id": fm_id},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["department_id"] == fm_id
+    assert psql.scalar(f"select department_id from users where id='{new_id}'") == fm_id
+    # 변경은 0004 감사 트리거가 update 로 기록
+    assert (
+        psql.scalar(
+            "select action from audit_logs where target_table='users' "
+            f"and target_id='{new_id}' order by created_at desc limit 1"
+        )
+        == "update"
+    )
+
+    # ── 소속 해제(None) (AC2) ──
+    res = client.patch(
+        f"{_USERS_URL}/{new_id}/department",
+        headers=_bearer(admin_token),
+        json={"department_id": None},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["department_id"] is None
+
+    # ── 비활성 진료과 배정 → 422 inactive_department (AC2 가드 — 진료과 배정 검증 재사용) ──
+    inact_code = f"ITEST26X{uuid.uuid4().hex[:8]}"
+    # INSERT 는 run 으로(stdin 경유 시 'INSERT 0 1' 태그가 섞여 scalar 부적합) → SELECT 로 id 취득.
+    psql.run(
+        "insert into public.departments (code, name, is_active) "
+        f"values ('{inact_code}', '임시비활성과', false)"
+    )
+    inact_id = psql.scalar(f"select id from public.departments where code='{inact_code}'")
+    try:
+        res = client.patch(
+            f"{_USERS_URL}/{new_id}/department",
+            headers=_bearer(admin_token),
+            json={"department_id": inact_id},
+        )
+        assert res.status_code == 422, res.text
+        assert res.json()["error"]["code"] == "inactive_department"
+    finally:
+        psql.run(f"delete from public.departments where id='{inact_id}'")
+
+    # ── 미존재 진료과 → 422 invalid_department ──
+    res = client.patch(
+        f"{_USERS_URL}/{new_id}/department",
+        headers=_bearer(admin_token),
+        json={"department_id": "00000000-0000-4000-8000-000000000999"},
+    )
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "invalid_department"
+
+    # ── 미존재 직원 → 404 ──
+    res = client.patch(
+        f"{_USERS_URL}/00000000-0000-4000-8000-000000000998/department",
+        headers=_bearer(admin_token),
+        json={"department_id": im_id},
+    )
+    assert res.status_code == 404, res.text
+
+
+def test_department_assign_forbidden(client: TestClient, doctor_token: str) -> None:
+    """doctor 는 user.manage 미보유 → 재배정 403(쓰기 도달 전 게이트 차단)."""
+    res = client.patch(
+        f"{_USERS_URL}/00000000-0000-4000-8000-000000000001/department",
+        headers=_bearer(doctor_token),
+        json={"department_id": None},
+    )
     assert res.status_code == 403
     assert res.json()["error"]["code"] == "forbidden"

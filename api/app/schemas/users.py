@@ -53,6 +53,12 @@ class EmploymentStatusUpdate(BaseModel):
     employment_status: EmploymentStatus
 
 
+class DepartmentAssign(BaseModel):
+    """직원 소속 진료과 배정/변경/해제 요청. None = 소속 해제(무소속)."""
+
+    department_id: UUID | None = None
+
+
 class StaffResponse(BaseModel):
     """직원 프로필 응답(목록·생성 공용). email/비밀번호 미포함."""
 

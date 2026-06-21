@@ -15,7 +15,12 @@ import asyncpg
 from app.core import db, supabase_admin
 from app.core.errors import AppError
 from app.core.security import STAFF_ROLES
-from app.schemas.users import EmploymentStatusUpdate, StaffCreate, StaffResponse
+from app.schemas.users import (
+    DepartmentAssign,
+    EmploymentStatusUpdate,
+    StaffCreate,
+    StaffResponse,
+)
 
 logger = logging.getLogger("app.services.users")
 
@@ -81,6 +86,20 @@ async def change_employment_status(
             user_id,
             type(exc).__name__,
         )
+    return _to_response(row)
+
+
+async def assign_department(
+    sub: UUID, user_id: UUID, payload: DepartmentAssign
+) -> StaffResponse:
+    """직원 소속 진료과 배정/변경/해제 — DB UPDATE(접근 권위·감사). GoTrue 부수효과 없음(DB 전용).
+
+    재직상태와 달리 진료과는 로그인/세션에 무관(접근 권위 아님)이라 GoTrue ban 동기화가 불필요하다.
+    검증·자동 감사는 DB 헬퍼가 소유한다.
+    """
+    row = await db.update_user_department(
+        sub, user_id=user_id, department_id=payload.department_id
+    )
     return _to_response(row)
 
 
