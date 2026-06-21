@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  bloodTypeLabel,
+  type ClinicalProfileValues,
+  clinicalProfileSchema,
   normalizeRrn,
   patientCreateSchema,
   rrnChecksumOk,
   rrnHardError,
+  toClinicalProfilePayload,
   toPatientCreatePayload,
   type PatientCreateValues,
 } from "./patients";
@@ -130,5 +134,73 @@ describe("toPatientCreatePayload", () => {
     });
     expect(payload.phone).toBe("010-1234-5678");
     expect(payload.insurance_no).toBe("X1");
+  });
+});
+
+// ── 임상 프로필(Story 3.2) ────────────────────────────────────────────────────
+
+const VALID_CLINICAL: ClinicalProfileValues = {
+  blood_type: "A+",
+  allergies: "페니실린",
+  chronic_diseases: "고혈압",
+  medications: "와파린",
+  notes: "보호자 동반",
+};
+
+describe("clinicalProfileSchema (Pydantic 거울)", () => {
+  it("유효 입력 통과", () => {
+    expect(clinicalProfileSchema.safeParse(VALID_CLINICAL).success).toBe(true);
+  });
+
+  it("blood_type 빈 값(미상)은 허용", () => {
+    expect(
+      clinicalProfileSchema.safeParse({ ...VALID_CLINICAL, blood_type: "" }).success,
+    ).toBe(true);
+  });
+
+  it("blood_type 폐쇄어휘 위반 → 실패", () => {
+    const res = clinicalProfileSchema.safeParse({ ...VALID_CLINICAL, blood_type: "Z+" });
+    expect(res.success).toBe(false);
+  });
+
+  it("자유텍스트 max_length 초과 → 실패", () => {
+    const res = clinicalProfileSchema.safeParse({
+      ...VALID_CLINICAL,
+      allergies: "가".repeat(1001),
+    });
+    expect(res.success).toBe(false);
+  });
+});
+
+describe("toClinicalProfilePayload", () => {
+  it("빈 값은 null 로 전송(명시 삭제 — PUT 전체 교체)", () => {
+    const payload = toClinicalProfilePayload({
+      blood_type: "",
+      allergies: "",
+      chronic_diseases: "",
+      medications: "",
+      notes: "",
+    });
+    expect(payload).toEqual({
+      blood_type: null,
+      allergies: null,
+      chronic_diseases: null,
+      medications: null,
+      notes: null,
+    });
+  });
+
+  it("채워진 값은 그대로 전송", () => {
+    const payload = toClinicalProfilePayload(VALID_CLINICAL);
+    expect(payload.blood_type).toBe("A+");
+    expect(payload.allergies).toBe("페니실린");
+  });
+});
+
+describe("bloodTypeLabel", () => {
+  it("값 있으면 그대로, 없으면 미확인", () => {
+    expect(bloodTypeLabel("AB-")).toBe("AB-");
+    expect(bloodTypeLabel(null)).toBe("미확인");
+    expect(bloodTypeLabel("")).toBe("미확인");
   });
 });

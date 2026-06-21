@@ -15,7 +15,8 @@ export const INSURANCE_TYPES: { value: InsuranceType; label: string }[] = [
 
 const INSURANCE_VALUES: string[] = INSURANCE_TYPES.map((t) => t.value);
 
-/** FastAPI PatientResponse 거울(snake_case 유지 — camelCase 변환 금지). 민감정보는 마스킹뿐. */
+/** FastAPI PatientResponse 거울(snake_case 유지 — camelCase 변환 금지). 민감정보는 마스킹뿐.
+ *  임상 5필드(Story 3.2)는 상세 응답에 포함(목록 PatientListItem 엔 없음). */
 export type Patient = {
   id: string;
   chart_no: string;
@@ -28,10 +29,26 @@ export type Patient = {
   email: string | null;
   insurance_type: string;
   insurance_no: string | null;
+  blood_type: string | null;
+  allergies: string | null;
+  chronic_diseases: string | null;
+  medications: string | null;
+  notes: string | null;
   is_active: boolean;
   created_at: string;
   updated_at: string;
 };
+
+// ── 혈액형(ABO+Rh) 폐쇄 어휘 — Pydantic BloodType Literal 의 거울 ───────────────
+export type BloodType = "A+" | "A-" | "B+" | "B-" | "O+" | "O-" | "AB+" | "AB-";
+
+export const BLOOD_TYPES: BloodType[] = ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"];
+const BLOOD_VALUES: string[] = BLOOD_TYPES;
+
+/** 혈액형 표시 — 빈 값/미상은 "미확인". 폐쇄어휘는 그대로 표기. */
+export function bloodTypeLabel(value: string | null): string {
+  return value ? value : "미확인";
+}
 
 // ── 주민번호 검증(클라 1선 — services/rrn 의 거울) ─────────────────────────────
 // 성별·세기 자리 → 출생 세기. 9·0(1800년대)은 HARD 범위(1–8) 밖이라 제외(서버와 동일).
@@ -124,4 +141,39 @@ export function insuranceLabel(value: string): string {
 /** 성별 코드 → 한글. */
 export function sexLabel(sex: string): string {
   return sex === "male" ? "남" : sex === "female" ? "여" : sex;
+}
+
+// ── 임상 프로필(Story 3.2) — Zod 스키마(Pydantic PatientClinicalProfileUpdate 거울, 3중 검증 1선) ──
+// blood_type 은 폐쇄어휘(빈 값=미상 허용), 자유텍스트 4종은 max_length 가드만(서버 거울).
+export const clinicalProfileSchema = z.object({
+  blood_type: z
+    .string()
+    .refine((v) => !v || BLOOD_VALUES.includes(v), "혈액형을 선택하세요"),
+  allergies: z.string().trim().max(1000, "1000자 이내로 입력하세요"),
+  chronic_diseases: z.string().trim().max(1000, "1000자 이내로 입력하세요"),
+  medications: z.string().trim().max(1000, "1000자 이내로 입력하세요"),
+  notes: z.string().trim().max(2000, "2000자 이내로 입력하세요"),
+});
+export type ClinicalProfileValues = z.infer<typeof clinicalProfileSchema>;
+
+/** 환자 → 폼 기본값(현재값 프리필). null → "" (빈 입력). */
+export function toClinicalProfileValues(p: Patient): ClinicalProfileValues {
+  return {
+    blood_type: p.blood_type ?? "",
+    allergies: p.allergies ?? "",
+    chronic_diseases: p.chronic_diseases ?? "",
+    medications: p.medications ?? "",
+    notes: p.notes ?? "",
+  };
+}
+
+/** 갱신 페이로드(PUT 전체 교체). 빈 값은 null 로 전송(서버 None=값없음 계약 — 명시 삭제 지원). */
+export function toClinicalProfilePayload(v: ClinicalProfileValues): Record<string, unknown> {
+  return {
+    blood_type: v.blood_type || null,
+    allergies: v.allergies || null,
+    chronic_diseases: v.chronic_diseases || null,
+    medications: v.medications || null,
+    notes: v.notes || null,
+  };
 }

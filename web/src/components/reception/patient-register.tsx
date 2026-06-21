@@ -1,6 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import Link from "next/link";
 import { useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
@@ -117,13 +118,22 @@ export function PatientRegister() {
           )}
         </dl>
 
-        <button
-          type="button"
-          onClick={() => setCreated(null)}
-          className="rounded-md bg-primary px-3 py-2 text-[13px] font-medium text-white hover:bg-primary-hover"
-        >
-          새 환자 등록
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setCreated(null)}
+            className="rounded-md bg-primary px-3 py-2 text-[13px] font-medium text-white hover:bg-primary-hover"
+          >
+            새 환자 등록
+          </button>
+          {/* 임상 프로필(혈액형·알레르기 등) 입력 — 상세 풀페이지로 이동(Story 3.2). 전역 검색 진입은 3.5. */}
+          <Link
+            href={`/patients/${created.id}`}
+            className="rounded-md border border-border bg-card px-3 py-2 text-[13px] font-medium text-foreground hover:bg-muted"
+          >
+            임상 프로필 입력 →
+          </Link>
+        </div>
       </section>
     );
   }
