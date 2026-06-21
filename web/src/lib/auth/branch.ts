@@ -3,6 +3,7 @@
 // 비직원(역할 null 또는 'patient')은 환자 영역(현재 실제 환자/자가가입은 Epic 3, 포털은 Epic 8).
 
 export const LOGIN_PATH = "/login";
+export const SIGNUP_PATH = "/signup"; // (auth) 환자 자가가입(Story 3.4) — 미인증 공개 경로
 export const STAFF_HOME = "/home"; // (staff) 영역 — 역할별 화면은 Epic 4+가 대체
 export const PATIENT_HOME = "/portal"; // (patient) 영역 placeholder
 

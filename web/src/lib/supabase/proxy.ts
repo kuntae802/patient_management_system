@@ -2,7 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-import { LOGIN_PATH } from "@/lib/auth/branch";
+import { LOGIN_PATH, SIGNUP_PATH } from "@/lib/auth/branch";
 import { env } from "@/lib/env";
 
 // @supabase/ssr 세션 갱신 + 인증 가드. Next 16에서 middleware→proxy(노드 런타임 기본).
@@ -43,7 +43,12 @@ export async function updateSession(request: NextRequest): Promise<NextResponse>
   }
 
   const path = request.nextUrl.pathname;
-  const isLoginRoute = path === LOGIN_PATH || path.startsWith(`${LOGIN_PATH}/`);
+  // 공개 경로(미인증 허용) = 로그인 + 환자 자가가입(Story 3.4). 그 외는 인증 필요.
+  const isPublicRoute =
+    path === LOGIN_PATH ||
+    path.startsWith(`${LOGIN_PATH}/`) ||
+    path === SIGNUP_PATH ||
+    path.startsWith(`${SIGNUP_PATH}/`);
 
   const redirectTo = (pathname: string): NextResponse => {
     const url = request.nextUrl.clone();
@@ -54,10 +59,10 @@ export async function updateSession(request: NextRequest): Promise<NextResponse>
     return res;
   };
 
-  if (!user && !isLoginRoute) {
+  if (!user && !isPublicRoute) {
     return redirectTo(LOGIN_PATH);
   }
-  if (user && isLoginRoute) {
+  if (user && isPublicRoute) {
     return redirectTo("/");
   }
   return response;

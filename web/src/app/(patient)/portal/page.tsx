@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { LogoutButton } from "@/components/auth/logout-button";
@@ -19,6 +20,13 @@ export default async function PatientPortalPage() {
       <p className="text-[13px] text-muted-foreground">
         준비 중입니다. 예약 · 진료 내역 · 영수증 조회는 추후 제공됩니다.
       </p>
+      {/* 미연결 환자(자가가입 후 본인 확인 미완)의 연결 진입점(Story 3.4). 이미 연결됐으면 멱등. */}
+      <Link
+        href="/onboarding"
+        className="rounded-md border border-border bg-card px-3 py-2 text-[13px] font-medium text-foreground hover:bg-muted"
+      >
+        본인 진료기록 연결
+      </Link>
       <LogoutButton />
     </main>
   );

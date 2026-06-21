@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { LoginForm } from "./login-form";
 
 // 로그인 화면((auth) 영역 — AppShell 없음, 인증 전). 디자인 토큰·Pretendard는 루트 레이아웃 상속.
@@ -12,6 +14,13 @@ export default function LoginPage() {
           <p className="text-[13px] text-muted-foreground">계정으로 로그인하세요</p>
         </div>
         <LoginForm />
+        {/* 환자 자가가입(Story 3.4) — 직원은 관리자 생성이므로 이 링크는 환자용. */}
+        <p className="text-center text-[13px] text-muted-foreground">
+          처음 오셨나요?{" "}
+          <Link href="/signup" className="font-medium text-primary hover:text-primary-hover">
+            환자 회원가입
+          </Link>
+        </p>
       </div>
     </main>
   );

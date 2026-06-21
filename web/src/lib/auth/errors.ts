@@ -16,3 +16,25 @@ export function authErrorMessage(error: unknown): string {
   }
   return GENERIC;
 }
+
+// ── 자가가입(Story 3.4) 오류 → 한국어 메시지 ──────────────────────────────────
+const EMAIL_IN_USE = "이미 가입된 이메일입니다. 로그인해 주세요.";
+const WEAK_PASSWORD = "비밀번호가 보안 정책을 충족하지 않습니다.";
+const SIGNUP_GENERIC = "회원가입에 실패했습니다. 잠시 후 다시 시도해 주세요.";
+const ALREADY_USED_RE = /already (registered|exists)|user_already_exists/i;
+
+/** Supabase signUp 오류를 무PII 한국어 메시지로 변환. */
+export function signupErrorMessage(error: unknown): string {
+  if (error && typeof error === "object") {
+    const e = error as { status?: number; code?: string; message?: string };
+    if (
+      e.code === "user_already_exists" ||
+      e.code === "email_exists" ||
+      (typeof e.message === "string" && ALREADY_USED_RE.test(e.message))
+    ) {
+      return EMAIL_IN_USE;
+    }
+    if (e.code === "weak_password") return WEAK_PASSWORD;
+  }
+  return SIGNUP_GENERIC;
+}
