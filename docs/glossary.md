@@ -254,3 +254,25 @@
 | `createWalkInEncounter` / `walkInIntakeSchema` / `Encounter` | 웹(`lib/reception/encounters.ts`) | 접수 호출(apiFetch)·Zod 스키마·타입(수동 정의 — `database.types.ts` 미생성) |
 | `patient-intake` | 웹 컴포넌트(`components/reception/`) | 접수 화면(환자 검색 3.5 재사용 + 진료과 select + 접수 확정). 라우트 `/reception/intake`(nav 기존, 역할 노출) |
 | reception → `encounter.register`·`encounter.read` | seed grant(`seed.sql`) | 데모/통합테스트 가동(walk-in 골든 패스). 프로덕션 런타임 grant 는 Story 1.7 매트릭스 소유 |
+
+> **(Story 4.3 확정) `0011_encounter_call.sql` = 호출 상태 + 실시간 publication.** encounters 에 호출 마커 컬럼 추가 + `record_encounter_call` RPC + `encounter.call` 권한 + encounters 를 `supabase_realtime` publication 에 등록(코드베이스 최초 realtime). 적용된 마이그레이션은 0001~0011. 다음(Epic 4 후속/5)은 **0012**부터.
+
+## 환자 호출 · 대기 현황판 (Story 4.3, `0011_encounter_call.sql`)
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `called_at` | 컬럼(timestamptz) | 최종 호출 시각(비-상태 마커 — 호출은 전이 아님, nullable) |
+| `call_count` | 컬럼(integer, default 0) | 누적 호출 횟수(재호출 포함 — 중복 호출 가시화) |
+| `last_called_by` | 컬럼(FK users) | 최종 호출 직원(`auth.uid()`) |
+| `record_encounter_call(uuid)` | RPC(SECURITY DEFINER) | 호출 기록(**전이 아님** — `registered` 행에 `called_at`/`call_count++`/`last_called_by`). 권한 `encounter.call`. 미접수/진행중/종결 호출 → `PT409`(→409)·미존재 → `PT404`(→404). 재호출(registered)은 허용(count++). 전이 트리거 same-status 통과 활용 |
+| `encounter.call` | 권한(신규 시드) | 환자 호출 — 0011 카탈로그 확장 + admin 부트 grant(reception 데모 grant=seed; doctor=4.4) |
+| `GET /v1/encounters` | 엔드포인트 | 대기 현황판 목록 — 진료과(필수)·상태·일자(KST, 기본 오늘) 필터, 활성도 순. 게이트 `encounter.read`. denormalized 조인(환자명·차트번호·진료과명·진료실·담당의) `{data, meta}`. payload 비-PII 보장 위해 raw RRN/연락처 미투영 |
+| `POST /v1/encounters/{id}/call` | 엔드포인트(액션) | 환자 호출 — `record_encounter_call` RPC 소비. status PATCH 아님. 게이트 `encounter.call`. mutation 중 버튼 disable=중복 호출 1차선(FR-023) |
+| `EncounterListItem` / `EncounterPage` | 스키마(Pydantic) · 웹 타입 | 보드 행(0010·0011 컬럼 + 조인 표시 필드) / `{data, meta}` 페이지 |
+| `fetch_encounters` / `call_encounter` | db 래퍼(`core/db.py`) | 목록 조회(진료과×일자×상태 동적 필터+조인+count, `idx_encounters_dept_status`) / 호출 RPC 호출 |
+| `list_encounters` / `record_call` | 서비스(`services/encounters.py`) | 목록 페이지 조립(일자 기본=오늘 KST) / 호출 기록 |
+| `fetchEncounters` / `callEncounter` / `registerEncounter` | 웹(`lib/reception/encounters.ts`) | 목록 조회 / 호출 / (예약)접수 호출(apiFetch). `nextCallCandidate`·`waitMinutes`·`STATUS_GROUP_ORDER`·`TERMINAL_STATUSES` 헬퍼 |
+| `StatusBadge` | 웹 컴포넌트(`components/encounters/`) | UX-DR6 status-badge A3(글리프 ○●◐✓✕ + 상태색 라벨, 색 비의존). `ENCOUNTER_STATUS_META`(glyph 포함) 소비 |
+| `useEncountersRealtime` | 웹 훅(`hooks/`) | 코드베이스 최초 realtime — `postgres_changes`(encounters, 진료과 필터) 구독 → 디바운스 refetch + 백스톱 폴링 + 신선도(채널 stale) 가드(UX-DR18/21⑪) |
+| `WaitingBoard` | 웹 컴포넌트(`components/encounters/`) | 대기 현황판(원무·의사 공유) — 상태 그룹 섹션·"다음 호출" 히어로·KPI·다음-액션(호출/접수)·stale 배너. 라우트 `/reception/waiting`·`/doctor/waiting` |
+| reception → `encounter.call` | seed grant(`seed.sql`) | 데모 호출 골든 패스(doctor 미부여 — 4.4) |
