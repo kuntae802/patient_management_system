@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-22T00:30:00+0000
+last_updated: 2026-06-21T15:00:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -84,7 +84,7 @@ development_status:
   4-1-내원-상태머신-전이-rpc-db: done
   4-2-환자-접수-예약-walk-in: done
   4-3-대기-현황판-실시간-다음-호출: done
-  4-4-진료-대기열-진찰-시작: backlog
+  4-4-진료-대기열-진찰-시작: done
   4-5-진료-허브-환자-배너-과거-이력-활력-컨텍스트: backlog
   4-6-soap-진료기록-작성: backlog
   4-7-진단-부착-kcd-주-부상병-구분: backlog
