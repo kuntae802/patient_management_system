@@ -239,3 +239,18 @@
 > `(INSERT)`→`scheduled`(예약·Epic6)\|`registered`(walk-in·MVP) │ `scheduled`→`registered`\|`cancelled`\|`no_show` │ `registered`→`in_progress`\|`cancelled` │ `in_progress`→`completed`. 종결(`completed`·`cancelled`·`no_show`)=이탈 전이 없음(역행·건너뛰기·종결 재전이 = `PT409`). **`no_show` 는 `scheduled` 에서만**(접수=도착 증명). **`in_progress→cancelled` 기본 불허**(부분수행=`completed` 후 Epic7 정산, FR-119). 부분수행은 별도 상태 아님(`encounter_status` 6값 불변).
 >
 > **쓰기 경로:** 전이는 SECURITY DEFINER RPC(자체 `has_permission()` 게이트 = 동일 txn TOCTOU 재평가) 또는 service_role 만 — `authenticated` 직접 쓰기 정책 없음(RLS). RPC EXECUTE 는 authenticated+service_role 에 grant(자체 게이트로 안전). FastAPI 액션 엔드포인트(`POST /encounters/{id}/register|start-consult|…`)·asyncpg 래퍼·SQLSTATE→HTTP 매핑은 **Story 4.2/4.4 소비**(4.1=DB 토대). **encounters 에 PII/건강민감 자유텍스트 컬럼 없음**(주호소·진단=4.6/4.7) → 감사 마스킹(3.6) 집합 변경 불요.
+
+## 내원 접수 — FastAPI · 웹 소비 레이어 (Story 4.2)
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `POST /v1/encounters` | 엔드포인트 | walk-in 즉석 접수 — service_role 직접 INSERT(`status='registered'`·`visit_type='walk_in'`, register RPC 미경유). 게이트 `encounter.register`. 미존재 환자→404·비활성 환자/진료과→422. 생성 행 자체가 대기열 진입 |
+| `POST /v1/encounters/{id}/register` | 엔드포인트(액션) | 예약 환자 도착 접수 — `register_encounter` RPC 소비(`scheduled→registered`). status PATCH 아님. 잘못된 전이→409·미존재→404 |
+| `GET /v1/encounters/{id}` | 엔드포인트 | 내원 단건 조회(접수 결과·상세). 게이트 `encounter.read`. 목록·대기 현황판은 4.3 |
+| `insert_walk_in_encounter` / `call_register_encounter` / `fetch_encounter` | db 래퍼(`core/db.py`) | walk-in INSERT(`registered_at`·`created_by` 충전=4.1 handoff 청산·환자/진료과 활성 검증) / register RPC 호출 / 단건 조회 |
+| `_map_pg_sqlstate` | 헬퍼(`core/db.py`) | **SQLSTATE→도메인 오류 공유 매핑(4.2 도입)** — `PT409→ConflictError(invalid_transition,409)`·`PT404→NotFoundError(404)`·`42501→ForbiddenError(403)`, 그 외→503. `_run_authed` 가 모든 db 호출에 적용(4.4/Epic6·7 재사용) |
+| `create_walk_in_encounter` / `register_scheduled_encounter` / `get_encounter` | 서비스(`services/encounters.py`) | 오케스트레이션(검증·RPC 호출→응답 매핑). 상태머신·감사는 DB 소유 |
+| `EncounterCreate` / `EncounterResponse` | 스키마(Pydantic) | 생성 요청(`patient_id`·`department_id`·선택 `room_id`) / 응답(0010 전 컬럼, snake_case). 비-PII |
+| `createWalkInEncounter` / `walkInIntakeSchema` / `Encounter` | 웹(`lib/reception/encounters.ts`) | 접수 호출(apiFetch)·Zod 스키마·타입(수동 정의 — `database.types.ts` 미생성) |
+| `patient-intake` | 웹 컴포넌트(`components/reception/`) | 접수 화면(환자 검색 3.5 재사용 + 진료과 select + 접수 확정). 라우트 `/reception/intake`(nav 기존, 역할 노출) |
+| reception → `encounter.register`·`encounter.read` | seed grant(`seed.sql`) | 데모/통합테스트 가동(walk-in 골든 패스). 프로덕션 런타임 grant 는 Story 1.7 매트릭스 소유 |
