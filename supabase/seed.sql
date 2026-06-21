@@ -16,7 +16,9 @@
 --       + medical_record.write/read(4.6) + diagnosis.attach/read·encounter.complete(4.7) 보유 → 진료 대기·진찰
 --       시작 + 진료 허브 환자 배너·임상 프로필·RRN/연락처 reveal + SOAP 진료기록 작성·조회 + 진단 부착·진료 완료 골든 패스.
 --       rbac.manage 등 그 외 권한은 미보유 → /auth/check 등은 여전히 403(Story 1.5 매트릭스 검증).
---     · nurse@pms.local      role=nurse     → 권한 0(간호 권한은 Epic 5)  → 무권한 baseline(403 통합 검증용, Story 4.4)
+--     · nurse@pms.local      role=nurse     → encounter.*/patient.* 권한 0(그쪽 403 baseline, Story 4.4/4.5).
+--       Story 5.1 부터 오더 권한(order.read·examination.perform·treatment.perform) 보유 → 검체/처치 수행 골든 패스.
+--       ⚠️ 오더 도메인 403 baseline 은 reception(임상 오더 권한 0)으로 이동.
 --     · reception@pms.local  role=reception → encounter.register/read/call 보유(하단 grant) → walk-in 접수·호출
 --       골든 패스 가동(Story 4.2/4.3). 역할 grant 는 데모/통합테스트용 — 프로덕션은 1.7 매트릭스가 부여.
 --   ★ 안전: seed.sql 은 로컬 `supabase db reset` 에서만 실행된다. 운영 배포는 `supabase db push`
@@ -155,6 +157,35 @@ join public.permissions p on p.code in ('diagnosis.attach', 'diagnosis.read', 'e
 where r.code = 'doctor'
 on conflict (role_id, permission_id) do nothing;
 
+-- ── (DEV/데모) Epic 5 오더 권한 grant — 의사·간호·방사선 (Story 5.1) ──────────────────────
+-- 오더 도메인은 직역 분담: 의사=조회+판독, 간호=조회+검체/처치 수행, 방사선사=조회+촬영 수행. order.read 는
+-- 임상 3역(의사·간호·방사선)만(원무 제외 = 최소권한). order.read/examination.perform/examination.complete 는
+-- 0015 신규, treatment.perform 는 0002 기존 — 여기선 역할 매핑만. ★ 프로덕션 런타임 grant 는 1.7 매트릭스 UI
+-- 소유 — 이 시드는 로컬 db reset 전용(운영 db push 미반영). 멱등.
+-- ⚠️ baseline 이동: nurse 가 오더 권한을 받으므로 nurse 는 더 이상 "오더" 무권한 baseline 이 아니다(여전히
+--    encounter.*/patient.* 권한 0 → 그쪽 4.4/4.5 baseline 은 유지·무영향). **오더 403 검증 baseline = reception**
+--    (임상 오더 권한 0). radiologist 데모 계정은 미존재(5.8 신설) — 본 grant 는 forward-looking.
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code in ('order.read', 'examination.complete')
+where r.code = 'doctor'
+on conflict (role_id, permission_id) do nothing;
+
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code in ('order.read', 'examination.perform', 'treatment.perform')
+where r.code = 'nurse'
+on conflict (role_id, permission_id) do nothing;
+
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code in ('order.read', 'examination.perform')
+where r.code = 'radiologist'
+on conflict (role_id, permission_id) do nothing;
+
 -- ════════════════════════════════════════════════════════════════════════════
 -- 마스터 시드 (Story 2.5) — 진료과 · 진료실 · KCD 진단 · EDI 수가 · 약품
 -- ════════════════════════════════════════════════════════════════════════════
@@ -268,6 +299,15 @@ insert into public.drugs (code, name, ingredient_code, unit, effective_from, eff
   ('670000010', '생리식염수주 500밀리리터',                   null,        'mL',   '2020-01-01', null),
   ('661200340', '리도카인염산염주 2%',                        '251801AIJ', '앰플', '2020-01-01', null)
 on conflict (lower(code)) do nothing;
+
+-- ── 검사장비 (equipment) — 영상검사 촬영 배정용 데모 3종 (Story 5.1) ──────────
+-- 5.8 촬영 워크리스트/장비 목록 골든 패스용. status=available(가용). ⚠️ equipment.code 는 직접 UNIQUE
+-- 제약(0008 lower(code) 함수 인덱스 비대상)이므로 `on conflict (code)`(masters 의 (lower(code)) 와 다름).
+insert into public.equipment (code, name, modality, status) values
+  ('XR-01',  '제1일반촬영기', 'X-ray', 'available'),
+  ('XR-02',  '제2일반촬영기', 'X-ray', 'available'),
+  ('US-01',  '초음파진단기',  'US',    'available')
+on conflict (code) do nothing;
 
 -- ── (DEV ONLY) 데모 의사 → 진료과 배정 ──────────────────────────────────────
 -- 골든 패스(Epic 4 접수·Epic 6 예약)는 "진료과 소속 의사"를 전제한다. 위 DEV ONLY doctor 계정을

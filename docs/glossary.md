@@ -67,13 +67,16 @@
 | `cancelled` | 취소 |
 | `no_show` | 노쇼 |
 
-## enum — 오더 생명주기 (유형별)
+## enum — 오더 생명주기 (유형별, Story 5.1 `0015_orders.sql` 확정)
 
-- 처방: `issued`(발행) → `dispensed`(발급, 원외 약국)
-- 검사·영상: `ordered`(지시) → `performed`(수행) → `completed`(판독/완료)
-- 처치: `ordered`(지시) → `performed`(수행) → `completed`(완료)
+- 처방 `prescriptions.status`: `issued`(발행) → `dispensed`(발급, 원외 약국·Epic 7 7.7). 초기 `issued`.
+- 검사·영상 `examinations.status`: `ordered`(지시) → `performed`(수행) → `completed`(판독/완료). 초기 `ordered`.
+- 처치 `treatment_orders.status`: `ordered`(지시) → `performed`(수행) → `completed`(완료·예약). 초기 `ordered`.
 
-> 오더 상태 어휘 통일·전이표 full matrix는 해당 마이그레이션(`0009`) 작성 시 확정(다운스트림).
+> **(gap ⑤ 청산)** 오더 상태 어휘 통일·전이표 full matrix를 `0015_orders.sql`(Story 5.1)이 확정. 유형별 per-table
+> 상태머신(통합 orders 테이블 없음 — `order`=총칭 추상). forward-only(역행·건너뛰기·재수행 없음), 위반 = `PT409`(→409,
+> 0010 어휘 재사용·신규 SQLSTATE 불요). 전진 RPC = `perform_examination`/`complete_examination`/`perform_treatment_order`
+> (소스상태 precondition = FR-093 재수행 차단). `dispense_prescription`(처방)·`complete_treatment_order`(처치)는 예약(Epic 7/미래).
 
 ## enum · CHECK — 신원·RBAC·감사 (Story 1.3, `0002`~`0004`)
 
@@ -297,3 +300,18 @@
 | doctor → `diagnosis.attach`·`diagnosis.read`·`encounter.complete` | seed grant(`seed.sql`) | 진단 부착·조회·진료 완료 골든 패스(nurse=무권한 baseline 403). 데모/통합테스트용(프로덕션=1.7 매트릭스) |
 
 > **진단 부착 경계(Story 4.7 확정):** 진단은 **KCD `diagnoses` 마스터 FK(`diagnosis_id`)로만** 부착 — free-text 차단(UX-DR12)의 구조적 강제. `encounter_diagnoses` 의 감사 스냅샷은 `diagnosis_id`(FK)·`is_primary`·플래그만 = 자유텍스트 미유입 → **`_SENSITIVE_KEY` 마스킹 집합 무변경**(4.6 SOAP 자유텍스트와의 핵심 차이). 주상병 불변식(≤1/내원)은 **부분 unique 인덱스**가 최종선(강등은 FastAPI 동일 트랜잭션). 진료 완료는 **주상병 1개 필수**(`complete_encounter` 게이트 PT422→422·웹은 진단 필드 포커스+인라인 "주상병을 1개 지정해야 합니다", UX-DR18). **완료→수납 정산·sticky 액션바·flow stepper·신원 확인 = Epic 7**(4.7 = 완료 게이트 + 최소 트리거). **처방↔진단 연결(FR-051)·과거 진단 타임라인(FR-031 좌패널 backfill) = Epic 5/이월**.
+
+## 오더 생명주기 · 전이 RPC (Story 5.1, `0015_orders.sql`)
+
+| 식별자 | 종류 | 의미·계약 |
+|---|---|---|
+| `prescriptions` / `prescription_details` | 테이블(0015) | 처방전 헤더(1:N·`encounter_id`·`encounter_diagnosis_id` 근거 진단 FR-051 nullable·`status` issued→dispensed·`ordered_by` 발행의사) + 처방상세 라인(`drug_id` 약품 마스터 FK·`dose`·`frequency`·`duration_days`·`usage_instruction` — free-text 약품 차단의 구조적 강제) |
+| `examinations` | 테이블(0015) | 검사·영상 오더(`exam_type` lab/imaging 워크리스트 라우팅 FR-061·`fee_schedule_id` EDI 행위 FK·`status` ordered→performed→completed·지시/수행/판독 `*_by`+`*_at`·`equipment_id` 촬영 배정 nullable). 판독 소견 텍스트 컬럼은 5.9 추가 |
+| `treatment_orders` | 테이블(0015) | 처치 오더(`fee_schedule_id` 행위 FK·`status` ordered→performed→completed·지시/수행 추적). 수행 내용·간호기록은 5.7 `nursing_record` 별도 |
+| `equipment` | 테이블(0015) | 검사장비 마스터(`code`·`name`·`modality`·`status` available/in_use/maintenance — 상태머신 아님). 전역 참조 RLS(rooms 미러). 5.8 목록·상태 FR-103 |
+| `enforce_prescription_transition` / `enforce_act_order_transition` | 트리거 함수(0015) | 전이 매트릭스 강제(INSERT 초기상태 가드 + UPDATE 매트릭스). 검사·처치 공용(act 함수). 위반 `PT409`. 0010 `enforce_encounter_transition` 패턴 |
+| `perform_examination(uuid)` / `complete_examination(uuid)` / `perform_treatment_order(uuid)` | RPC(SECURITY DEFINER) | 전진 전이 — 권한 자가 게이트(`examination.perform`/`examination.complete`/`treatment.perform`) + `for update` + 소스상태 precondition(재수행 차단 FR-093). 액터=`auth.uid()`. not-found `PT404`. 0010 `start_consult` 동형 |
+| `order.read` / `examination.perform` / `examination.complete` | 권한(0015 신규) | 오더 조회(RLS 직원 게이트 — 의사·간호·방사선만, 원무 제외 최소권한) / 검사·영상 수행 / 판독 완료. **admin 부트 grant 재실행**(test_admin_role_has_all_permissions 회귀 회피). `prescription.create`·`examination.order`·`treatment.order`·`treatment.perform`는 0002 기존 |
+| nurse → `order.read`·`examination.perform`·`treatment.perform` · doctor → `order.read`·`examination.complete` · radiologist → `order.read`·`examination.perform` | seed grant(`seed.sql`) | 직역 분담 오더 골든 패스. **오더 403 baseline = reception**(임상 오더 권한 0 — nurse 의 encounter/patient baseline 과 분리). 데모/통합테스트용(프로덕션=1.7 매트릭스) |
+
+> **오더 도메인 경계(Story 5.1 확정):** 유형별 per-table 상태머신(통합 orders 테이블 없음 — `order`=총칭 추상, 우 오더 패널 5.5 가 query/UI union). **오더 생성(처방 발행 5.2·검사/처치 지시 5.3/5.4) INSERT = service_role 직접**(walk-in/medical_records 선례·RPC 아님·API TOCTOU 권한 재평가) — 본 스토리는 스키마 + 초기상태 트리거 가드 + 전진 RPC만. 감사 스냅샷 = FK·플래그·숫자·짧은 구조화 텍스트(약품=`drug_id` FK 불투명·dose/frequency 는 조인 없이 무의미) → **`_SENSITIVE_KEY` 마스킹 집합 무변경**(encounter_diagnoses 동일 FK posture). 자유 임상 서사(판독 소견 5.9·처치 수행 내용 5.7)는 소유 스토리가 컬럼+마스킹 동반 추가(본 파일은 자유 서사 컬럼 0). **마이그 번호 0015**(에픽/아키 stale `0009_orders` — 실제 0015·Epic 5 블록 0015~0029 고정·Epic 6 워크트리 0030~ 비침범). 적용된 마이그레이션은 0001~0015. **수가 자동발생 트리거·`fee_mappings`=5.10·알레르기 교차검증=5.5·영상 업로드=5.8·dispense/order-cancel·내원상태 게이트·앱 낙관적 잠금=이월**.
