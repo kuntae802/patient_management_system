@@ -2,6 +2,13 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: code review of 3-4-환자-앱-자가가입-기존-레코드-자동-연결 (2026-06-21)
+
+> 3레이어 적대적 리뷰. Acceptance Auditor: PASS-WITH-FINDINGS(AC1~4 + 이월 인수 ①~⑤ + PII 경계 위반 0). patch 3건(동시성 advisory lock·`_norm_name` NFC·onboarding 사문 분기) 처리, dismiss 9, 아래는 defer.
+
+- **self-link / get_self `is_active`(soft-delete) 미필터** [api/app/core/db.py `link_self_patient`·`fetch_self_patient`] — 자가연결·`GET /self` 가 `where resident_no_hash=$1`/`where auth_uid=$1` 로만 매칭하고 `is_active` 를 거르지 않아, 비활성(soft-deleted) 환자 레코드도 연결·조회된다. 단 **현재 환자 비활성화 플로우가 없어 도달 불가능한 잠재 항목**이고, 이는 **이미 L23(3.2 리뷰 "환자 GET/UPDATE `is_active` 미필터")이 통합 추적 중인 항목과 동형**(`fetch_patient`·`update_patient_clinical_profile` 도 미필터). 단독으로 self-link 만 필터하면 읽기 경로 불일치 → 환자 soft-delete/병합 기능 도입 스토리에서 GET·UPDATE·self-link 일관 정책(404 또는 read-only)으로 일괄 처리. **신규 항목 신설 없이 L23 범위에 self-link 경로 추가 확인.**
+- **공개 가입 RRN 존재/성명 오라클 + self-link 레이트리밋 부재** [api/app/api/v1/patients.py `self_link` · supabase/config.toml] — `enable_signup=true` 재활성으로 가입한 환자가 `POST /self-link` 로 임의 주민번호를 탐침하면 상태코드(404 `no_patient_record` / 422 `identity_mismatch` / 409 `already_linked_other`)로 (a) 해당 RRN 의 환자 등록 여부와 (b) 성명 일치 여부를 열거할 수 있다(누가 이 병원 환자인지 confidentiality 오라클). 시뮬 본인인증 + 성명 단독 가드라 표적(성명 보유) 공격은 미차단. config 기본 레이트리밋(`sign_in_sign_ups=30`/5분) 외 self-link 전용 throttle·연속 실패 잠금·캡차·이메일 확인이 없다. **스펙 Dev Notes §본인인증=시뮬 seam + 위협 모델 / Open Questions #5 / 이월 인수 ⑤에 이미 명시적으로 기록된 갭**(은폐 아님). 일괄 해결처: **보안 하드닝 스토리**(self-link 전용 레이트리밋 + 연속 실패 잠금 + 이메일 확인 활성 검토) 또는 실 본인인증(PASS) 연동(RRN 소유의 암호학적 증명이 성명 가드를 대체). 실 PASS 도입 시 `services/identity.simulate_identity_verification` seam 이 교체점.
+
 ## Deferred from: code review of 3-3-보호자-정보-기록 (2026-06-21)
 
 > 3레이어 적대적 리뷰. Acceptance Auditor: AC1~3 + 이월 인수 3건 위반 0. patch 3건(datalist id 중복·삭제 더블서밋·update_guardian 422 테스트) 처리, dismiss 6, 아래는 defer.

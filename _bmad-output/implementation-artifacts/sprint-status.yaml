@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-22T02:15:00+0000
+last_updated: 2026-06-21T00:00:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -72,7 +72,7 @@ development_status:
   3-1-환자-레코드-생성-원무-직접-등록-암호화-rls-적용: done
   3-2-환자-임상-프로필-입력-조회: done
   3-3-보호자-정보-기록: done
-  3-4-환자-앱-자가가입-기존-레코드-자동-연결: backlog
+  3-4-환자-앱-자가가입-기존-레코드-자동-연결: done
   3-5-전역-환자-검색-ctrl-k-커맨드-팔레트: backlog
   epic-3-retrospective: optional
 

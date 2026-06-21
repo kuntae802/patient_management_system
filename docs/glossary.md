@@ -203,5 +203,8 @@
 | `parse_rrn` | 함수(api·`services/rrn`) | 검증된 주민번호 → `(birth_date, sex)` 파생(순수). `normalize_rrn`/`validate_rrn`/`mask_rrn` 동반 |
 | `PatientCreate` / `PatientResponse` / `PatientListItem` | 스키마(api·`schemas/patients`) | 생성 요청(`resident_no` 필수, `birth_date`/`sex` 미수신=서버 파생) / 응답(마스킹, `_enc`·`_hash` 미포함) / 목록 경량 |
 | `patientCreateSchema` / `toPatientCreatePayload` / `rrnHardError` / `rrnChecksumOk` / `PatientRegister` | 상수·함수·컴포넌트(web·`lib/reception/patients`·`components/reception/patient-register`) | 등록 폼 Zod(Pydantic 거울) · 페이로드 변환 · RRN HARD 사전체크(차단)·체크섬 SOFT(경고) · RHF 풀페이지 폼(성공 시 chart_no+마스킹 확인) |
+| `self-link` / `link_self_patient` / `PatientSelfLinkRequest` / `PatientSelfSummary` | 경로·함수·스키마(Story 3.4, api·`patients`·`core/db`·`schemas/patients`) | 앱 자가가입 후 본인 연결 — `POST /patients/self-link`(인증·비직원). `blind_index(normalize_rrn)` 매칭 → `auth_uid = JWT sub`(클라 uid 미수용). outcome 코드: `linked`(연결)·`already_linked`(멱등)·`no_patient_record`(404)·`identity_mismatch`(성명불일치 422)·`already_linked_other`/`account_already_linked`(409) |
+| `get_current_patient` | 의존성(api·`core/security`) | 비직원(환자) 게이트 — active 직원 5역할이면 403(`get_current_staff` 반전). self-link/포털용 |
+| `simulate_identity_verification` | 함수(api·`services/identity`) | 본인인증(PASS) **시뮬 seam** — 실연동 자리. 현재 통과만, 사칭 방지 1차선은 self-link 성명 일치 가드 |
 
 > **환자 PII 경계(Story 3.1 확정):** raw 주민번호는 `resident_no_enc`(bytea)로만 — 응답·로그·URL·감사 before/after 평문 부재. 응답은 `resident_no_masked`. **컬럼 GRANT 로 `_enc`/`_hash` 는 authenticated SELECT 제외**(RLS 행 + 컬럼 열 이중 차단). reveal(복호) 엔드포인트·UI 는 첫 노출처(3.3 보호자 PII / Epic 4 진료 허브 배너) — 본 스토리는 암호화+마스킹까지. 등록 시 동일 주민번호(hash) → 409 `patient_exists`(등록 시점 중복 차단; 앱 자가가입 자동연결은 3.4).
