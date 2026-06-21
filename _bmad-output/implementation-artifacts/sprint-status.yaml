@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-21T11:55:00+0000
+last_updated: 2026-06-21T13:30:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -68,14 +68,15 @@ development_status:
   epic-2-retrospective: done
 
   # ── Epic 3: 환자 등록 · 프로필 ──
-  epic-3: in-progress
+  epic-3: done
   3-1-환자-레코드-생성-원무-직접-등록-암호화-rls-적용: done
   3-2-환자-임상-프로필-입력-조회: done
   3-3-보호자-정보-기록: done
   3-4-환자-앱-자가가입-기존-레코드-자동-연결: done
   3-5-전역-환자-검색-ctrl-k-커맨드-팔레트: done
-  # 회고(epic-3-retro-2026-06-21) 액션 — Epic 4 전 전용 PII·감사 하드닝 스토리(2-6 선례)
-  3-6-환자-pii-하드닝-감사-마스킹-연락처-reveal: backlog
+  # 회고(epic-3-retro-2026-06-21) 액션 — Epic 4 전 전용 감사 PII 하드닝(2-6 선례).
+  # 스코프 확정(create-story): 감사 서버측 PII/건강민감 마스킹만. 연락처·주민번호 reveal 은 Story 4.5(진료 허브 배너)로.
+  3-6-감사-스냅샷-서버측-pii-마스킹: done
   epic-3-retrospective: done
 
   # ── Epic 4: 내원 파이프라인 — 접수·대기·진찰·기록 ──

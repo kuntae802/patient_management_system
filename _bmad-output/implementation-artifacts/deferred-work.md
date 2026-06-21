@@ -2,6 +2,14 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: code review of 3-6-감사-스냅샷-서버측-pii-마스킹 (2026-06-21)
+
+> 3레이어 적대 리뷰. Acceptance Auditor: 위반 0(AC1~4 + 이월 ①~④ + D-1~D-3 충족). patch 0, dismiss 4(false positive·의도적 fail-closed·방어심층·미발현), 아래는 defer.
+
+- **로그 백스톱 휴대폰 패턴 한계** [api/app/core/logging.py `_PHONE_RE`] — 휴대폰(01x)만 마스킹, 유선(02-/031-)·점 구분(`010.1234.5678`)·국제(+82)·단어경계 미적용·다중 번호열 꼬리 1자리 잔존을 못 잡는다. AC4 가 명시 스코프(휴대폰만·과대마스킹 선호·방어심층)했고 1차선은 "raw PII 미로깅" 규율이라 수용. **기존 L113(로그 마스킹 백스톱이 RRN만 커버)과 동일 묶음** — 전화·이름·주소 패턴 확장을 로그 마스킹 하드닝에서 일괄(신뢰할 패턴 한계 고려).
+- **감사 스냅샷 중첩 `name` 마스킹 부재** [api/app/services/audit.py `_mask_value` · web/src/lib/admin/audit.ts `maskDeep`] — 재귀 경로는 항상-민감 키만 적용하고 테이블 인지 `name`은 최상위에서만 마스킹 → 중첩 dict 안의 환자/보호자 name 은 평문 잔존. **현 스키마 도달 불가**(감사 트리거 `to_jsonb(row)`=평탄 단일행, 중첩 PII name 을 담는 jsonb 컬럼 부재)이고 코드 주석에 의도적 엣지로 명시. 환자/보호자 행에 **중첩 PII(예 임상 이력 jsonb·연락처 배열)** 가 도입되는 스토리에서 재귀에 테이블 컨텍스트 전달(또는 nested name 도 마스킹)로 닫는다.
+- **서버·웹 마스킹 키 집합 드리프트 가드 부재** [api/app/services/audit.py `_SENSITIVE_KEY`/`_PII_NAME_TABLES` · web/src/lib/admin/audit.ts `SENSITIVE_KEY`/`PII_NAME_TABLES`] — 두 집합이 수작업 거울(한쪽만 수정 시 조용히 분기). 서버가 1차 권위라 TS-only 수정은 무효, Python-only 회귀는 누출. 현재 양 테스트가 신규 키 전부 커버해 가드 역할을 하나 자동 일치 검증은 없음. 일괄 해결: 공유 상수 codegen(예 단일 JSON→Py/TS 생성) 또는 계약 테스트(양 집합 비교). 마스킹 정책이 더 분화될 때 도입.
+
 ## Deferred from: code review of 3-5-전역-환자-검색-ctrl-k-커맨드-팔레트 (2026-06-21)
 
 > 3레이어 적대적 리뷰. Acceptance Auditor: 위반 0(AC1~4 + 이월 ①~③ + D-1~D-3 충족). patch 4건(ILIKE 와일드카드 이스케이프·디바운스 정착 전 Enter stale 가드·검색 잘림 안내·aria-activedescendant 가드) 처리, dismiss 3, 아래는 defer.

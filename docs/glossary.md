@@ -110,6 +110,7 @@
 | `has_permission(code)` | 함수(SECURITY DEFINER) | 현재 직원 역할의 권한 보유 여부(boolean). RBAC 데이터 권위 |
 | `audit_trigger_fn()` | 트리거 함수(SECURITY DEFINER) | 제네릭 감사 — 전/후 jsonb 스냅샷 + actor 캡처 |
 | `app.actor_id` | 세션 GUC(`set local`) | FastAPI(service_role)가 트랜잭션 행위자를 주입(감사 actor 캡처 계약 — Story 1.5). 미설정 시 `auth.uid()` 폴백 |
+| `mask_snapshot` / `SENSITIVE_KEY` / `PII_NAME_TABLES` | 함수·상수(api `services/audit`·web `lib/admin/audit`, Story 3.6) | 감사 스냅샷 PII/건강민감 **서버측 마스킹**(1차 권위) + 웹 렌더 마스킹(방어심층). 항상-민감 키(연락처·건강민감·암호) 전역 + `name` 은 테이블 인지(patients/guardians만, masters/roles 名 보존). 트리거는 전체행 저장(append-only·포렌식) — 마스킹은 **읽기 시점만**(at-rest 평문 잔존=수용 갭). 연락처/주민번호 reveal 은 Story 4.5(진료 허브 배너) |
 
 > **권한 카탈로그(`permissions`)** 는 `0002`가 초기 버전을 시드하고, 리소스가 온라인될 때 각 에픽 마이그레이션이 확장한다. 역할별 grant(`role_permissions`) 토글 관리 UI는 **Story 1.7**. `0002`는 기본 grant로 `admin`=전체만 시드.
 
