@@ -10,26 +10,31 @@ import {
   DIFF_KIND_META,
   formatAuditTime,
   maskSnapshotValue,
+  PII_NAME_TABLES,
   targetTableLabel,
   type AuditLogEntry,
 } from "@/lib/admin/audit";
 import { cn } from "@/lib/utils";
 
 // 감사 상세 — 변경 전/후 스냅샷의 **읽기전용 diff 뷰어**(UX-DR22). 편집·삭제 어포던스 없음(append-only).
-// 스냅샷에 잠재된 민감 필드는 maskSnapshotValue 로 표시 단에서 차단(per-row reveal 없음).
+// 스냅샷에 잠재된 민감 필드는 maskSnapshotValue 로 표시 단에서 차단(per-row reveal 없음). 서버 마스킹
+// (services/audit.py)이 1차 권위 — 이 렌더 마스킹은 방어심층(Story 3.6).
 
-/** 한 쪽(이전/이후) 셀 — 해당 쪽에 키가 없으면(추가/삭제) "—". 있으면 마스킹 적용 표시. */
+/** 한 쪽(이전/이후) 셀 — 해당 쪽에 키가 없으면(추가/삭제) "—". 있으면 마스킹 적용 표시.
+ *  maskName(대상=환자/보호자)이면 `name` 도 PII 로 마스킹(테이블 인지, 서버 거울). */
 function ValueCell({
   present,
   fieldKey,
   value,
+  maskName,
 }: {
   present: boolean;
   fieldKey: string;
   value: unknown;
+  maskName: boolean;
 }) {
   if (!present) return <span className="text-muted-foreground/50">—</span>;
-  const { masked, display } = maskSnapshotValue(fieldKey, value);
+  const { masked, display } = maskSnapshotValue(fieldKey, value, { maskName });
   if (masked) {
     return (
       <span className="inline-flex items-center gap-1 text-muted-foreground" title="민감 정보(마스킹)">
@@ -50,6 +55,8 @@ export function AuditLogDetail({
 }) {
   const rows = entry ? diffSnapshot(entry.before_data, entry.after_data) : [];
   const action = entry ? ACTION_META[entry.action] : null;
+  // 대상이 환자/보호자면 `name` 도 PII 로 마스킹(테이블 인지, 서버 거울).
+  const maskName = entry ? PII_NAME_TABLES.has(entry.target_table) : false;
 
   return (
     <Dialog.Root
@@ -131,6 +138,7 @@ export function AuditLogDetail({
                                 present={row.kind !== "added"}
                                 fieldKey={row.key}
                                 value={row.before}
+                                maskName={maskName}
                               />
                             </td>
                             <td className="border-b border-border px-3 py-2 align-top">
@@ -138,6 +146,7 @@ export function AuditLogDetail({
                                 present={row.kind !== "removed"}
                                 fieldKey={row.key}
                                 value={row.after}
+                                maskName={maskName}
                               />
                             </td>
                           </tr>

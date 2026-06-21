@@ -83,10 +83,14 @@ export function actorLabel(entry: AuditLogEntry): string {
   return `미상 (${entry.actor_id.slice(0, 8)}…)`;
 }
 
-// 민감 키 패턴 — 스냅샷에 잠재된 PII/비밀을 표시 단에서 차단(UX-DR22). 현재 스냅샷(roles·permissions·
-// role_permissions·users)엔 해당 없지만, 미래 환자 감사(Epic 3+) 스냅샷의 누출 표면을 미리 봉쇄한다.
+// 항상-민감 키(table-agnostic) — 연락처·건강민감·암호/비밀. 스냅샷 표시 단 차단(UX-DR22, Story 3.6).
+// 서버측 마스킹(services/audit.py `_SENSITIVE_KEY`)이 1차 권위 — 이 정규식은 방어심층이며 **동일 키
+// 집합으로 유지**(한쪽만 바꾸면 드리프트).
 const SENSITIVE_KEY =
-  /(resident_no|rrn|ssn|password|passwd|secret|token|email|phone|address|guardian|_enc$|_hash$|_blind_index$|ciphertext)/i;
+  /(resident_no|rrn|ssn|password|passwd|secret|token|email|phone|address|guardian|allergies|chronic_diseases|medications|notes|insurance_no|_enc$|_hash$|_blind_index$|ciphertext)/i;
+
+// `name` 은 테이블 의존 — 환자/보호자만 PII(masters 진료과명·roles 라벨은 비-PII). 서버 거울.
+export const PII_NAME_TABLES = new Set(["patients", "guardians"]);
 
 const MASK_DISPLAY = "●●●● (마스킹됨)";
 
@@ -104,12 +108,15 @@ function maskDeep(value: unknown): unknown {
   return value;
 }
 
-/** 스냅샷 값 마스킹 — 민감 키면 마스킹 표시. 비민감 객체는 내부까지 재귀 마스킹 후 직렬화. */
+/** 스냅샷 값 마스킹 — 민감 키면 마스킹 표시. 비민감 객체는 내부까지 재귀 마스킹 후 직렬화.
+ *  `maskName`(대상이 patients/guardians)이면 `name` 키도 PII 로 마스킹(서버 거울, Story 3.6). */
 export function maskSnapshotValue(
   key: string,
   value: unknown,
+  opts?: { maskName?: boolean },
 ): { masked: boolean; display: string } {
-  if (SENSITIVE_KEY.test(key)) return { masked: true, display: MASK_DISPLAY };
+  const sensitive = SENSITIVE_KEY.test(key) || (opts?.maskName === true && key.toLowerCase() === "name");
+  if (sensitive) return { masked: true, display: MASK_DISPLAY };
   if (value === null || value === undefined) return { masked: false, display: "—" };
   if (typeof value === "object") return { masked: false, display: JSON.stringify(maskDeep(value)) };
   return { masked: false, display: String(value) };
