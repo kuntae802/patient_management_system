@@ -2,6 +2,13 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: code review of 2-5-마스터-시드-데이터-seed-sql (2026-06-21)
+
+> 3레이어 적대적 리뷰. Acceptance Auditor: AC1~AC6 strong pass(마이그레이션 무편집·신규 DDL/API/UI 0·dev 블록 보존·fee_mappings 미누출·전 코드행 현재유효). patch 3건(시드 테스트 강화)은 처리, 아래는 defer.
+
+- **의존성 카운트 테스트의 시드 doctor 차용 — 2.5로 영향 가중** [api/tests/test_masters_integration.py test_department_dependents_count] — 2.5가 DEV doctor를 내과(IM)에 배정하면서, 이 테스트가 doctor를 임시 throwaway 진료과로 재배정 후 `try/finally`로 IM을 복원한다. 크래시/타임아웃이 try~finally 사이에 발생하면 doctor가 throwaway(소프트삭제) 진료과를 가리킨 채 잔류(종전엔 NULL이 자연상태라 무해). `supabase db reset`이 유일 복구. 2.4 리뷰의 "원복 robustness"와 동일 항목 — 2.5가 영향도만 상향. 정식 수정: 시드 doctor를 `emp` 선택에서 제외하고 전용 임시 직원 픽스처 생성(트랜잭션 격리). (기존 2.4 deferred 항목과 통합 관리.)
+- **시드 테스트가 seed.sql을 in-test 실행하지 않음(db reset 선행 전제)** [api/tests/test_seed_masters.py · api/tests/conftest.py] — 테스트는 db reset로 적재된 결과 상태를 단언할 뿐, seed.sql 자체의 구문/ON CONFLICT/FK 오류를 pytest가 자체 포착하지 않는다(conftest가 "db reset 선행"을 전제로 문서화한 하니스 전반 설계와 일치). 본 스토리는 실제 db reset + 재실행 멱등으로 운영 검증(Debug Log). 프로젝트 전반 개선안: seed.sql을 in-test로 적용하고 무에러+멱등을 단언하는 하니스(모든 마이그레이션/시드 테스트에 적용). project-context "과도 명세 금지"로 현 단계 defer.
+
 ## Deferred from: code review of 2-4-마스터-비활성-soft-delete-참조-무결성 (2026-06-20)
 
 > 3레이어 적대적 리뷰. Acceptance Auditor: AC1~AC7 clean pass·규칙/Non-goals 준수. decision-needed 1·patch 1 은 처리, 아래는 defer.

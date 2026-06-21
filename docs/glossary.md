@@ -178,3 +178,5 @@
 > **(Story 2.2 갱신) 확정 번호:** `0006_masters.sql`=조직 마스터(진료과·진료실, 2.1), `0007_masters_codes.sql`=코드 마스터(진단·수가·약품 + 유효기간, 2.2). 코드 마스터가 0007 을 차지하므로 **patients 는 0008 로 한 칸 더 cascade**(Epic 3 `0008_patients`). 적용된 마이그레이션은 0001~0007.
 >
 > **(Story 2.4 갱신) 확정 번호:** `0008_masters_code_ci_unique.sql`=마스터 5종 코드 대소문자 무관 unique(`lower(code)` 함수 인덱스로 교체, `<table>_code_key` 제약 drop — 참조 무결성/데이터 품질). 0008 을 코드 CI unique 가 차지하므로 **patients 는 0009 로 한 칸 더 cascade**(Epic 3 `0009_patients`). 적용된 마이그레이션은 0001~0008.
+>
+> **(Story 2.5 갱신) 마스터 시드:** `supabase/seed.sql` 이 5종 마스터(진료과 7·진료실 8·KCD 진단 22·EDI 수가 18·약품 17)를 **현재-유효 데이터**(`effective_from` 과거·`effective_to` NULL)로 적재 + DEV 의사를 내과(IM)에 배정. 멱등 `ON CONFLICT (lower(code)) DO NOTHING`(0008 함수 인덱스 추론 — `(code)` 아님). **신규 마이그레이션 없음**(시드는 DDL 아님 — 적용 번호 여전히 0001~0008, **patients 는 0009 유지**). 행위/진단 → 수가코드 **매핑(`fee_mappings`) 내용·테이블은 Epic 7**(다운스트림 — 본 스토리는 수가 *마스터 행*만).

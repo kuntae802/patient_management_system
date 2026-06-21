@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-20T16:00:00+0000
+last_updated: 2026-06-21T09:30:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -62,7 +62,7 @@ development_status:
   2-2-코드-마스터-관리-kcd진단-edi수가-약품-버전-유효기간: done
   2-3-마스터-검색-피커-자유-입력-제한: done
   2-4-마스터-비활성-soft-delete-참조-무결성: done
-  2-5-마스터-시드-데이터-seed-sql: backlog
+  2-5-마스터-시드-데이터-seed-sql: done
   epic-2-retrospective: optional
 
   # ── Epic 3: 환자 등록 · 프로필 ──
