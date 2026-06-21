@@ -183,6 +183,8 @@
 > **(Story 2.5 갱신) 마스터 시드:** `supabase/seed.sql` 이 5종 마스터(진료과 7·진료실 8·KCD 진단 22·EDI 수가 18·약품 17)를 **현재-유효 데이터**(`effective_from` 과거·`effective_to` NULL)로 적재 + DEV 의사를 내과(IM)에 배정. 멱등 `ON CONFLICT (lower(code)) DO NOTHING`(0008 함수 인덱스 추론 — `(code)` 아님). **신규 마이그레이션 없음**(시드는 DDL 아님 — 적용 번호 여전히 0001~0008, **patients 는 0009 유지**). 행위/진단 → 수가코드 **매핑(`fee_mappings`) 내용·테이블은 Epic 7**(다운스트림 — 본 스토리는 수가 *마스터 행*만).
 >
 > **(Story 3.1 확정) `0009_patients.sql` = patients + guardians + RLS·감사 인라인.** patients 가 0009 를 차지(드리프트 종결). **RLS 는 별도 `0014_rls_policies.sql` 파일 없이 본 마이그레이션에 인라인**(0006/0007 마스터 관례 계승 — 아키텍처 계획 맵의 0014 분리는 미실현). 다음 마이그레이션(내원 등 Epic 4)은 **0010**부터. 적용된 마이그레이션은 0001~0009.
+>
+> **(Story 4.1 확정) `0010_encounters.sql` = encounters + 상태머신(전이 트리거·RPC) + RLS·감사 인라인.** 에픽 본문·아키텍처의 `0007_encounters` 는 **stale**(0007=masters_codes) — encounters 는 0010. RLS·전이 트리거·전이 RPC·권한 시드를 한 파일에 인라인. 적용된 마이그레이션은 0001~0010.
 
 ## 환자 컬럼·식별자 (Story 3.1, `0009_patients.sql`)
 
@@ -210,3 +212,30 @@
 | 전역 환자 검색 / `searchPatients` / `PatientSearchCommand` | 경로·함수·컴포넌트(Story 3.5, api·`patients`·web·`lib/reception/patients`·`components/shell/patient-search-command`) | 전역 `Ctrl K` 커맨드 팔레트 — `GET /patients?q=`(기존 목록 확장, `patient.read` 게이트) 이름·차트번호·연락처(자릿수) 검색. 결과=마스킹 `PatientListItem`(per-row reveal 없음, 오환자 단서=생년월일+마스킹 RRN+연락처) → 선택 시 `/patients/{id}` 이동. q 는 PII라 로그 미기록(신규 마이그레이션·인덱스 0건 — phone 성능 인덱스 이월) |
 
 > **환자 PII 경계(Story 3.1 확정):** raw 주민번호는 `resident_no_enc`(bytea)로만 — 응답·로그·URL·감사 before/after 평문 부재. 응답은 `resident_no_masked`. **컬럼 GRANT 로 `_enc`/`_hash` 는 authenticated SELECT 제외**(RLS 행 + 컬럼 열 이중 차단). reveal(복호) 엔드포인트·UI 는 첫 노출처(3.3 보호자 PII / Epic 4 진료 허브 배너) — 본 스토리는 암호화+마스킹까지. 등록 시 동일 주민번호(hash) → 409 `patient_exists`(등록 시점 중복 차단; 앱 자가가입 자동연결은 3.4).
+
+## 내원 상태머신 · 전이 RPC (Story 4.1, `0010_encounters.sql`)
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `encounters` | 테이블 | 내원 파이프라인 허브(임상기록 4.6·오더 Epic5·수납 Epic7 이 매단다). PK `id` uuid, 사람용 번호 `encounter_no` |
+| `encounters_encounter_no_seq` | 시퀀스 | `encounter_no` 부여용(service_role usage) — 8자리 zero-pad 기본값(race-free, `patients_chart_no_seq` 미러) |
+| `visit_type` | 컬럼(CHECK) | 접수 경로: `walk_in`(즉석)·`reserved`(예약). 생성 시 세팅(4.2) |
+| `doctor_id` | 컬럼(FK users) | 담당의 — `start_consult` 가 `auth.uid()` 로 세팅(nullable, 4.4 정제) |
+| `registered_at`·`consult_started_at`·`completed_at`·`cancelled_at`·`no_show_at` | 컬럼(timestamptz) | 전이 RPC 가 해당 시각 기록(대기시간·NFR-002 메트릭 근거, nullable) |
+| `cancel_reason` | 컬럼 | 취소/노쇼 운영 사유(저민감 — 임상/PII 자유텍스트 금지) |
+| `created_by` | 컬럼(FK users) | 접수 처리 직원 |
+| `register_encounter(uuid)` | RPC(SECURITY DEFINER) | `scheduled→registered`(예약 접수). 권한 `encounter.register`, `registered_at` 기록 |
+| `start_consult(uuid)` | RPC(SECURITY DEFINER) | `registered→in_progress`(진찰 시작). 권한 `encounter.start`, `consult_started_at`+`doctor_id=auth.uid()` |
+| `complete_encounter(uuid)` | RPC(SECURITY DEFINER) | `in_progress→completed`(진료 완료). 권한 `encounter.complete`, `completed_at`. 부분수행도 여기로 종결(정산 Epic7 FR-119) |
+| `cancel_encounter(uuid, text)` | RPC(SECURITY DEFINER) | `scheduled\|registered→cancelled`. 권한 `encounter.cancel`, `cancelled_at`+`cancel_reason`. 수가 미발생 정산 Epic7 FR-118 |
+| `mark_no_show(uuid, text)` | RPC(SECURITY DEFINER) | `scheduled→no_show`. 권한 `encounter.no_show`, `no_show_at` |
+| `enforce_encounter_transition()` | 트리거 함수(plpgsql, DEFINER 아님) | **전이 매트릭스 단일 진실** — BEFORE INSERT(초기상태 가드 scheduled\|registered)/UPDATE(전이 검증). 위반 → SQLSTATE `PT409` |
+| `trg_encounters_transition` | 트리거(BEFORE INSERT OR UPDATE) | 전이 강제(service_role 직접 update 까지 봉쇄, NFR-040 최종선) |
+| `trg_encounters_audit` | 트리거(AFTER, 0004 재사용) | 모든 전이(create/update/delete)를 actor 와 함께 append-only 감사 |
+| `encounter.read`·`encounter.cancel`·`encounter.no_show` | 권한(신규 시드) | 0010 카탈로그 확장 + admin 부트 grant(비-admin=1.7 매트릭스). `encounter.register/start/complete` 는 0002 기존 |
+| `PT409` / `PT404` | 커스텀 SQLSTATE | 전이 위반(→409)·내원 없음(→404). 클래스 `PT`=PMS transition(코어 미사용). 권한 위반은 표준 `insufficient_privilege`(42501→403). asyncpg `e.sqlstate` 로 4.2/4.4 가 `ConflictError`/`NotFoundError`/`ForbiddenError` 매핑 |
+
+> **내원 상태 전이 매트릭스(full, Story 4.1 확정 — architecture Gap Analysis #3 소유):**
+> `(INSERT)`→`scheduled`(예약·Epic6)\|`registered`(walk-in·MVP) │ `scheduled`→`registered`\|`cancelled`\|`no_show` │ `registered`→`in_progress`\|`cancelled` │ `in_progress`→`completed`. 종결(`completed`·`cancelled`·`no_show`)=이탈 전이 없음(역행·건너뛰기·종결 재전이 = `PT409`). **`no_show` 는 `scheduled` 에서만**(접수=도착 증명). **`in_progress→cancelled` 기본 불허**(부분수행=`completed` 후 Epic7 정산, FR-119). 부분수행은 별도 상태 아님(`encounter_status` 6값 불변).
+>
+> **쓰기 경로:** 전이는 SECURITY DEFINER RPC(자체 `has_permission()` 게이트 = 동일 txn TOCTOU 재평가) 또는 service_role 만 — `authenticated` 직접 쓰기 정책 없음(RLS). RPC EXECUTE 는 authenticated+service_role 에 grant(자체 게이트로 안전). FastAPI 액션 엔드포인트(`POST /encounters/{id}/register|start-consult|…`)·asyncpg 래퍼·SQLSTATE→HTTP 매핑은 **Story 4.2/4.4 소비**(4.1=DB 토대). **encounters 에 PII/건강민감 자유텍스트 컬럼 없음**(주호소·진단=4.6/4.7) → 감사 마스킹(3.6) 집합 변경 불요.
