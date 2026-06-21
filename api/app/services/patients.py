@@ -14,18 +14,24 @@ from uuid import UUID
 import asyncpg
 
 from app.core import db
-from app.core.errors import AppError, NotFoundError
+from app.core.errors import AppError, ConflictError, NotFoundError
 from app.schemas.patients import (
     PatientClinicalProfileUpdate,
     PatientCreate,
     PatientListItem,
     PatientResponse,
+    PatientSelfLinkRequest,
+    PatientSelfSummary,
 )
-from app.services import rrn
+from app.services import identity, rrn
 
 
 def _to_patient(row: asyncpg.Record) -> PatientResponse:
     return PatientResponse.model_validate(dict(row))
+
+
+def _to_self_summary(row: asyncpg.Record) -> PatientSelfSummary:
+    return PatientSelfSummary.model_validate(dict(row))
 
 
 def _to_list_item(row: asyncpg.Record) -> PatientListItem:
@@ -96,3 +102,54 @@ async def update_clinical_profile(
     if row is None:
         raise NotFoundError("환자를 찾을 수 없습니다.")
     return _to_patient(row)
+
+
+async def link_self_patient(sub: UUID, payload: PatientSelfLinkRequest) -> PatientSelfSummary:
+    """앱 자가가입 본인 연결(Story 3.4, FR-003). RRN HARD 검증 → 본인인증 시뮬 → blind_index 매칭.
+
+    연결 대상 `auth_uid` 는 **sub(JWT 주체)에서만** — 클라가 patient_id/uid 를 제공하지 않는다(세션
+    uid 스코프). 분기별 HTTP 매핑: 성공(연결/멱등)=200, 미존재=404, 성명불일치=422, 연결충돌=409.
+    """
+    validation = rrn.validate_rrn(payload.resident_no)
+    if not validation.is_valid:
+        # HARD = 422. detail 은 기계용 코드만(원본 주민번호 미포함 — PII 경계, create_patient 미러).
+        raise AppError(
+            "주민번호가 올바르지 않습니다.",
+            code="invalid_rrn",
+            status_code=422,
+            detail={"errors": list(validation.errors)},
+        )
+
+    # 본인인증 시뮬 seam(실 PASS 교체점). 시뮬 시대 사칭 방지는 아래 매칭의 성명 일치 가드가 1차선.
+    identity.simulate_identity_verification(resident_no=payload.resident_no, name=payload.name)
+
+    normalized = rrn.normalize_rrn(payload.resident_no)
+    outcome, row = await db.link_self_patient(sub, normalized_rrn=normalized, name=payload.name)
+
+    if outcome in ("linked", "already_linked"):
+        assert row is not None  # 성공 분기는 항상 행 반환
+        return _to_self_summary(row)
+    if outcome == "no_patient_record":
+        raise NotFoundError(
+            "등록된 진료 기록이 없습니다. 병원 방문·문의 후 다시 연결해 주세요.",
+            code="no_patient_record",
+        )
+    if outcome == "identity_mismatch":
+        raise AppError(
+            "입력하신 정보가 기록과 일치하지 않습니다. 병원에 문의해 주세요.",
+            code="identity_mismatch",
+            status_code=422,
+        )
+    if outcome == "already_linked_other":
+        raise ConflictError("이미 가입·연결된 주민번호입니다.", code="already_linked_other")
+    if outcome == "account_already_linked":
+        raise ConflictError(
+            "이 계정은 이미 다른 환자에 연결되어 있습니다.", code="account_already_linked"
+        )
+    raise AppError("자가연결을 처리하지 못했습니다.", code="self_link_failed")  # 방어적(미도달)
+
+
+async def get_self_patient(sub: UUID) -> PatientSelfSummary | None:
+    """본인(JWT sub)에 연결된 환자 요약 — 미연결 → None(라우터가 404 매핑)."""
+    row = await db.fetch_self_patient(sub)
+    return _to_self_summary(row) if row is not None else None

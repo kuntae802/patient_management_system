@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import date, datetime
@@ -1041,6 +1042,17 @@ _PATIENT_COLUMNS = (
 _PATIENT_LIST_COLUMNS = (
     "id, chart_no, name, birth_date, sex, resident_no_masked, phone, is_active, created_at"
 )
+# 자가연결 확인 요약(Story 3.4) — 마스킹·식별 최소 컬럼(_enc/_hash/auth_uid 미투영, PII 경계).
+_SELF_SUMMARY_COLUMNS = "id, chart_no, name, birth_date, sex, resident_no_masked"
+
+
+def _norm_name(name: str) -> str:
+    """성명 일치 비교용 정규화 — 유니코드 NFC + 앞뒤 공백 제거 + 내부 연속 공백 1개로 축약.
+
+    NFC 정규화: iOS/macOS 가 분해형(NFD) 한글을 보내고 저장값이 조합형(NFC)이면 바이트가 달라
+    오거부(identity_mismatch)된다 → 양쪽을 NFC 로 모아 비교. 한국어 성명은 대소문자 무관이라
+    소문자화 불요. self-link 의 사칭 방지 1차선(시뮬 시대)에서 같은 canonical 형태로 비교한다."""
+    return unicodedata.normalize("NFC", " ".join(name.split()))
 
 
 async def _require_patient_create(conn: asyncpg.Connection) -> None:
@@ -1184,6 +1196,96 @@ async def update_patient_clinical_profile(
             chronic_diseases,
             medications,
             notes,
+        )
+
+    return await _run_authed(sub, _op)
+
+
+# ── 앱 자가가입 본인 연결(Story 3.4, FR-001·FR-003) ──────────────────────────────
+# 가입(세션)한 환자가 `blind_index(normalize_rrn)` 로 기존 레코드를 찾아 `auth_uid` 를 본인 JWT 주체
+# (sub)로 설정한다. service_role 연결(RLS 우회)이라 cross-patient hash 조회 가능(본인행 RLS 로
+# 막히지 않음 — self-link 를 FastAPI 경유로 두는 이유). 쓰기 권위 = service_role(authenticated 는
+# patients UPDATE 권한 없음). 연결 대상 auth_uid 는 **인자 sub 에서만** 도출(클라 미수용).
+
+
+async def link_self_patient(
+    sub: UUID, *, normalized_rrn: str, name: str
+) -> tuple[str, asyncpg.Record | None]:
+    """자가연결 — `blind_index` 매칭 → 안전 분기. (outcome, row|None) 반환(서비스가 HTTP 매핑).
+
+    outcome: `linked`(신규 연결)·`already_linked`(본인 멱등)·`account_already_linked`(이 계정이 이미
+    다른 환자에 연결)·`no_patient_record`(0건)·`identity_mismatch`(성명 불일치, 연결 안 함)·
+    `already_linked_other`(다른 계정 선점). 연결 UPDATE = 0009 감사 트리거 기록(actor=sub)."""
+
+    async def _op(conn: asyncpg.Connection) -> tuple[str, asyncpg.Record | None]:
+        # 같은 계정(sub) self-link 직렬화 — 동시 2-RRN 연결 레이스 차단(1 계정 = 1 환자).
+        # auth_uid 에 DB UNIQUE 가 없어(0009 비유니크 인덱스) 아래 check-then-act(선점 SELECT ↔
+        # 조건부 UPDATE)가 비원자 → 트랜잭션 advisory lock 으로 같은 sub 동시 호출을 직렬화한다
+        # (마이그레이션 불요 — partial unique index 는 Epic 4 0010 에서 방어심층으로 검토).
+        await conn.execute(
+            "select pg_advisory_xact_lock(hashtext('patient_self_link'), hashtext($1))",
+            str(sub),
+        )
+        hashed = await conn.fetchval("select public.blind_index($1)", normalized_rrn)
+
+        # 1) 계정 선점 검사(1 계정 = 1 환자 불변식) — 이 sub 가 이미 환자에 연결돼 있나?
+        own = await conn.fetchrow(
+            f"select resident_no_hash, {_SELF_SUMMARY_COLUMNS} "
+            f"from public.patients where auth_uid = $1",
+            sub,
+        )
+        if own is not None:
+            # 같은 주민번호면 멱등 성공(재시도·중복 제출 안전), 다른 환자면 계정 중복 연결 차단.
+            if own["resident_no_hash"] == hashed:
+                return "already_linked", own
+            return "account_already_linked", None
+
+        # 2) 대상 조회(resident_no_hash UNIQUE → 최대 1행).
+        target = await conn.fetchrow(
+            f"select auth_uid, name, {_SELF_SUMMARY_COLUMNS} "
+            f"from public.patients where resident_no_hash = $1",
+            hashed,
+        )
+        if target is None:
+            return "no_patient_record", None
+        if target["auth_uid"] is not None:
+            # 이미 연결됨 — 본인이면 멱등, 타 계정이면 탈취 차단.
+            if target["auth_uid"] == sub:
+                return "already_linked", target
+            return "already_linked_other", None
+
+        # 3) 미연결 행 — 사칭 방지 1차선: 성명 일치(시뮬 시대; 실 PASS 가 RRN 소유 증명 시 대체).
+        if _norm_name(target["name"]) != _norm_name(name):
+            return "identity_mismatch", None
+
+        # 4) 조건부 연결(동시성: auth_uid IS NULL 술어로 1명만 통과).
+        row = await conn.fetchrow(
+            f"update public.patients set auth_uid = $1, updated_at = now() "
+            f"where id = $2 and auth_uid is null returning {_SELF_SUMMARY_COLUMNS}",
+            sub,
+            target["id"],
+        )
+        if row is None:
+            # 0행 = 동시 연결 레이스. 누가 선점했는지 재조회(같은 계정 더블서밋=멱등 vs 타 계정).
+            winner = await conn.fetchrow(
+                f"select auth_uid, {_SELF_SUMMARY_COLUMNS} "
+                f"from public.patients where id = $1",
+                target["id"],
+            )
+            if winner is not None and winner["auth_uid"] == sub:
+                return "already_linked", winner
+            return "already_linked_other", None
+        return "linked", row
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_self_patient(sub: UUID) -> asyncpg.Record | None:
+    """본인(JWT sub)에 연결된 환자 요약 — 미연결 → None(자가연결 진입 UX·멱등 분기용)."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record | None:
+        return await conn.fetchrow(
+            f"select {_SELF_SUMMARY_COLUMNS} from public.patients where auth_uid = $1", sub
         )
 
     return await _run_authed(sub, _op)

@@ -142,3 +142,17 @@ async def get_current_staff(
     if role not in STAFF_ROLES:
         raise ForbiddenError()
     return user
+
+
+async def get_current_patient(
+    user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """비직원(환자) 게이트 — active 직원 5역할이면 403(`get_current_staff` 의 반전, Story 3.4).
+
+    앱 자가가입한 환자(직원 행 없음 → `auth_user_role()` = None)는 통과한다. 권한 의존성이 아니다
+    — 환자는 RBAC 권한이 0이고, 진짜 권위는 "본인 JWT sub 로만 연결/조회"라 라우터·서비스가 sub
+    스코프로 강제한다(self-link 가 직원 uid 를 환자 행에 묻는 것 방지)."""
+    role = await db.fetch_user_role(user.sub)
+    if role in STAFF_ROLES:
+        raise ForbiddenError()
+    return user

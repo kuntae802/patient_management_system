@@ -62,6 +62,33 @@ class PatientCreate(BaseModel):
         return v
 
 
+class PatientSelfLinkRequest(BaseModel):
+    """앱 자가가입 본인 연결 요청(Story 3.4, FR-003). 가입(세션 보유) 환자가 입력.
+
+    `resident_no` 는 하이픈 유/무 허용(서비스가 정규화 후 `blind_index` 매칭). 정밀 검증(HARD/SOFT)
+    은 services/rrn — 여기선 길이 가드만(원본은 응답·에러에 echo 안 함). `name` 은 사칭 방지 1차선
+    (시뮬 시대 — 매칭 행과 성명 일치). 클라가 patient_id/auth_uid 를 제공하지 않는다(세션 uid 스코프
+    — 연결 대상은 JWT 주체에서만 도출).
+    """
+
+    resident_no: _Stripped = Field(min_length=6, max_length=14)
+    name: _Stripped = Field(min_length=1, max_length=100)
+
+
+class PatientSelfSummary(BaseModel):
+    """자가연결 확인 요약(Story 3.4) — 마스킹·식별 최소 필드. 본인 전체 데이터는 Epic 8 포털(RLS).
+
+    임상·연락처·`auth_uid`·`_enc`/`_hash` 미포함(연결 확인에 불요 — PII 경계).
+    `PatientListItem` 의 부분집합(생성시각 제외)."""
+
+    id: UUID
+    chart_no: str
+    name: str
+    birth_date: date
+    sex: str
+    resident_no_masked: str
+
+
 class PatientClinicalProfileUpdate(BaseModel):
     """임상 프로필 갱신 요청(Story 3.2, FR-004). 5필드 옵셔널 — PUT 전체 교체(미전송=None=값없음).
 

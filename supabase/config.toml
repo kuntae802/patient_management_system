@@ -174,8 +174,9 @@ enable_refresh_token_rotation = true
 # Requires enable_refresh_token_rotation = true.
 refresh_token_reuse_interval = 10
 # Allow/disallow new user signups to your project.
-# 하드닝(Story 1.4): 직원=Story 1.8 관리자 생성, 환자 셀프가입=Story 3.4가 재활성. 그 전엔 공개 가입 차단.
-enable_signup = false
+# 재활성(Story 3.4): 환자 셀프가입(앱 자가가입·기존 레코드 자동연결) 공개 가입 ON. 직원은 여전히
+# 관리자 생성(Story 1.8)만 — 가입 화면은 환자 전용. 클라우드 데모는 대시보드 Auth→Sign-ups 동일 적용.
+enable_signup = true
 # Allow/disallow anonymous sign-ins to your project.
 enable_anonymous_sign_ins = false
 # Allow/disallow testing manual linking of accounts

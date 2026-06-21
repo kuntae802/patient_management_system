@@ -13,7 +13,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, status
 
-from app.core.security import CurrentUser, require_permission
+from app.core.errors import NotFoundError
+from app.core.security import CurrentUser, get_current_patient, require_permission
 from app.schemas.guardians import GuardianCreate, GuardianResponse, GuardianUpdate
 from app.schemas.patients import (
     PatientClinicalProfileUpdate,
@@ -21,6 +22,8 @@ from app.schemas.patients import (
     PatientPage,
     PatientPageMeta,
     PatientResponse,
+    PatientSelfLinkRequest,
+    PatientSelfSummary,
 )
 from app.services import guardians as guardians_service
 from app.services import patients as patients_service
@@ -31,6 +34,34 @@ router = APIRouter(prefix="/patients", tags=["patients"])
 require_patient_create = require_permission("patient.create")
 require_patient_read = require_permission("patient.read")
 require_patient_update = require_permission("patient.update")
+
+
+# ── 앱 자가가입 본인 연결(Story 3.4, FR-001·FR-003) ──────────────────────────────
+# 환자(비직원) 전용. ⚠️ 정적 경로(/self-link·/self)는 /{patient_id} 동적 라우트보다 **먼저** 선언
+# — 'self' 가 UUID 로 파싱돼 422 가 되지 않게(라우트 순서). 게이트 = get_current_patient(직원 403).
+# 연결 대상 auth_uid = JWT sub 에서만(클라가 patient_id/uid 미제공 — 세션 uid 스코프).
+
+
+@router.post("/self-link", response_model=PatientSelfSummary)
+async def self_link(
+    payload: PatientSelfLinkRequest,
+    user: CurrentUser = Depends(get_current_patient),
+) -> PatientSelfSummary:
+    """앱 자가가입 후 기존 환자 레코드 자동 연결(FR-003).
+
+    blind_index 매칭 → 연결/멱등 200, 미존재 404, 성명불일치 422, 연결충돌 409. 직원 → 403."""
+    return await patients_service.link_self_patient(user.sub, payload)
+
+
+@router.get("/self", response_model=PatientSelfSummary)
+async def get_self(
+    user: CurrentUser = Depends(get_current_patient),
+) -> PatientSelfSummary:
+    """본인(JWT sub)에 연결된 환자 요약 — 미연결 → 404. 직원 → 403. (onboarding 진입 분기용.)"""
+    summary = await patients_service.get_self_patient(user.sub)
+    if summary is None:
+        raise NotFoundError("연결된 환자 기록이 없습니다.", code="no_self_patient")
+    return summary
 
 
 @router.post("", response_model=PatientResponse, status_code=status.HTTP_201_CREATED)
