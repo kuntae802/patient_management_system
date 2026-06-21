@@ -18,6 +18,9 @@ from app.api.v1 import admin
 from app.core import db
 from app.core.errors import init_error_handlers
 from app.core.security import CurrentUser, get_current_user
+from app.services.audit import mask_snapshot
+
+_MASK = "●●●● (마스킹됨)"
 
 _FAKE_ADMIN = CurrentUser(
     sub=uuid.uuid4(), aud="authenticated", role="authenticated", exp=9999999999
@@ -153,3 +156,97 @@ def test_reversed_date_range_unprocessable(monkeypatch: pytest.MonkeyPatch) -> N
     )
     assert res.status_code == 422
     assert res.json()["error"]["code"] == "invalid_date_range"
+
+
+# ── Story 3.6: 감사 스냅샷 서버측 PII/건강민감 마스킹 ──────────────────────────────
+
+
+def test_mask_snapshot_masks_sensitive_preserves_others() -> None:
+    """환자 스냅샷: 식별 PII·건강민감·암호 컬럼은 마스킹, 비민감 식별자는 보존."""
+    snap = {
+        "id": "p1",
+        "chart_no": "00000001",
+        "name": "홍길동",
+        "birth_date": "1990-01-01",
+        "sex": "male",
+        "phone": "010-1234-5678",
+        "address": "서울시",
+        "email": "a@b.com",
+        "insurance_no": "X1",
+        "allergies": "페니실린",
+        "chronic_diseases": "고혈압",
+        "medications": "와파린",
+        "notes": "특이사항",
+        "resident_no_enc": "\\xdead",
+        "resident_no_hash": "abcd",
+        "resident_no_masked": "900101-1******",
+        "is_active": True,
+    }
+    out = mask_snapshot(snap, "patients")
+    assert out is not None
+    for key in (
+        "name", "phone", "address", "email", "insurance_no",
+        "allergies", "chronic_diseases", "medications", "notes",
+        "resident_no_enc", "resident_no_hash", "resident_no_masked",
+    ):
+        assert out[key] == _MASK, f"{key} 미마스킹"
+    # 비민감 식별자/플래그는 보존(감사 가독성).
+    assert out["chart_no"] == "00000001"
+    assert out["birth_date"] == "1990-01-01"
+    assert out["sex"] == "male"
+    assert out["is_active"] is True
+
+
+def test_mask_snapshot_name_is_table_aware() -> None:
+    """`name` 은 환자/보호자만 PII — masters(진료과명)·roles 라벨은 보존(감사 가독성)."""
+    # 환자/보호자: name 마스킹.
+    assert mask_snapshot({"name": "홍길동"}, "patients")["name"] == _MASK
+    assert mask_snapshot({"name": "보호자"}, "guardians")["name"] == _MASK
+    # masters/roles: name 보존(비-PII 라벨). 단 항상-민감 키는 여전히 마스킹.
+    dept = mask_snapshot({"name": "내과", "code": "IM"}, "departments")
+    assert dept["name"] == "내과"
+    assert dept["code"] == "IM"
+    role = mask_snapshot({"name": "관리자", "code": "admin"}, "roles")
+    assert role["name"] == "관리자"
+    # target_table 미지정(중첩/미상)이면 name 보존(보수적 — 항상-민감 키만).
+    assert mask_snapshot({"name": "x", "email": "a@b.com"})["name"] == "x"
+    assert mask_snapshot({"name": "x", "email": "a@b.com"})["email"] == _MASK
+
+
+def test_mask_snapshot_none_passthrough() -> None:
+    assert mask_snapshot(None) is None
+
+
+def test_mask_snapshot_recurses_nested() -> None:
+    """비민감 컨테이너 안쪽의 민감 키도 재귀 마스킹(평문 덤프 차단)."""
+    snap = {
+        "meta": {"guardian": {"phone": "010-1-2"}, "label": "공개"},
+        "items": [{"email": "x@y.z"}, {"label": "ok"}],
+    }
+    out = mask_snapshot(snap)
+    assert out is not None
+    assert out["meta"]["guardian"] == _MASK  # guardian 키 자체 민감 → 통째 마스킹
+    assert out["meta"]["label"] == "공개"  # 비민감 보존
+    assert out["items"][0]["email"] == _MASK
+    assert out["items"][1]["label"] == "ok"
+
+
+def test_list_masks_patient_snapshot_in_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    """응답 경로: 환자 스냅샷의 PII/건강민감이 마스킹되고 평문이 본문에 없다(AC1·2·3)."""
+    row = {
+        **_SAMPLE_ROW,
+        "target_table": "patients",
+        "before_data": {"name": "홍길동", "phone": "010-1234-5678", "chart_no": "00000001"},
+        "after_data": {"name": "홍길동", "allergies": "페니실린", "chart_no": "00000001"},
+    }
+    res = _build(monkeypatch, rows=[row]).get(_URL)
+    assert res.status_code == 200
+    entry = res.json()["data"][0]
+    assert entry["before_data"]["name"] == _MASK
+    assert entry["before_data"]["phone"] == _MASK
+    assert entry["before_data"]["chart_no"] == "00000001"  # 비민감 보존
+    assert entry["after_data"]["allergies"] == _MASK
+    # 평문 PII 가 응답 본문 어디에도 없다.
+    assert "홍길동" not in res.text
+    assert "010-1234-5678" not in res.text
+    assert "페니실린" not in res.text

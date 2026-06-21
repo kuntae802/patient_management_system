@@ -17,15 +17,25 @@ import re
 # raw 누출 차단(이 도메인의 13자리+ 순수 숫자열은 사실상 PII; 누출 > 과대마스킹 위험).
 _RRN_RE = re.compile(r"(\d{6})[-\s]?(\d{7})")
 
+# 휴대폰 패턴(01x+3~4+4자리, 하이픈/공백 선택). 뒤 4자리 마스킹(Story 3.6 방어심층).
+# 보수적: 휴대폰만(유선·이름·주소는 신뢰할 패턴 부재 → raw 미로깅 규율 의존).
+# RRN(13자리) 먼저 치환 → 11자리 휴대폰과 자릿수 비충돌.
+_PHONE_RE = re.compile(r"(01[016789])[-\s]?(\d{3,4})[-\s]?(\d{4})")
+
 
 def _mask_match(m: re.Match[str]) -> str:
     # 생년월일 6 + 성별자리 1 노출, 뒤 6자리 마스킹(services.rrn.mask_rrn 과 동일 형식).
     return f"{m.group(1)}-{m.group(2)[0]}{'*' * 6}"
 
 
+def _mask_phone(m: re.Match[str]) -> str:
+    # 통신사 식별 3자리 + 가운데 노출, 마지막 4자리 마스킹.
+    return f"{m.group(1)}-{m.group(2)}-****"
+
+
 def mask_pii(text: str) -> str:
-    """문자열 내 주민번호 패턴을 마스킹한다(로그·진단 출력 백스톱)."""
-    return _RRN_RE.sub(_mask_match, text)
+    """문자열 내 주민번호·휴대폰 패턴을 마스킹한다(로그·진단 출력 백스톱)."""
+    return _PHONE_RE.sub(_mask_phone, _RRN_RE.sub(_mask_match, text))
 
 
 class PiiMaskingFilter(logging.Filter):

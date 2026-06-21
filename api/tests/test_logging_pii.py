@@ -25,10 +25,24 @@ def test_mask_pii_never_leaks_tail() -> None:
     assert "345678" not in mask_pii("710314-2345678")
 
 
-@pytest.mark.parametrize("text", ["no pii here", "phone 010-1234-5678"])
-def test_mask_pii_leaves_non_rrn(text: str) -> None:
-    # 13자리 RRN 형태(6+7 연속)가 없는 텍스트는 변형하지 않는다(전화=3·4자리 토막이라 비매칭).
-    assert mask_pii(text) == text
+def test_mask_pii_leaves_clean_text() -> None:
+    # PII 패턴(RRN·휴대폰)이 없는 텍스트는 변형하지 않는다.
+    assert mask_pii("no pii here") == "no pii here"
+    assert mask_pii("order #12345 total 67890") == "order #12345 total 67890"
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("phone 010-1234-5678", "phone 010-1234-****"),  # 하이픈
+        ("연락처 01098765432", "연락처 010-9876-****"),  # 하이픈 없음(11자리)
+        ("hp 011-222-3333 end", "hp 011-222-**** end"),  # 011 + 3자리 국번
+    ],
+)
+def test_mask_pii_redacts_phone(text: str, expected: str) -> None:
+    # 휴대폰 백스톱(Story 3.6) — 마지막 4자리 마스킹. raw RRN(13자리)와 자릿수 비충돌.
+    assert mask_pii(text) == expected
+    assert "5678" not in mask_pii("phone 010-1234-5678")
 
 
 @pytest.mark.parametrize(
