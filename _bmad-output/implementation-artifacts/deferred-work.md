@@ -2,6 +2,14 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: code review of 2-6-관리자-영역-보강-직원-배정-웹-하드닝 (2026-06-21)
+
+> 3레이어 적대적 리뷰. Acceptance Auditor: AC1~AC7 clean pass. patch 3건(users 페이지 결합 해소·임시직원 시드 진단성·생성 DB 검증) 처리, 아래는 defer.
+
+**웹 에러 UX(fail-loud/silent-empty 비대칭 — 근원 공통):**
+- **마스터 전체-실패 시 과소-신호** [web/src/components/admin/masters-manager.tsx] — `fetchMasters` 부분 강등(AC4)으로 단일 테이블 실패가 화면 전체를 다운시키지 않게 됐으나(개선), **5개 테이블 전부 실패** 시 활성 탭만 배너가 뜨고 비활성 탭은 카운트 `0`으로 표시돼 관리자가 "데이터 없음"으로 오독→이미 존재하는 마스터를 재생성할 위험. 후속 폴리시: 탭 라벨에 에러 표식(글리프) + 에러 탭의 카운트 배지 억제(또는 전부-실패를 fatal 로 승격). AC4 핵심(부분 강등)은 충족 — 이는 엣지 폴리시.
+- **앱 전역 `error.tsx` 라우트 경계 부재** [web/src/app] — 서버측 `throw`(예: `fetchDepartments`·`fetchMasters` 의 fail-loud)가 Next 전역 default 에러 페이지로 직행하고, empty-degrade 는 무음이다. 스코프·재시도형 에러 UI(라우트별 `error.tsx`)라는 중간 지대가 전무. 본 스토리가 노출한 비대칭의 근원 — 관리자 라우트군에 `error.tsx` 도입을 프로젝트 전반 하드닝으로 검토(2.6 의 users-page patch 는 그 한 인스턴스의 응급 처치).
+
 ## Deferred from: code review of 2-5-마스터-시드-데이터-seed-sql (2026-06-21)
 
 > 3레이어 적대적 리뷰. Acceptance Auditor: AC1~AC6 strong pass(마이그레이션 무편집·신규 DDL/API/UI 0·dev 블록 보존·fee_mappings 미누출·전 코드행 현재유효). patch 3건(시드 테스트 강화)은 처리, 아래는 defer.
