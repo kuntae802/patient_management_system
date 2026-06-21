@@ -1,17 +1,25 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { apiFetch } from "@/lib/api/client";
 import {
   bloodTypeLabel,
   type ClinicalProfileValues,
   clinicalProfileSchema,
   normalizeRrn,
   patientCreateSchema,
+  type PatientListItem,
   rrnChecksumOk,
   rrnHardError,
+  searchPatients,
   toClinicalProfilePayload,
   toPatientCreatePayload,
   type PatientCreateValues,
 } from "./patients";
+
+// 검색은 apiFetch 만 호출 — 모킹(순수함수 테스트는 미사용이라 영향 없음).
+vi.mock("@/lib/api/client", () => ({ apiFetch: vi.fn() }));
+const mockApiFetch = vi.mocked(apiFetch);
+afterEach(() => vi.clearAllMocks());
 
 // 클라 1선 주민번호 검증(services/rrn 의 거울) + 페이로드 변환. 3중 검증의 즉시 UX 레이어.
 
@@ -202,5 +210,51 @@ describe("bloodTypeLabel", () => {
     expect(bloodTypeLabel("AB-")).toBe("AB-");
     expect(bloodTypeLabel(null)).toBe("미확인");
     expect(bloodTypeLabel("")).toBe("미확인");
+  });
+});
+
+// ── 전역 환자 검색(Story 3.5) ────────────────────────────────────────────────
+
+const SEARCH_ITEM: PatientListItem = {
+  id: "p1",
+  chart_no: "00000001",
+  name: "홍길동",
+  birth_date: "1990-01-01",
+  sex: "male",
+  resident_no_masked: "900101-1******",
+  phone: "010-1234-5678",
+  is_active: true,
+  created_at: "2026-06-21T00:00:00Z",
+};
+
+describe("searchPatients", () => {
+  it("GET /v1/patients?q= 로 호출하고 data 배열을 반환한다(q 인코딩·page_size 기본 20)", async () => {
+    mockApiFetch.mockResolvedValueOnce({
+      data: [SEARCH_ITEM],
+      meta: { page: 1, page_size: 20, total: 1 },
+    });
+
+    const result = await searchPatients("홍길동");
+
+    expect(result).toEqual([SEARCH_ITEM]);
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      `/v1/patients?q=${encodeURIComponent("홍길동")}&page_size=20`,
+      { signal: undefined },
+    );
+  });
+
+  it("AbortSignal·커스텀 pageSize 를 전달한다(경쟁 결과 취소·상한)", async () => {
+    mockApiFetch.mockResolvedValueOnce({
+      data: [],
+      meta: { page: 1, page_size: 5, total: 0 },
+    });
+    const ctrl = new AbortController();
+
+    await searchPatients("010-1234", ctrl.signal, 5);
+
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      `/v1/patients?q=${encodeURIComponent("010-1234")}&page_size=5`,
+      { signal: ctrl.signal },
+    );
   });
 });

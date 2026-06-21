@@ -1,8 +1,9 @@
 "use client";
 
-import { Bell, CircleUserRound, PanelLeft, Search } from "lucide-react";
+import { Bell, CircleUserRound, PanelLeft } from "lucide-react";
 
 import { Clock } from "./clock";
+import { PatientSearchCommand } from "./patient-search-command";
 
 export function Topbar({
   collapsed,
@@ -27,18 +28,8 @@ export function Topbar({
       {/* 페이지 타이틀/브레드크럼 슬롯 */}
       <div className="min-w-0 truncate text-sm font-semibold text-foreground">대기 현황</div>
 
-      {/* 전역 환자 검색 — Ctrl K 커맨드 팔레트 자리(실동작 Story 3.5) */}
-      <button
-        type="button"
-        aria-label="전역 환자 검색 (Ctrl K)"
-        className="ml-2 flex h-[33px] w-full max-w-[380px] items-center gap-2 rounded-md bg-muted px-2.5 text-left text-[13px] text-muted-foreground hover:bg-accent"
-      >
-        <Search className="size-4 shrink-0" aria-hidden />
-        <span className="flex-1 truncate">환자 이름·차트번호·연락처 검색</span>
-        <kbd className="rounded-sm border border-border bg-card px-1.5 py-0.5 text-[10.5px] font-semibold text-muted-foreground">
-          Ctrl K
-        </kbd>
-      </button>
+      {/* 전역 환자 검색 — Ctrl K 커맨드 팔레트(Story 3.5). 트리거+단축키+팔레트 일체(patient.read 게이트). */}
+      <PatientSearchCommand />
 
       <div className="ml-auto flex shrink-0 items-center gap-3">
         {/* 실시간 인디케이터 슬롯 */}

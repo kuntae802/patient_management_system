@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { apiFetch } from "@/lib/api/client";
+
 // 환자 등록(Story 3.1) — 타입·Zod 스키마(Pydantic PatientCreate 거울)·페이로드 변환.
 // 읽기/쓰기 모두 FastAPI(apiFetch). 주민번호는 raw 로 서버에 보내고(서버가 정규화·암호화), 클라는
 // HARD 사전체크(3중 검증 1선)만 한다. 🚫 raw 주민번호는 로그·toast 에 남기지 않는다(PII 경계).
@@ -38,6 +40,41 @@ export type Patient = {
   created_at: string;
   updated_at: string;
 };
+
+/** 환자 목록 경량 항목(FastAPI PatientListItem 거울 — snake_case 유지). 마스킹·식별 단서만(검색·확인용).
+ *  Patient(상세)와 별개: 임상·연락처(주소/이메일/보험) 없음. */
+export type PatientListItem = {
+  id: string;
+  chart_no: string;
+  name: string;
+  birth_date: string;
+  sex: string;
+  resident_no_masked: string;
+  phone: string | null;
+  is_active: boolean;
+  created_at: string;
+};
+
+/** 목록 페이지 봉투(아키텍처 §Format: {data, meta:{page,page_size,total}}). */
+export type PatientPage = {
+  data: PatientListItem[];
+  meta: { page: number; page_size: number; total: number };
+};
+
+/** 전역 환자 검색(Story 3.5) — 이름·차트번호·연락처로 `GET /v1/patients?q=`. 상위 pageSize 건만.
+ *  abort 가능(빠른 타이핑 시 이전 요청 취소 — 경쟁 결과 방지). 🚫 검색어(q=이름·연락처 PII)는
+ *  로그·toast 에 남기지 않는다(서버 라우트도 동일 — 라우트는 불투명, 응답은 마스킹). */
+export async function searchPatients(
+  q: string,
+  signal?: AbortSignal,
+  pageSize = 20,
+): Promise<PatientListItem[]> {
+  const page = await apiFetch<PatientPage>(
+    `/v1/patients?q=${encodeURIComponent(q)}&page_size=${pageSize}`,
+    { signal },
+  );
+  return page.data;
+}
 
 // ── 혈액형(ABO+Rh) 폐쇄 어휘 — Pydantic BloodType Literal 의 거울 ───────────────
 export type BloodType = "A+" | "A-" | "B+" | "B-" | "O+" | "O-" | "AB+" | "AB-";
