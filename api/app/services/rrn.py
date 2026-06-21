@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date
 
 # 성별·세기 자리 → 출생 세기(앞 2자리에 더할 기준연도). 9·0(1800년대)은 HARD 범위(1–8) 밖이라 제외.
 _CENTURY_BY_GENDER: dict[int, int] = {
@@ -101,3 +102,21 @@ def mask_rrn(raw: str) -> str:
     if len(digits) == 13:
         return f"{digits[:6]}-{digits[6]}{'*' * 6}"
     return "*" * (len(digits) or 1)
+
+
+def parse_rrn(raw: str) -> tuple[date, str]:
+    """검증 통과한 주민번호에서 (생년월일, 성별)을 파생한다. 성별 = 자리 홀수→male·짝수→female.
+
+    ⚠️ 호출 전 `validate_rrn(...).is_valid` 가 참이어야 한다(HARD 통과). 형식·세기·생년월일이 이미
+    검증됐다는 전제이며, 부정 입력에는 ValueError 를 던진다(서버 파생=입력 불일치 제거 단일 진실).
+    """
+    digits = normalize_rrn(raw)
+    if len(digits) != 13:
+        raise ValueError("주민번호 형식 오류 — parse_rrn 은 검증 통과 입력만 받는다")
+    gender = int(digits[6])
+    century = _CENTURY_BY_GENDER.get(gender)
+    if century is None:
+        raise ValueError("성별·세기 자리 오류 — parse_rrn 은 검증 통과 입력만 받는다")
+    birth = date(century + int(digits[0:2]), int(digits[2:4]), int(digits[4:6]))
+    sex = "male" if gender % 2 == 1 else "female"
+    return birth, sex

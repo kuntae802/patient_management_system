@@ -5,9 +5,17 @@ HARD(형식·성별/세기 자리·생년월일) = 거부, SOFT(체크섬) = 경
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
-from app.services.rrn import RrnValidation, mask_rrn, normalize_rrn, validate_rrn
+from app.services.rrn import (
+    RrnValidation,
+    mask_rrn,
+    normalize_rrn,
+    parse_rrn,
+    validate_rrn,
+)
 
 # 체크섬 일치 표본: 9001011234568 → Σ(가중치)=124, (11-124%11)%10=8 = 13번째 자리(경고 없음).
 _VALID_NO_WARN = "900101-1234568"
@@ -104,3 +112,33 @@ def test_mask_non_canonical_fully_masked(raw: str) -> None:
     # 형식 외 입력은 부분 노출 없이 전부 마스킹(또는 최소 1개).
     masked = mask_rrn(raw)
     assert set(masked) <= {"*"} and len(masked) >= 1
+
+
+# ── 파생(parse_rrn) — birth_date·sex (Story 3.1) ──────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "raw,expected_date,expected_sex",
+    [
+        ("900101-1234568", date(1990, 1, 1), "male"),    # 1·세기 1900·홀수=male
+        ("900101-2234567", date(1990, 1, 1), "female"),  # 2·세기 1900·짝수=female
+        ("100101-3234567", date(2010, 1, 1), "male"),    # 3·세기 2000·홀수=male
+        ("100101-4234567", date(2010, 1, 1), "female"),  # 4·세기 2000·짝수=female
+    ],
+)
+def test_parse_rrn_derives_birth_and_sex(raw, expected_date, expected_sex) -> None:
+    birth, sex = parse_rrn(raw)
+    assert birth == expected_date
+    assert sex == expected_sex
+
+
+def test_parse_rrn_accepts_hyphenless() -> None:
+    """정규화 입력 — 하이픈 유/무 동일 결과."""
+    assert parse_rrn("9001011234568") == parse_rrn("900101-1234568")
+
+
+@pytest.mark.parametrize("raw", ["123", "", "9001011", "900101-9234567"])
+def test_parse_rrn_rejects_invalid(raw: str) -> None:
+    """검증 미통과 입력(형식·세기 자리 0/9)에는 ValueError(서버 파생은 검증 통과 전제)."""
+    with pytest.raises(ValueError):
+        parse_rrn(raw)

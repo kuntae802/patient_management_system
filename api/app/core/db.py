@@ -1022,3 +1022,125 @@ async def set_drug_active(sub: UUID, drug_id: UUID, *, is_active: bool) -> async
         return row
 
     return await _run_authed(sub, _op)
+
+
+# ── 환자(patients) 쓰기·읽기(Story 3.1, FR-002·003·240) ─────────────────────────
+# 쓰기 권위 = FastAPI(service_role). 권한 재평가+암호화+INSERT 를 **동일 트랜잭션**에서(평가↔쓰기
+# TOCTOU 차단, 1.5 이월). 주민번호는 0005 프리미티브로 enc/hash 산출 — raw 평문은 컬럼에 저장하지
+# 않는다(_enc=암호문·_hash=blind index·_masked=표시값). 읽기는 마스킹 컬럼만 투영(_enc/_hash 제외 —
+# RLS 행 + 컬럼 GRANT(0009)에 더한 응답 투영 방어심층). 0009 감사 트리거가 변경을 자동 기록.
+# 컬럼 리스트는 고정 리터럴(사용자 입력 아님), 값만 $n 바인딩.
+
+# 응답·RETURNING 투영(절대 resident_no_enc/_hash 미포함 — PII 경계).
+_PATIENT_COLUMNS = (
+    "id, chart_no, name, birth_date, sex, resident_no_masked, "
+    "phone, address, email, insurance_type, insurance_no, "
+    "is_active, created_at, updated_at"
+)
+_PATIENT_LIST_COLUMNS = (
+    "id, chart_no, name, birth_date, sex, resident_no_masked, phone, is_active, created_at"
+)
+
+
+async def _require_patient_create(conn: asyncpg.Connection) -> None:
+    """쓰기 직전 동일 트랜잭션에서 patient.create 재평가(평가↔쓰기 TOCTOU 차단). 미보유 → 403."""
+    if not bool(await conn.fetchval("select public.has_permission('patient.create')")):
+        raise ForbiddenError(detail={"required_permission": "patient.create"})
+
+
+async def insert_patient(
+    sub: UUID,
+    *,
+    normalized_rrn: str,
+    masked_rrn: str,
+    birth_date: date,
+    sex: str,
+    name: str,
+    phone: str | None,
+    address: str | None,
+    email: str | None,
+    insurance_type: str,
+    insurance_no: str | None,
+) -> asyncpg.Record:
+    """환자 INSERT(자동 감사). 주민번호 중복(resident_no_hash UNIQUE) → 409 patient_exists.
+
+    enc/hash 는 정규화된 주민번호(normalized_rrn)에서 산출 — 두 값이 같은 canonical 입력을 쓰도록
+    보장(정규화 누락 시 중복 매칭·UNIQUE 붕괴 방지, A-1 이월). chart_no/auth_uid(NULL)/임상 프로필은
+    기본값/NULL. 중복 시 SAVEPOINT(중첩 트랜잭션) 롤백 후 기존 chart_no 를 조회해 detail 에 담는다
+    (원무가 기존 환자로 이동하도록 — chart_no 는 PII 아님).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_patient_create(conn)
+        # 0005 프리미티브로 암호문·blind index 산출(같은 정규화 입력). 부작용 없음(테이블 미기록).
+        enc = await conn.fetchval("select public.encrypt_sensitive($1)", normalized_rrn)
+        hashed = await conn.fetchval("select public.blind_index($1)", normalized_rrn)
+        try:
+            # 중첩 트랜잭션 = SAVEPOINT: UNIQUE 위반 시 여기만 롤백되고 바깥 트랜잭션은 살아남아
+            # 기존 chart_no 를 조회할 수 있다(바깥에서 잡으면 트랜잭션 abort 로 후속 조회 불가).
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    f"insert into public.patients "
+                    f"(name, birth_date, sex, resident_no_enc, resident_no_hash, "
+                    f"resident_no_masked, phone, address, email, insurance_type, insurance_no) "
+                    f"values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "
+                    f"returning {_PATIENT_COLUMNS}",
+                    name,
+                    birth_date,
+                    sex,
+                    enc,
+                    hashed,
+                    masked_rrn,
+                    phone,
+                    address,
+                    email,
+                    insurance_type,
+                    insurance_no,
+                )
+        except asyncpg.UniqueViolationError as exc:
+            existing_chart_no = await conn.fetchval(
+                "select chart_no from public.patients where resident_no_hash = $1", hashed
+            )
+            raise ConflictError(
+                "이미 등록된 주민번호입니다.",
+                code="patient_exists",
+                detail={"chart_no": existing_chart_no},
+            ) from exc
+        assert row is not None  # RETURNING 은 항상 1행
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_patients(
+    sub: UUID, *, page: int = 1, page_size: int = 50
+) -> tuple[list[asyncpg.Record], int]:
+    """환자 목록 페이지(최신순, 마스킹 컬럼만) + 전체 건수. 게이트(patient.read)는 라우터가 강제.
+
+    service_role 경로라 RLS 우회 — 직원 목록 접근 권위는 라우터 require_permission('patient.read')
+    (읽기 TOCTOU 저위험 → 재평가 불요, fetch_audit_logs 동형). 마스킹 컬럼만 투영(_enc/_hash 제외).
+    """
+    offset = (page - 1) * page_size
+
+    async def _op(conn: asyncpg.Connection) -> tuple[list[asyncpg.Record], int]:
+        rows = await conn.fetch(
+            f"select {_PATIENT_LIST_COLUMNS} from public.patients "
+            f"order by created_at desc limit $1 offset $2",
+            page_size,
+            offset,
+        )
+        total = int(await conn.fetchval("select count(*) from public.patients") or 0)
+        return rows, total
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_patient(sub: UUID, patient_id: UUID) -> asyncpg.Record | None:
+    """환자 상세(마스킹 컬럼만). 미존재 → None(서비스가 404 매핑)."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record | None:
+        return await conn.fetchrow(
+            f"select {_PATIENT_COLUMNS} from public.patients where id = $1", patient_id
+        )
+
+    return await _run_authed(sub, _op)
