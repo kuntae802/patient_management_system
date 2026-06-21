@@ -251,9 +251,7 @@ def test_invalid_doctor_rejected(
     assert not_doctor.status_code == 422 and not_doctor.json()["error"]["code"] == "invalid_doctor"
 
 
-def test_time_off_lifecycle(
-    client: TestClient, admin_token: str, demo_doctor_id: str
-) -> None:
+def test_time_off_lifecycle(client: TestClient, admin_token: str, demo_doctor_id: str) -> None:
     """AC2: 휴진·예외 생성→수정→비활성(겹침 제약 없음 — 중첩 휴진 무해)."""
     created = client.post(
         _TIMEOFF_URL,
@@ -304,9 +302,7 @@ def test_doctor_forbidden_on_schedule_writes(
     assert res.status_code == 403 and res.json()["error"]["code"] == "forbidden"
 
 
-def test_list_scheduling_doctors(
-    client: TestClient, admin_token: str, demo_doctor_id: str
-) -> None:
+def test_list_scheduling_doctors(client: TestClient, admin_token: str, demo_doctor_id: str) -> None:
     """의사 피커: 재직 의사 목록에 데모 의사(EMP0002) 노출(id·name·department_id)."""
     res = client.get(_DOCTORS_URL, headers=_bearer(admin_token))
     assert res.status_code == 200, res.text
@@ -317,4 +313,115 @@ def test_list_scheduling_doctors(
 def test_doctor_forbidden_on_doctors_list(client: TestClient, doctor_token: str) -> None:
     """AC4: master.manage 미보유(doctor) → 의사 피커 조회도 403."""
     res = client.get(_DOCTORS_URL, headers=_bearer(doctor_token))
+    assert res.status_code == 403
+
+
+# ── 동적 가용 슬롯 계산 (Story 6.2) — 시드 데모 의사(월–금 09:00–12:30·14:00–17:30) ───────────
+# reception=appointment.read 보유(seed)·nurse=미보유(403 baseline). 시드 휴진=2030-05-01(수, 종일).
+_SLOTS_URL = "/v1/scheduling/slots"
+_BOOKABLE_URL = "/v1/scheduling/bookable-doctors"
+_FUTURE_WEEKDAY = "2030-06-03"  # 월요일·미래(시드 휴진 2030-05-01 과 무관) → 슬롯 available
+_TIMEOFF_DAY = "2030-05-01"  # 수요일·시드 종일 휴진 → 그날 전 슬롯 time_off
+_PAST_WEEKDAY = "2020-01-06"  # 월요일·과거 → 전 슬롯 past
+
+
+@pytest.fixture(scope="module")
+def reception_token() -> str:
+    token = _get_token("reception@pms.local", "Staff1234")
+    if not token:
+        pytest.skip("reception 부트스트랩 계정 미가용 — 'supabase db reset'(seed 갱신) 후 재실행")
+    return token
+
+
+@pytest.fixture(scope="module")
+def nurse_token() -> str:
+    token = _get_token("nurse@pms.local", "Staff1234")
+    if not token:
+        pytest.skip("nurse 부트스트랩 계정 미가용 — 'supabase db reset'(seed 갱신) 후 재실행")
+    return token
+
+
+def test_slots_available_for_demo_doctor(
+    client: TestClient, reception_token: str, demo_doctor_id: str
+) -> None:
+    """AC1: 미래 평일 → 시드 근무(오전·오후)에서 available 슬롯 산출(휴진·예약 없음)."""
+    res = client.get(
+        _SLOTS_URL,
+        headers=_bearer(reception_token),
+        params={"doctor_id": demo_doctor_id, "date": _FUTURE_WEEKDAY},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["slot_minutes"] == 30 and body["date"] == _FUTURE_WEEKDAY
+    statuses = {s["status"] for s in body["slots"]}
+    assert "available" in statuses and "past" not in statuses
+    # 오전 09:00–12:30(7) + 오후 14:00–17:30(7) = 14 슬롯.
+    assert len(body["slots"]) == 14, body["slots"]
+
+
+def test_slots_time_off_day(client: TestClient, reception_token: str, demo_doctor_id: str) -> None:
+    """AC2: 시드 종일 휴진일(수) → 그날 근무 슬롯이 전부 time_off(비활성)."""
+    res = client.get(
+        _SLOTS_URL,
+        headers=_bearer(reception_token),
+        params={"doctor_id": demo_doctor_id, "date": _TIMEOFF_DAY},
+    )
+    assert res.status_code == 200, res.text
+    slots = res.json()["slots"]
+    assert slots and all(s["status"] == "time_off" for s in slots), slots
+
+
+def test_slots_past_day(client: TestClient, reception_token: str, demo_doctor_id: str) -> None:
+    """AC2: 과거 평일 → 근무 슬롯이 전부 past(비활성)."""
+    res = client.get(
+        _SLOTS_URL,
+        headers=_bearer(reception_token),
+        params={"doctor_id": demo_doctor_id, "date": _PAST_WEEKDAY},
+    )
+    assert res.status_code == 200, res.text
+    slots = res.json()["slots"]
+    assert slots and all(s["status"] == "past" for s in slots), slots
+
+
+def test_slots_empty_for_non_doctor(client: TestClient, reception_token: str) -> None:
+    """AC3: 미존재/비-의사 doctor_id → 빈 슬롯·200(404 아님)."""
+    res = client.get(
+        _SLOTS_URL,
+        headers=_bearer(reception_token),
+        params={"doctor_id": str(uuid.uuid4()), "date": _FUTURE_WEEKDAY},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["slots"] == []
+
+
+def test_slots_forbidden_for_nurse(
+    client: TestClient, nurse_token: str, demo_doctor_id: str
+) -> None:
+    """AC4: appointment.read 미보유(nurse) → 슬롯 조회 403."""
+    res = client.get(
+        _SLOTS_URL,
+        headers=_bearer(nurse_token),
+        params={"doctor_id": demo_doctor_id, "date": _FUTURE_WEEKDAY},
+    )
+    assert res.status_code == 403 and res.json()["error"]["code"] == "forbidden"
+
+
+def test_bookable_doctors_for_reception(
+    client: TestClient, reception_token: str, demo_doctor_id: str, demo_dept_id: str
+) -> None:
+    """예약 피커: reception(appointment.read) → 재직 의사 목록 + 진료과 필터."""
+    res = client.get(_BOOKABLE_URL, headers=_bearer(reception_token))
+    assert res.status_code == 200, res.text
+    assert demo_doctor_id in {d["id"].lower() for d in res.json()}
+    # 진료과 필터 — 데모 의사(IM 소속)는 IM 필터에 포함.
+    res2 = client.get(
+        _BOOKABLE_URL, headers=_bearer(reception_token), params={"department_id": demo_dept_id}
+    )
+    assert res2.status_code == 200
+    assert demo_doctor_id in {d["id"].lower() for d in res2.json()}
+
+
+def test_bookable_doctors_forbidden_for_nurse(client: TestClient, nurse_token: str) -> None:
+    """AC4: appointment.read 미보유(nurse) → 예약 피커 403."""
+    res = client.get(_BOOKABLE_URL, headers=_bearer(nurse_token))
     assert res.status_code == 403

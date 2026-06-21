@@ -8,7 +8,7 @@ test_masters.py 미러 + 시간 순서·weekday·겹침(schedule_overlap) 검증
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from typing import Any
 
 import pytest
@@ -19,6 +19,7 @@ from app.api.v1 import scheduling
 from app.core import db
 from app.core.errors import AppError, ConflictError, NotFoundError, init_error_handlers
 from app.core.security import CurrentUser, get_current_user
+from app.services import scheduling as sched_service
 
 _FAKE_ADMIN = CurrentUser(
     sub=uuid.uuid4(), aud="authenticated", role="authenticated", exp=9999999999
@@ -222,3 +223,142 @@ def test_create_time_off_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
     res = _build(monkeypatch).post(_TIMEOFF_URL, json=_VALID_TIMEOFF)
     assert res.status_code == 201, res.text
     assert res.json()["reason"] == "학회"
+
+
+# ── 동적 슬롯 계산: 순수 함수 _build_slots (Story 6.2, DB 무관) ────────────────
+# 근무 블록(KST 로컬 time) → 30분 슬롯 전개 + status(available/booked/time_off/past).
+# 09:00 KST = 00:00 UTC(고정 +9). _PAST/_FUTURE = '지남' 판정 기준(now) 양극단.
+
+_DATE = date(2030, 6, 3)  # 월요일(KST dow=1)
+_PAST = datetime(2020, 1, 1, tzinfo=UTC)  # now 가 모든 슬롯보다 과거 → past 없음
+_FUTURE = datetime(2040, 1, 1, tzinfo=UTC)  # now 가 모든 슬롯보다 미래 → 전부 past
+
+
+def _u(hour: int, minute: int = 0) -> datetime:
+    """2030-06-03 의 UTC 시각(KST-9). 예: _u(0)=09:00 KST 슬롯 시작."""
+    return datetime(2030, 6, 3, hour, minute, tzinfo=UTC)
+
+
+def test_build_slots_available_grid() -> None:
+    """09:00–10:30 KST 블록 → 30분 슬롯 3개, now 과거라 전부 available."""
+    slots = sched_service._build_slots(_DATE, [(time(9, 0), time(10, 30))], [], [], _PAST)
+    assert [s.status for s in slots] == ["available", "available", "available"]
+    assert slots[0].start == _u(0, 0) and slots[0].end == _u(0, 30)  # 09:00 KST = 00:00 UTC
+    assert slots[-1].end == _u(1, 30)  # 10:30 KST = 01:30 UTC
+
+
+def test_build_slots_partial_tail_excluded() -> None:
+    """09:00–09:40 블록 → 30분 슬롯 1개만(09:30–10:00 은 블록 초과)."""
+    slots = sched_service._build_slots(_DATE, [(time(9, 0), time(9, 40))], [], [], _PAST)
+    assert len(slots) == 1 and slots[0].end == _u(0, 30)
+
+
+def test_build_slots_booked_subtraction() -> None:
+    """booked 예약(09:00–09:30 KST=00:00–00:30 UTC) 겹치는 슬롯만 booked, 나머지 available."""
+    booked = [(_u(0, 0), _u(0, 30))]
+    slots = sched_service._build_slots(_DATE, [(time(9, 0), time(10, 0))], [], booked, _PAST)
+    assert [s.status for s in slots] == ["booked", "available"]
+
+
+def test_build_slots_time_off() -> None:
+    time_offs = [(_u(0, 0), _u(0, 30))]
+    slots = sched_service._build_slots(_DATE, [(time(9, 0), time(10, 0))], time_offs, [], _PAST)
+    assert [s.status for s in slots] == ["time_off", "available"]
+
+
+def test_build_slots_past() -> None:
+    """now 가 미래면 전부 past(시각 지남)."""
+    slots = sched_service._build_slots(_DATE, [(time(9, 0), time(10, 0))], [], [], _FUTURE)
+    assert all(s.status == "past" for s in slots)
+
+
+def test_build_slots_status_priority() -> None:
+    """우선순위 past > time_off > booked: 지난 슬롯이 휴진·예약과 겹쳐도 past."""
+    full = [(_u(0, 0), _u(0, 30))]
+    slots = sched_service._build_slots(_DATE, [(time(9, 0), time(9, 30))], full, full, _FUTURE)
+    assert slots[0].status == "past"
+
+
+def test_build_slots_timeoff_over_booked() -> None:
+    """past 아니면 time_off 가 booked 보다 우선."""
+    full = [(_u(0, 0), _u(0, 30))]
+    slots = sched_service._build_slots(_DATE, [(time(9, 0), time(9, 30))], full, full, _PAST)
+    assert slots[0].status == "time_off"
+
+
+def test_build_slots_empty_blocks() -> None:
+    assert sched_service._build_slots(_DATE, [], [], [], _PAST) == []
+
+
+def test_build_slots_sorted_across_blocks() -> None:
+    """오전·오후 두 블록(역순 입력) → 시작 시각 오름차순 정렬."""
+    blocks = [(time(14, 0), time(14, 30)), (time(9, 0), time(9, 30))]
+    slots = sched_service._build_slots(_DATE, blocks, [], [], _PAST)
+    assert [s.start for s in slots] == sorted(s.start for s in slots)
+    assert slots[0].start == _u(0, 0)  # 09:00 KST 먼저
+
+
+# ── 슬롯·예약 엔드포인트 게이트 (appointment.read) ─────────────────────────────
+
+
+def _slots_client(monkeypatch: pytest.MonkeyPatch, *, allowed: bool = True) -> TestClient:
+    app = FastAPI()
+    init_error_handlers(app)
+    app.include_router(scheduling.router, prefix="/v1")
+    app.dependency_overrides[get_current_user] = lambda: _FAKE_ADMIN
+
+    async def _perm(sub: uuid.UUID, code: str) -> bool:
+        assert code == "appointment.read"  # 게이트가 정확히 appointment.read 평가
+        return allowed
+
+    monkeypatch.setattr(db, "fetch_has_permission", _perm)
+
+    async def _empty(*args: Any, **kwargs: Any) -> list[Any]:
+        return []
+
+    for name in (
+        "fetch_doctor_schedules_for_weekday",
+        "fetch_doctor_time_offs_in_range",
+        "fetch_booked_appointments_in_range",
+        "fetch_bookable_doctors",
+    ):
+        monkeypatch.setattr(db, name, _empty)
+    return TestClient(app)
+
+
+def test_slots_forbidden_without_appointment_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    res = _slots_client(monkeypatch, allowed=False).get(
+        "/v1/scheduling/slots", params={"doctor_id": str(uuid.uuid4()), "date": "2030-06-03"}
+    )
+    assert res.status_code == 403
+    assert res.json()["error"]["code"] == "forbidden"
+
+
+def test_slots_empty_for_unknown_doctor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """근무 블록 0(비활성/미존재 의사) → 빈 슬롯·200(404 아님, AC3)."""
+    res = _slots_client(monkeypatch).get(
+        "/v1/scheduling/slots", params={"doctor_id": str(uuid.uuid4()), "date": "2030-06-03"}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["slots"] == [] and body["slot_minutes"] == 30
+
+
+def test_slots_invalid_date_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    res = _slots_client(monkeypatch).get(
+        "/v1/scheduling/slots", params={"doctor_id": str(uuid.uuid4()), "date": "not-a-date"}
+    )
+    assert res.status_code == 422
+
+
+def test_bookable_doctors_forbidden_without_appointment_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    res = _slots_client(monkeypatch, allowed=False).get("/v1/scheduling/bookable-doctors")
+    assert res.status_code == 403
+
+
+def test_bookable_doctors_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    res = _slots_client(monkeypatch).get("/v1/scheduling/bookable-doctors")
+    assert res.status_code == 200
+    assert res.json() == []

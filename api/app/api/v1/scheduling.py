@@ -12,6 +12,7 @@ authenticated SELECT). 게이트: require_permission('master.manage') → 403(ma
 
 from __future__ import annotations
 
+from datetime import date
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
@@ -26,6 +27,7 @@ from app.schemas.scheduling import (
     DoctorTimeOffResponse,
     DoctorTimeOffUpdate,
     SchedulingDoctor,
+    SlotGridResponse,
 )
 from app.services import scheduling as scheduling_service
 
@@ -33,6 +35,8 @@ router = APIRouter(prefix="/scheduling", tags=["scheduling"])
 
 # 권한 의존성은 모듈 로드 시 1회 생성(요청마다 팩토리 호출 회피). 근무표·휴진 = 관리자 관리 config.
 require_master_manage = require_permission("master.manage")
+# 슬롯·예약 조회(원무·관리자 — 의사·환자는 6.4/6.5 grant). 비-PII 가용성이나 관례대로 게이트.
+require_appointment_read = require_permission("appointment.read")
 
 
 # ── 근무표(doctor_schedules) ──────────────────────────────────────────────────
@@ -117,3 +121,27 @@ async def list_scheduling_doctors(
     """근무표 폼 의사 피커용 재직 의사 목록(id·name·department_id). users RLS(본인행)를 넘어야 해
     service_role 로 읽는다(나머지 목록은 web 직접조회)."""
     return await scheduling_service.list_scheduling_doctors(user.sub)
+
+
+# ── 동적 가용 슬롯 · 예약 피커 (Story 6.2) ─────────────────────────────────────
+
+
+@router.get("/slots", response_model=SlotGridResponse)
+async def get_available_slots(
+    doctor_id: UUID,
+    date: date,
+    user: CurrentUser = Depends(require_appointment_read),
+) -> SlotGridResponse:
+    """의사·날짜(KST)의 가용 슬롯 그리드 = 근무 − 휴진 − booked예약(FR-012). 게이트
+    appointment.read → 403. 비활성/미존재 의사 → 빈 슬롯(404 아님). date 파싱 실패 → 422."""
+    return await scheduling_service.compute_available_slots(user.sub, doctor_id, date)
+
+
+@router.get("/bookable-doctors", response_model=list[SchedulingDoctor])
+async def list_bookable_doctors(
+    department_id: UUID | None = None,
+    user: CurrentUser = Depends(require_appointment_read),
+) -> list[SchedulingDoctor]:
+    """예약 슬롯 조회용 재직 의사 목록(진료과 필터 옵션). 게이트 appointment.read. 기존
+    /doctors 는 master.manage(admin) 전용이라 원무·예약 흐름엔 본 엔드포인트를 쓴다."""
+    return await scheduling_service.list_bookable_doctors(user.sub, department_id)

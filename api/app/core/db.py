@@ -2337,3 +2337,95 @@ async def fetch_active_doctors(sub: UUID) -> list[asyncpg.Record]:
         )
 
     return await _run_authed(sub, _op)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 예약 슬롯 계산 읽기 (Story 6.2 — 0031_appointments) — 근무−휴진−booked예약
+# 전부 service_role(_run_authed) 읽기 — RLS 우회(fetch_active_doctors 패턴). active 의사 조인이
+# users RLS(본인행) 를 넘고, appointments RLS(환자 본인행) 를 넘어 전체 예약 가용성을 본다(가용성만
+# 반환·환자 PII 미반환). 조회는 엔드포인트 require_permission('appointment.read') 게이트로 충분 →
+# 권한 재평가 불요(읽기). 슬롯 status 산출은 services.scheduling 의 순수 함수가 담당.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+async def fetch_doctor_schedules_for_weekday(
+    sub: UUID, doctor_id: UUID, weekday: int
+) -> list[asyncpg.Record]:
+    """슬롯 계산용 — 재직 의사의 해당 요일 활성 근무 블록(start_time/end_time, KST 로컬 time).
+
+    ⚠️ active 의사 조인 필터(`employment_status='active'`·`role='doctor'`): 6.1 이월("스케줄
+    employment 재검증")을 흡수 — 퇴사·휴직 의사의 잔존 활성 근무표는 슬롯을 만들지 않는다.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+        return await conn.fetch(
+            "select ds.start_time, ds.end_time from public.doctor_schedules ds "
+            "join public.users u on u.id = ds.doctor_id "
+            "join public.roles r on r.id = u.role_id "
+            "where ds.doctor_id = $1 and ds.weekday = $2 and ds.is_active "
+            "  and r.code = 'doctor' and u.employment_status = 'active' "
+            "order by ds.start_time",
+            doctor_id,
+            weekday,
+        )
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_doctor_time_offs_in_range(
+    sub: UUID, doctor_id: UUID, range_start: datetime, range_end: datetime
+) -> list[asyncpg.Record]:
+    """슬롯 계산용 — 의사의 활성 휴진 구간 중 [range_start, range_end) 와 겹치는 것."""
+
+    async def _op(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+        return await conn.fetch(
+            "select start_at, end_at from public.doctor_time_offs "
+            "where doctor_id = $1 and is_active and start_at < $3 and end_at > $2 "
+            "order by start_at",
+            doctor_id,
+            range_start,
+            range_end,
+        )
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_booked_appointments_in_range(
+    sub: UUID, doctor_id: UUID, range_start: datetime, range_end: datetime
+) -> list[asyncpg.Record]:
+    """슬롯 계산용 — 의사의 활성(status='booked') 예약 중 구간과 겹치는 시각만.
+
+    ⚠️ 가용성만 — patient_id 등 환자 PII 미반환(슬롯 응답에 누설 금지). EXCLUDE 부분 술어
+    (`where status='booked'`)와 동일 술어로 정렬(취소·노쇼·완료는 슬롯 미차단·재예약 가능).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+        return await conn.fetch(
+            "select scheduled_start, scheduled_end from public.appointments "
+            "where doctor_id = $1 and status = 'booked' "
+            "  and scheduled_start < $3 and scheduled_end > $2 "
+            "order by scheduled_start",
+            doctor_id,
+            range_start,
+            range_end,
+        )
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_bookable_doctors(sub: UUID, department_id: UUID | None) -> list[asyncpg.Record]:
+    """예약 피커용 재직 의사(id·name·department_id) — 진료과 필터 옵션. fetch_active_doctors
+    미러이나 게이트가 appointment.read(원무·환자 예약 흐름; /doctors 는 master.manage admin 전용).
+    users RLS(본인행) 를 service_role 풀이 우회."""
+
+    async def _op(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+        return await conn.fetch(
+            "select u.id, u.name, u.department_id from public.users u "
+            "join public.roles r on r.id = u.role_id "
+            "where r.code = 'doctor' and u.employment_status = 'active' "
+            "  and ($1::uuid is null or u.department_id = $1) "
+            "order by u.name",
+            department_id,
+        )
+
+    return await _run_authed(sub, _op)
