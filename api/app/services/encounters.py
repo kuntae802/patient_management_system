@@ -96,3 +96,12 @@ async def record_call(sub: UUID, encounter_id: UUID) -> EncounterResponse:
     미접수/진행중/종결 → 409, 미존재 → 404, 권한 미보유 → 403(전부 RPC SQLSTATE → core/db 매핑)."""
     row = await db.call_encounter(sub, encounter_id)
     return _to_encounter(row)
+
+
+async def start_consult(sub: UUID, encounter_id: UUID) -> EncounterResponse:
+    """진찰 시작(start_consult RPC — registered→in_progress, 담당의=호출자, FR-030).
+
+    미접수/종결/이미 진행중 → 409, 미존재 → 404, 권한 미보유(encounter.start) → 403
+    (전부 RPC SQLSTATE → core/db 매핑). consult_started_at·doctor_id 세팅 반영 행 반환."""
+    row = await db.call_start_consult(sub, encounter_id)
+    return _to_encounter(row)

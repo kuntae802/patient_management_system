@@ -73,6 +73,17 @@ def reception_token() -> str:
 
 
 @pytest.fixture(scope="module")
+def nurse_token() -> str:
+    """무권한 baseline(Story 4.4) — nurse 는 encounter.* 미보유(간호 권한=Epic 5).
+
+    doctor 가 encounter.read/start 를 받은 뒤 "권한 미보유 403" 검증 계정을 대체한다."""
+    token = _get_token("nurse@pms.local", "Staff1234")
+    if not token:
+        pytest.skip("nurse 부트스트랩 미가용 — 'supabase db reset'(seed 갱신) 후 재실행")
+    return token
+
+
+@pytest.fixture(scope="module")
 def client(admin_token: str):
     # with-블록 = lifespan 실행(asyncpg 풀 생성). 풀 없이는 권한 평가·쓰기 불가.
     with TestClient(app) as test_client:
@@ -85,6 +96,15 @@ def admin_id(psql: Psql) -> str:
     return psql.scalar(
         "select u.id::text from public.users u "
         "join public.roles r on r.id = u.role_id where r.code = 'admin' limit 1"
+    ).lower()
+
+
+@pytest.fixture(scope="module")
+def doctor_id(psql: Psql) -> str:
+    """doctor auth uid — start_consult 가 세팅하는 doctor_id(=호출자) 단언 기준(Story 4.4)."""
+    return psql.scalar(
+        "select u.id::text from public.users u "
+        "join public.roles r on r.id = u.role_id where r.code = 'doctor' limit 1"
     ).lower()
 
 
@@ -336,8 +356,8 @@ def test_get_encounter_not_found_404(client, admin_token):
     assert res.status_code == 404, res.text
 
 
-def test_get_encounter_forbidden_without_read(client, admin_token, doctor_token, dept_id):
-    """encounter.read 미보유(doctor) → 조회 403."""
+def test_get_encounter_forbidden_without_read(client, admin_token, nurse_token, dept_id):
+    """encounter.read 미보유(nurse 무권한 baseline) → 조회 403. (doctor 는 4.4 부터 read 보유.)"""
     pid = _create_patient(client, admin_token)
     created = client.post(
         _ENCOUNTERS_URL,
@@ -345,7 +365,7 @@ def test_get_encounter_forbidden_without_read(client, admin_token, doctor_token,
         headers=_bearer(admin_token),
     )
     eid = created.json()["id"]
-    res = client.get(f"{_ENCOUNTERS_URL}/{eid}", headers=_bearer(doctor_token))
+    res = client.get(f"{_ENCOUNTERS_URL}/{eid}", headers=_bearer(nurse_token))
     assert res.status_code == 403, res.text
 
 
@@ -399,10 +419,10 @@ def test_list_encounters_status_filter(client, admin_token, dept_id):
     assert all(r["id"] != eid for r in exc.json()["data"]), exc.text
 
 
-def test_list_encounters_forbidden_without_read(client, doctor_token, dept_id):
-    """encounter.read 미보유(doctor 권한 0) → 목록 403."""
+def test_list_encounters_forbidden_without_read(client, nurse_token, dept_id):
+    """encounter.read 미보유(nurse 무권한 baseline) → 목록 403. (doctor 는 4.4 부터 read 보유.)"""
     res = client.get(
-        _ENCOUNTERS_URL, params={"department_id": dept_id}, headers=_bearer(doctor_token)
+        _ENCOUNTERS_URL, params={"department_id": dept_id}, headers=_bearer(nurse_token)
     )
     assert res.status_code == 403, res.text
 
@@ -478,3 +498,67 @@ def test_reception_can_call(client, admin_token, reception_token, dept_id):
     res = client.post(f"{_ENCOUNTERS_URL}/{eid}/call", headers=_bearer(reception_token))
     assert res.status_code == 200, res.text
     assert res.json()["call_count"] == 1
+
+
+# ── Story 4.4: 진찰 시작 POST /encounters/{id}/start-consult ──────────────────────────
+
+
+def test_start_consult_transitions_to_in_progress(client, admin_token, admin_id, dept_id):
+    """진찰 시작 → 200 + status='in_progress' + consult_started_at + doctor_id=호출자(admin)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.post(f"{_ENCOUNTERS_URL}/{eid}/start-consult", headers=_bearer(admin_token))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "in_progress"
+    assert body["consult_started_at"] is not None
+    assert body["doctor_id"] == admin_id  # start_consult 가 auth.uid() 로 담당의 세팅
+
+
+def test_start_consult_doctor_golden_path(client, admin_token, doctor_token, doctor_id, dept_id):
+    """doctor(seed encounter.start 보유, 4.4)는 진찰 시작 가능 → 200 + doctor_id=doctor uid."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.post(f"{_ENCOUNTERS_URL}/{eid}/start-consult", headers=_bearer(doctor_token))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "in_progress"
+    assert body["doctor_id"] == doctor_id
+
+
+def test_start_consult_already_in_progress_conflict_409(client, admin_token, dept_id):
+    """이미 in_progress 인 내원 재-진찰시작 → 409 invalid_transition(재수행·진료 탈취 차단)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    first = client.post(f"{_ENCOUNTERS_URL}/{eid}/start-consult", headers=_bearer(admin_token))
+    assert first.status_code == 200, first.text
+    second = client.post(f"{_ENCOUNTERS_URL}/{eid}/start-consult", headers=_bearer(admin_token))
+    assert second.status_code == 409, second.text
+    assert second.json()["error"]["code"] == "invalid_transition", second.text
+
+
+def test_start_consult_non_registered_conflict_409(client, admin_token, dept_id, psql):
+    """미접수(scheduled) 내원 진찰 시작 → 409(접수 환자만 진찰 시작 가능)."""
+    pid = _create_patient(client, admin_token)
+    eid = _insert_scheduled(psql, pid, dept_id)
+    res = client.post(f"{_ENCOUNTERS_URL}/{eid}/start-consult", headers=_bearer(admin_token))
+    assert res.status_code == 409, res.text
+    assert res.json()["error"]["code"] == "invalid_transition", res.text
+
+
+def test_start_consult_nonexistent_encounter_404(client, admin_token):
+    """미존재 내원 진찰 시작 → 404(PT404 → NotFoundError 매핑)."""
+    res = client.post(
+        f"{_ENCOUNTERS_URL}/{uuid.uuid4()}/start-consult", headers=_bearer(admin_token)
+    )
+    assert res.status_code == 404, res.text
+
+
+def test_start_consult_forbidden_without_start_permission(
+    client, admin_token, nurse_token, dept_id
+):
+    """encounter.start 미보유(nurse 무권한 baseline) → 진찰 시작 403(게이트가 본문 처리 전 차단)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.post(f"{_ENCOUNTERS_URL}/{eid}/start-consult", headers=_bearer(nurse_token))
+    assert res.status_code == 403, res.text

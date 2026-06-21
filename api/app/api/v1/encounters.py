@@ -35,6 +35,7 @@ EncounterStatusName = Literal[
 require_encounter_register = require_permission("encounter.register")
 require_encounter_read = require_permission("encounter.read")
 require_encounter_call = require_permission("encounter.call")
+require_encounter_start = require_permission("encounter.start")
 
 
 @router.post("", response_model=EncounterResponse, status_code=status.HTTP_201_CREATED)
@@ -69,6 +70,19 @@ async def call_encounter(
     호출은 상태 전이 아님(status 불변, called_at/call_count 갱신). 액션 엔드포인트(PATCH 아님).
     미접수/진행중/종결 호출 → 409, 미존재 → 404. 중복 호출 1차선 = 클라 mutation 중 버튼 disable."""
     return await encounters_service.record_call(user.sub, encounter_id)
+
+
+@router.post("/{encounter_id}/start-consult", response_model=EncounterResponse)
+async def start_consult(
+    encounter_id: UUID,
+    user: CurrentUser = Depends(require_encounter_start),
+) -> EncounterResponse:
+    """진찰 시작 — start_consult RPC(registered→in_progress, 담당의=호출자, FR-030).
+
+    게이트 encounter.start. 액션 엔드포인트(status PATCH 아님). 미접수/종결/이미 진행중 → 409
+    invalid_transition(RPC 소스상태 precondition·재수행/진료 탈취 차단 NFR-040), 미존재 → 404,
+    권한 미보유 → 403. 성공 시 진료 허브 진입(웹). 동시전이 2차 의사 = in_progress → 409."""
+    return await encounters_service.start_consult(user.sub, encounter_id)
 
 
 @router.get("", response_model=EncounterPage)

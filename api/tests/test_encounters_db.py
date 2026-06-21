@@ -41,12 +41,24 @@ def admin_id(psql: Psql) -> str:
 
 @pytest.fixture(scope="module")
 def doctor_id(psql: Psql) -> str:
-    """doctor uid — encounter.* 권한 0(seed 기본 grant 없음) + auth.users 실재(FK).
+    """doctor uid — Story 4.4 부터 encounter.read/start 보유(seed grant) + auth.users 실재(FK).
 
-    권한 거부(403) 검증 + RLS 본인행(auth_uid 가장) 검증 기준."""
+    start_consult 성공(담당의=호출자) 검증 기준."""
     return psql.scalar(
         "select u.id::text from public.users u "
         "join public.roles r on r.id = u.role_id where r.code = 'doctor' limit 1"
+    ).lower()
+
+
+@pytest.fixture(scope="module")
+def nurse_id(psql: Psql) -> str:
+    """nurse uid — encounter.* 권한 0(무권한 baseline, 간호 권한=Epic 5) + auth.users 실재(FK).
+
+    권한 거부(42501) 검증 + RLS 본인행(auth_uid 가장) 검증 기준(Story 4.4 — doctor 가 권한을 받아
+    더 이상 무권한 baseline 이 아니므로 nurse 가 대체)."""
+    return psql.scalar(
+        "select u.id::text from public.users u "
+        "join public.roles r on r.id = u.role_id where r.code = 'nurse' limit 1"
     ).lower()
 
 
@@ -338,16 +350,35 @@ def test_cancel_from_in_progress_blocked(psql: Psql, admin_id: str):
 # ── 3.6 권한 게이트 + not-found (AC2) ─────────────────────────────────────────
 
 
-def test_rpc_permission_denied_for_doctor(psql: Psql, doctor_id: str):
-    """encounter.start 미보유(doctor 기본) → insufficient_privilege(42501 → 403)."""
+def test_rpc_permission_denied_for_nurse(psql: Psql, nurse_id: str):
+    """encounter.start 미보유(nurse 무권한 baseline) → insufficient_privilege(42501 → 403).
+
+    Story 4.4 부터 doctor 가 encounter.start 를 받으므로 권한 거부 baseline 은 nurse 로 이관."""
     pid, eid = str(uuid.uuid4()), str(uuid.uuid4())
     _assert_sqlstate(
         psql,
         setup=_patient_sql(pid) + _encounter_sql(eid, pid, "registered"),
         op="perform public.start_consult('" + eid + "');",
         sqlstate="42501",
-        claims_uid=doctor_id,
+        claims_uid=nurse_id,
     )
+
+
+def test_start_consult_succeeds_for_doctor(psql: Psql, doctor_id: str):
+    """doctor(seed encounter.start 보유, 4.4)는 start_consult 성공 → in_progress + 담당의=doctor."""
+    pid, eid = str(uuid.uuid4()), str(uuid.uuid4())
+    out = psql.scalar(
+        "begin;"
+        + _patient_sql(pid)
+        + _encounter_sql(eid, pid, "registered")
+        + _claims(doctor_id)
+        + "select public.start_consult('" + eid + "');"
+        + "select 'V:'||status||'|cons='||(consult_started_at is not null)::text"
+        "  ||'|doc='||(doctor_id::text='" + doctor_id + "')::text "
+        "  from public.encounters where id='" + eid + "';"
+        "rollback;"
+    )
+    assert _verdict(out) == "in_progress|cons=true|doc=true", out
 
 
 def test_rpc_not_found(psql: Psql, admin_id: str):
@@ -408,20 +439,21 @@ def test_rls_staff_with_read_sees_encounters(psql: Psql, admin_id: str):
     assert _verdict(out) == "true", out
 
 
-def test_rls_patient_sees_only_own_encounter(psql: Psql, doctor_id: str):
-    """환자 본인 내원만 가시 — 본인(auth_uid=doctor_id 가장) 내원만, 타인 내원 비가시.
+def test_rls_patient_sees_only_own_encounter(psql: Psql, nurse_id: str):
+    """환자 본인 내원만 가시 — 본인(auth_uid=nurse_id 가장) 내원만, 타인 내원 비가시.
 
-    doctor 는 encounter.read 미보유 → 직원 정책 false → self 정책(patient_id→auth_uid)만 작동.
+    nurse 는 encounter.read 미보유 → 직원 정책 false → self 정책(patient_id→auth_uid)만 작동.
+    (4.4 — doctor 가 encounter.read 를 받아 무권한 가장 계정이 아니므로 nurse 로 이관.)
     """
     own_p, own_e = str(uuid.uuid4()), str(uuid.uuid4())
     other_p, other_e = str(uuid.uuid4()), str(uuid.uuid4())
     out = psql.scalar(
         "begin;"
-        + _patient_sql(own_p, auth_uid=doctor_id)
+        + _patient_sql(own_p, auth_uid=nurse_id)
         + _encounter_sql(own_e, own_p, "registered")
         + _patient_sql(other_p)  # auth_uid NULL(타인)
         + _encounter_sql(other_e, other_p, "registered")
-        + _as_authenticated(doctor_id)
+        + _as_authenticated(nurse_id)
         + "select 'V:'||coalesce(bool_and(patient_id::text='"
         + own_p
         + "'),false)::text"

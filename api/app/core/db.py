@@ -1667,3 +1667,21 @@ async def call_encounter(sub: UUID, encounter_id: UUID) -> asyncpg.Record:
         return row
 
     return await _run_authed(sub, _op)
+
+
+async def call_start_consult(sub: UUID, encounter_id: UUID) -> asyncpg.Record:
+    """start_consult RPC 호출(registered→in_progress, 의사 진찰 시작; 담당의=호출자).
+
+    RPC 내부 has_permission('encounter.start')(42501)·소스상태 precondition status<>'registered'
+    (PT409 — 미접수/종결/이미 진행중 차단, NFR-040 재수행·진료 탈취 방지)·not-found(PT404)를 raise →
+    _run_authed 의 _map_pg_sqlstate 가 Forbidden/Conflict/NotFound 로 변환(여기 try/except 불요,
+    call_encounter/call_register_encounter 동형). returns public.encounters → 전체 행 반환
+    (consult_started_at·doctor_id=auth.uid() 세팅 반영).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        row = await conn.fetchrow("select * from public.start_consult($1)", encounter_id)
+        assert row is not None  # RPC 성공 시 returns encounters → 항상 1행
+        return row
+
+    return await _run_authed(sub, _op)
