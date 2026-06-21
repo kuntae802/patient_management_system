@@ -437,3 +437,162 @@ def test_update_clinical_profile_is_audited(client, admin_token, psql):
         f"where target_table='patients' and target_id='{pid}' and action='update'"
     )
     assert int(count) >= 1, "임상 프로필 갱신이 감사 로그에 기록되지 않음"
+
+
+# ── 보호자(guardians) CRUD (Story 3.3 AC1·2·3) ──────────────────────────────────
+
+_GUARDIAN_PAYLOAD = {"name": "김보호", "relationship": "배우자", "phone": "010-1234-5678"}
+
+
+def _create_guardian(client, token: str, pid: str, payload: dict | None = None) -> dict:
+    res = client.post(
+        f"{_PATIENTS_URL}/{pid}/guardians",
+        json=payload or _GUARDIAN_PAYLOAD,
+        headers=_bearer(token),
+    )
+    assert res.status_code == 201, res.text
+    return res.json()
+
+
+def test_create_guardian_persists_and_links(client, admin_token, psql):
+    """AC1: 보호자 추가 → 201 + 필드 + patient_id 연결 + DB 영속."""
+    pid = _create_patient(client, admin_token)
+    body = _create_guardian(client, admin_token, pid)
+    assert body["name"] == "김보호"
+    assert body["relationship"] == "배우자"
+    assert body["phone"] == "010-1234-5678"
+    assert body["patient_id"] == pid
+    persisted = psql.scalar(
+        f"select name || '|' || relationship from public.guardians where id='{body['id']}'"
+    )
+    assert persisted == "김보호|배우자", persisted
+
+
+def test_list_guardians_returns_added(client, admin_token):
+    """AC1: 추가한 보호자가 목록 GET 에 나타난다(직접 배열)."""
+    pid = _create_patient(client, admin_token)
+    created = _create_guardian(client, admin_token, pid)
+    res = client.get(f"{_PATIENTS_URL}/{pid}/guardians", headers=_bearer(admin_token))
+    assert res.status_code == 200, res.text
+    ids = [g["id"] for g in res.json()]
+    assert created["id"] in ids
+
+
+def test_update_guardian_full_replace_clears_omitted(client, admin_token, psql):
+    """AC1: 수정(전체 교체) → 반영 + DB 영속. 미전송 phone → null."""
+    pid = _create_patient(client, admin_token)
+    g = _create_guardian(client, admin_token, pid)
+    res = client.put(
+        f"{_PATIENTS_URL}/{pid}/guardians/{g['id']}",
+        json={"name": "이보호", "relationship": "자녀"},  # phone 미전송 → null
+        headers=_bearer(admin_token),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["name"] == "이보호"
+    assert body["relationship"] == "자녀"
+    assert body["phone"] is None
+    persisted = psql.scalar(
+        f"select coalesce(phone, 'NULL') from public.guardians where id='{g['id']}'"
+    )
+    assert persisted == "NULL", persisted
+
+
+def test_delete_guardian_removes_row(client, admin_token, psql):
+    """AC1: 삭제 → 204 + DB 행 소멸(hard delete)."""
+    pid = _create_patient(client, admin_token)
+    g = _create_guardian(client, admin_token, pid)
+    res = client.delete(f"{_PATIENTS_URL}/{pid}/guardians/{g['id']}", headers=_bearer(admin_token))
+    assert res.status_code == 204, res.text
+    count = psql.scalar(f"select count(*) from public.guardians where id='{g['id']}'")
+    assert int(count) == 0, "보호자 행이 삭제되지 않음"
+
+
+def test_create_guardian_patient_not_found_404(client, admin_token):
+    """AC2: 미존재 환자에 보호자 추가 → 404(FK 위반 매핑)."""
+    res = client.post(
+        f"{_PATIENTS_URL}/{uuid.uuid4()}/guardians",
+        json=_GUARDIAN_PAYLOAD,
+        headers=_bearer(admin_token),
+    )
+    assert res.status_code == 404, res.text
+
+
+def test_update_guardian_not_found_404(client, admin_token):
+    """AC2: 미존재 보호자 수정 → 404."""
+    pid = _create_patient(client, admin_token)
+    res = client.put(
+        f"{_PATIENTS_URL}/{pid}/guardians/{uuid.uuid4()}",
+        json=_GUARDIAN_PAYLOAD,
+        headers=_bearer(admin_token),
+    )
+    assert res.status_code == 404, res.text
+
+
+def test_update_guardian_missing_required_field_422(client, admin_token):
+    """AC1/AC2: PUT 전체 교체에서 필수필드(name) 누락 → 422(Pydantic 검증, 권한 평가 전 차단)."""
+    pid = _create_patient(client, admin_token)
+    g = _create_guardian(client, admin_token, pid)
+    res = client.put(
+        f"{_PATIENTS_URL}/{pid}/guardians/{g['id']}",
+        json={"relationship": "자녀"},  # name 누락
+        headers=_bearer(admin_token),
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_guardian_wrong_patient_scope_404(client, admin_token):
+    """AC2: 타 환자(B)의 경로로 환자 A 보호자 수정·삭제 시도 → 404(IDOR 차단, patient_id 스코프)."""
+    pid_a = _create_patient(client, admin_token)
+    pid_b = _create_patient(client, admin_token)
+    g = _create_guardian(client, admin_token, pid_a)
+    # 환자 B 경로 + 환자 A 보호자 id → 0행 매칭 → 404.
+    upd = client.put(
+        f"{_PATIENTS_URL}/{pid_b}/guardians/{g['id']}",
+        json=_GUARDIAN_PAYLOAD,
+        headers=_bearer(admin_token),
+    )
+    assert upd.status_code == 404, upd.text
+    dele = client.delete(
+        f"{_PATIENTS_URL}/{pid_b}/guardians/{g['id']}", headers=_bearer(admin_token)
+    )
+    assert dele.status_code == 404, dele.text
+
+
+def test_guardian_write_forbidden_without_permission(client, admin_token, doctor_token):
+    """AC2: patient.update 미보유(doctor 권한 0) → 쓰기 403. 환자·보호자는 admin 으로 생성."""
+    pid = _create_patient(client, admin_token)
+    res = client.post(
+        f"{_PATIENTS_URL}/{pid}/guardians",
+        json=_GUARDIAN_PAYLOAD,
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 403, res.text
+    assert res.json()["error"]["code"] == "forbidden"
+
+
+def test_guardian_read_forbidden_without_permission(client, admin_token, doctor_token):
+    """AC2: patient.read 미보유(doctor 권한 0) → 목록 조회 403."""
+    pid = _create_patient(client, admin_token)
+    res = client.get(f"{_PATIENTS_URL}/{pid}/guardians", headers=_bearer(doctor_token))
+    assert res.status_code == 403, res.text
+
+
+def test_guardian_mutations_are_audited(client, admin_token, psql):
+    """AC1: 추가·수정·삭제가 0009 trg_guardians_audit 로 자동 기록(target_table='guardians')."""
+    pid = _create_patient(client, admin_token)
+    g = _create_guardian(client, admin_token, pid)
+    gid = g["id"]
+    client.put(
+        f"{_PATIENTS_URL}/{pid}/guardians/{gid}",
+        json={"name": "박보호", "relationship": "부모"},
+        headers=_bearer(admin_token),
+    )
+    client.delete(f"{_PATIENTS_URL}/{pid}/guardians/{gid}", headers=_bearer(admin_token))
+    # 0004 트리거 매핑: INSERT→'create', UPDATE→'update', DELETE→'delete'.
+    for action in ("create", "update", "delete"):
+        count = psql.scalar(
+            "select count(*) from public.audit_logs "
+            f"where target_table='guardians' and target_id='{gid}' and action='{action}'"
+        )
+        assert int(count) >= 1, f"보호자 {action} 가 감사 로그에 기록되지 않음"

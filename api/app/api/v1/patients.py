@@ -14,6 +14,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, status
 
 from app.core.security import CurrentUser, require_permission
+from app.schemas.guardians import GuardianCreate, GuardianResponse, GuardianUpdate
 from app.schemas.patients import (
     PatientClinicalProfileUpdate,
     PatientCreate,
@@ -21,6 +22,7 @@ from app.schemas.patients import (
     PatientPageMeta,
     PatientResponse,
 )
+from app.services import guardians as guardians_service
 from app.services import patients as patients_service
 
 router = APIRouter(prefix="/patients", tags=["patients"])
@@ -75,3 +77,52 @@ async def update_clinical_profile(
     sub-resource action(상태 PATCH 아님) — 5필드 전체 교체(PUT). 게이트 patient.update → 403,
     실제 쓰기는 동일 트랜잭션 권한 재평가(TOCTOU). 미존재 → 404. 갱신=0009 감사 트리거 기록."""
     return await patients_service.update_clinical_profile(user.sub, patient_id, payload)
+
+
+# ── 보호자(guardians) 서브리소스(Story 3.3, FR-006) ──────────────────────────────
+# 환자의 sub-resource(1:N). 조회=patient.read, 쓰기(추가·수정·삭제)=patient.update(환자 정보 수정).
+# 실제 쓰기는 db 가 동일 트랜잭션에서 재평가(TOCTOU). 연락처는 평문(환자 phone 동형, reveal 이월).
+
+
+@router.get("/{patient_id}/guardians", response_model=list[GuardianResponse])
+async def list_guardians(
+    patient_id: UUID,
+    user: CurrentUser = Depends(require_patient_read),
+) -> list[GuardianResponse]:
+    """환자의 보호자 목록(등록순). 작은 sub-collection → 직접 배열. 권한 없으면 403."""
+    return await guardians_service.list_guardians(user.sub, patient_id)
+
+
+@router.post(
+    "/{patient_id}/guardians",
+    response_model=GuardianResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_guardian(
+    patient_id: UUID,
+    payload: GuardianCreate,
+    user: CurrentUser = Depends(require_patient_update),
+) -> GuardianResponse:
+    """보호자 추가(성명·관계·연락처). 환자 미존재 → 404. 게이트 patient.update → 403."""
+    return await guardians_service.create_guardian(user.sub, patient_id, payload)
+
+
+@router.put("/{patient_id}/guardians/{guardian_id}", response_model=GuardianResponse)
+async def update_guardian(
+    patient_id: UUID,
+    guardian_id: UUID,
+    payload: GuardianUpdate,
+    user: CurrentUser = Depends(require_patient_update),
+) -> GuardianResponse:
+    """보호자 수정(전체 교체). patient_id 스코프(IDOR 차단). 미존재 → 404. 갱신=0009 감사 기록."""
+    return await guardians_service.update_guardian(user.sub, patient_id, guardian_id, payload)
+
+
+@router.delete("/{patient_id}/guardians/{guardian_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_guardian(
+    patient_id: UUID,
+    guardian_id: UUID,
+    user: CurrentUser = Depends(require_patient_update),
+) -> None:
+    """보호자 삭제(hard delete). patient_id 스코프(IDOR 차단). 미존재 → 404. 삭제=0009 감사 기록."""
+    await guardians_service.delete_guardian(user.sub, patient_id, guardian_id)

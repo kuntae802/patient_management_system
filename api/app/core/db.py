@@ -1187,3 +1187,111 @@ async def update_patient_clinical_profile(
         )
 
     return await _run_authed(sub, _op)
+
+
+# ── 보호자(guardians) 쓰기·읽기(Story 3.3, FR-006) ──────────────────────────────
+# 보호자 = 환자의 sub-resource(1:N). 쓰기 권위 = FastAPI(service_role) — authenticated 는
+# guardians 쓰기 권한 없음(0009 GRANT·RLS 쓰기정책 부재). 추가·수정·삭제는 모두 "환자 정보
+# 수정" → patient.update 게이트(라우터) + in-txn 재평가(TOCTOU, A-2 연속). 수정·삭제는
+# patient_id 스코프(타 환자 보호자 교차수정 IDOR 차단). guardians 는 암호 컬럼·is_active 없음
+# → 삭제=hard DELETE(0009 감사 트리거가 추적). trg_guardians_audit 가 insert/update/delete 를
+# 자동 기록(actor=GUC sub). 컬럼=고정 리터럴.
+
+_GUARDIAN_COLUMNS = "id, patient_id, name, relationship, phone, created_at, updated_at"
+
+
+async def fetch_guardians(sub: UUID, patient_id: UUID) -> list[asyncpg.Record]:
+    """환자의 보호자 목록(등록순). 읽기 게이트(patient.read)는 라우터가 강제(읽기 TOCTOU 저위험 →
+    재평가 불요, fetch_patients 동형). 환자 미존재여도 빈 목록(존재 보장은 상세 GET 이 담당)."""
+
+    async def _op(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+        return await conn.fetch(
+            f"select {_GUARDIAN_COLUMNS} from public.guardians "
+            f"where patient_id = $1 order by created_at",
+            patient_id,
+        )
+
+    return await _run_authed(sub, _op)
+
+
+async def insert_guardian(
+    sub: UUID,
+    patient_id: UUID,
+    *,
+    name: str,
+    relationship: str,
+    phone: str | None,
+) -> asyncpg.Record:
+    """보호자 추가(자동 감사). 환자 미존재 → FK 위반 → NotFoundError(404).
+
+    SAVEPOINT 불요(후속 조회 없음 — insert_patient 와 달리). 게이트(라우터 require_permission)는
+    방어심층, 진짜 권위는 _op 안 _require_patient_update 동일 트랜잭션 재평가(TOCTOU 차단).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_patient_update(conn)
+        try:
+            row = await conn.fetchrow(
+                f"insert into public.guardians (patient_id, name, relationship, phone) "
+                f"values ($1, $2, $3, $4) returning {_GUARDIAN_COLUMNS}",
+                patient_id,
+                name,
+                relationship,
+                phone,
+            )
+        except asyncpg.ForeignKeyViolationError as exc:
+            # patient_id 미존재 → 미존재·권한밖을 동일 404(존재 누설 회피, fetch_patient 동형).
+            raise NotFoundError("환자를 찾을 수 없습니다.") from exc
+        assert row is not None  # RETURNING 은 항상 1행
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def update_guardian(
+    sub: UUID,
+    patient_id: UUID,
+    guardian_id: UUID,
+    *,
+    name: str,
+    relationship: str,
+    phone: str | None,
+) -> asyncpg.Record | None:
+    """보호자 수정(PUT 전체 교체) + updated_at 갱신. patient_id 스코프(IDOR 차단). 0행 → None(404).
+
+    쓰기 권위 = service_role. 게이트(라우터)는 방어심층, 진짜 권위는 _op 안 _require_patient_update
+    동일 트랜잭션 재평가(TOCTOU, update_patient_clinical_profile 동형). 갱신=0009 감사 트리거 기록.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record | None:
+        await _require_patient_update(conn)
+        return await conn.fetchrow(
+            f"update public.guardians set "
+            f"name = $3, relationship = $4, phone = $5, updated_at = now() "
+            f"where id = $1 and patient_id = $2 returning {_GUARDIAN_COLUMNS}",
+            guardian_id,
+            patient_id,
+            name,
+            relationship,
+            phone,
+        )
+
+    return await _run_authed(sub, _op)
+
+
+async def delete_guardian(sub: UUID, patient_id: UUID, guardian_id: UUID) -> UUID | None:
+    """보호자 hard delete(guardians 무 is_active). patient_id 스코프(IDOR 차단). 0행 → None(404).
+
+    삭제는 0009 trg_guardians_audit(after delete)가 before_data 스냅샷으로 추적성 보장. 게이트
+    (라우터)는 방어심층, 진짜 권위는 _op 안 _require_patient_update 동일 트랜잭션 재평가(TOCTOU).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> UUID | None:
+        await _require_patient_update(conn)
+        return await conn.fetchval(
+            "delete from public.guardians where id = $1 and patient_id = $2 returning id",
+            guardian_id,
+            patient_id,
+        )
+
+    return await _run_authed(sub, _op)
