@@ -48,15 +48,22 @@ _pool: asyncpg.Pool | None = None
 def _map_pg_sqlstate(exc: asyncpg.PostgresError) -> AppError | None:
     """DB SQLSTATE → 도메인 오류(Story 4.2 도입 — 내원 상태머신 RPC·전이 트리거 소비처).
 
-    PT409/PT404 = 0010 커스텀(코어 미사용 클래스 'PT' → 충돌 없음), 42501 = insufficient_privilege
-    (RPC has_permission 게이트 거부). 미매핑 SQLSTATE 는 None → 호출부가 일시 장애(503)로 폴백
-    (_DB_OUTAGE_ERRORS posture 유지). 4.4·Epic 6/7 이 동일 매핑 재사용(공유 인프라).
+    PT409/PT404 = 0010 커스텀(코어 미사용 클래스 'PT' → 충돌 없음), PT422 = 0014 커스텀
+    (complete_encounter 주상병 미지정 게이트), 42501 = insufficient_privilege(RPC has_permission
+    게이트 거부). 미매핑 SQLSTATE 는 None → 호출부가 일시 장애(503)로 폴백(_DB_OUTAGE_ERRORS posture
+    유지). 4.4·4.7·Epic 6/7 이 동일 매핑 재사용(공유 인프라).
     """
     match getattr(exc, "sqlstate", None):
         case "PT409":  # 잘못된 상태 전이(역행·건너뛰기·종결 재전이·비정상 초기상태·소스상태 불일치)
             return ConflictError(code="invalid_transition")  # 409 "잘못된 상태 전이입니다."
         case "PT404":  # 대상 내원 없음(RPC for-update not found)
             return NotFoundError("내원을 찾을 수 없습니다.")
+        case "PT422":  # 주상병 미지정 완료(complete_encounter 게이트, 4.7) — 검증 오류 422
+            return AppError(
+                "주상병을 1개 지정해야 합니다.",
+                code="primary_diagnosis_required",
+                status_code=422,
+            )
         case "42501":  # insufficient_privilege — RPC has_permission 게이트 거부
             return ForbiddenError()
         case _:
@@ -1870,5 +1877,184 @@ async def fetch_medical_records(sub: UUID, encounter_id: UUID) -> list[asyncpg.R
             f"limit 200",
             encounter_id,
         )
+
+    return await _run_authed(sub, _op)
+
+
+# ── 내원진단(encounter_diagnoses, Story 4.7) — 0014 테이블 직접 INSERT/UPDATE + complete RPC ──
+# 부착/토글/제거는 service_role 직접 쓰기(전이 RPC 아님 — 진단 부착은 자유 CRUD). 권한은 쓰기 직전
+# 동일 트랜잭션 재평가(TOCTOU, medical_records 선례). 주상병 강등은 부착·토글과 같은 트랜잭션(부분
+# unique uq_encounter_diagnoses_primary 가 최종선). 완료는 0010/0014 complete_encounter RPC(전이).
+# 응답 = diagnoses 마스터 조인(code·name 합성). 감사=0014 트리거(diagnosis_id=FK → 마스킹 불요).
+_ENCOUNTER_DIAGNOSIS_COLUMNS = (
+    "ed.id, ed.encounter_id, ed.diagnosis_id, d.code as diagnosis_code, d.name as diagnosis_name, "
+    "ed.is_primary, ed.recorded_by, ed.is_active, ed.created_at, ed.updated_at"
+)
+_ENCOUNTER_DIAGNOSIS_FROM = (
+    "from public.encounter_diagnoses ed join public.diagnoses d on d.id = ed.diagnosis_id"
+)
+
+
+async def _require_diagnosis_attach(conn: asyncpg.Connection) -> None:
+    """쓰기 직전 동일 트랜잭션에서 diagnosis.attach 재평가(평가↔쓰기 TOCTOU 차단). 미보유 → 403."""
+    if not bool(await conn.fetchval("select public.has_permission('diagnosis.attach')")):
+        raise ForbiddenError(detail={"required_permission": "diagnosis.attach"})
+
+
+async def _fetch_encounter_diagnosis_by_id(
+    conn: asyncpg.Connection, ed_id: UUID
+) -> asyncpg.Record | None:
+    """부착 진단 단건(마스터 조인) — 쓰기 후 응답용(INSERT/UPDATE RETURNING 은 조인 불가)."""
+    return await conn.fetchrow(
+        f"select {_ENCOUNTER_DIAGNOSIS_COLUMNS} {_ENCOUNTER_DIAGNOSIS_FROM} where ed.id = $1",
+        ed_id,
+    )
+
+
+async def attach_diagnosis(
+    sub: UUID, *, encounter_id: UUID, diagnosis_id: UUID, is_primary: bool, recorded_by: UUID
+) -> asyncpg.Record:
+    """내원에 KCD 진단 부착(자동 감사). recorded_by=부착 의사(jwt sub).
+
+    내원 존재를 동일 트랜잭션에서 선검사(미존재 404). is_primary=true 면 기존 활성 주상병을 먼저
+    강등(같은 txn — 주상병 ≤1 수렴, 부분 unique 가 최종선). 같은 코드 활성 중복(uq_dup) → 409,
+    잘못된 diagnosis_id/encounter_id(23503) → 422 백스톱(insert_medical_record 선례). 권한 재평가.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_diagnosis_attach(conn)
+        exists = await conn.fetchval(
+            "select true from public.encounters where id = $1", encounter_id
+        )
+        if exists is None:
+            raise NotFoundError(
+                "내원을 찾을 수 없습니다.", detail={"encounter_id": str(encounter_id)}
+            )
+        if is_primary:
+            # 기존 활성 주상병 강등(같은 txn) — 부분 unique uq_..._primary 충돌 회피.
+            await conn.execute(
+                "update public.encounter_diagnoses set is_primary = false, updated_at = now() "
+                "where encounter_id = $1 and is_primary = true and is_active = true",
+                encounter_id,
+            )
+        try:
+            row = await conn.fetchrow(
+                "insert into public.encounter_diagnoses "
+                "(encounter_id, diagnosis_id, is_primary, recorded_by) "
+                "values ($1, $2, $3, $4) returning id",
+                encounter_id,
+                diagnosis_id,
+                is_primary,
+                recorded_by,
+            )
+        except asyncpg.UniqueViolationError as exc:
+            # uq_encounter_diagnoses_dup(같은 내원 같은 코드 활성 중복).
+            raise ConflictError(
+                "이미 부착된 진단입니다.",
+                code="diagnosis_already_attached",
+                detail={"diagnosis_id": str(diagnosis_id)},
+            ) from exc
+        except asyncpg.ForeignKeyViolationError as exc:
+            # 잘못된 diagnosis_id(또는 동시 삭제 레이스의 encounter_id) 23503 → 입력 오류 422.
+            raise AppError(
+                "참조 대상이 올바르지 않습니다(진단·내원).",
+                code="invalid_reference",
+                status_code=422,
+            ) from exc
+        assert row is not None
+        joined = await _fetch_encounter_diagnosis_by_id(conn, row["id"])
+        assert joined is not None
+        return joined
+
+    return await _run_authed(sub, _op)
+
+
+async def set_diagnosis_primary(
+    sub: UUID, *, encounter_id: UUID, ed_id: UUID, is_primary: bool
+) -> asyncpg.Record:
+    """부착 진단의 주/부상병 토글(자동 감사). is_primary=true 면 기존 주상병 강등(같은 txn).
+
+    `where id=ed_id and encounter_id=encounter_id`(경로 일관·교차 내원 갱신 차단). 미존재 → 404.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_diagnosis_attach(conn)
+        if is_primary:
+            await conn.execute(
+                "update public.encounter_diagnoses set is_primary = false, updated_at = now() "
+                "where encounter_id = $1 and is_primary = true and is_active = true and id <> $2",
+                encounter_id,
+                ed_id,
+            )
+        updated = await conn.fetchrow(
+            "update public.encounter_diagnoses set is_primary = $1, updated_at = now() "
+            "where id = $2 and encounter_id = $3 and is_active = true returning id",
+            is_primary,
+            ed_id,
+            encounter_id,
+        )
+        if updated is None:
+            raise NotFoundError(
+                "내원진단을 찾을 수 없습니다.", detail={"diagnosis_attachment_id": str(ed_id)}
+            )
+        joined = await _fetch_encounter_diagnosis_by_id(conn, ed_id)
+        assert joined is not None
+        return joined
+
+    return await _run_authed(sub, _op)
+
+
+async def remove_diagnosis(sub: UUID, *, encounter_id: UUID, ed_id: UUID) -> None:
+    """부착 진단 제거(soft delete — is_active=false, 자동 감사). 미존재/불일치 → 404.
+
+    제거 후 같은 코드 재부착 허용(부분 unique 가 where is_active 라 비활성 행 무시).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> None:
+        await _require_diagnosis_attach(conn)
+        removed = await conn.fetchrow(
+            "update public.encounter_diagnoses set is_active = false, updated_at = now() "
+            "where id = $1 and encounter_id = $2 and is_active = true returning id",
+            ed_id,
+            encounter_id,
+        )
+        if removed is None:
+            raise NotFoundError(
+                "내원진단을 찾을 수 없습니다.", detail={"diagnosis_attachment_id": str(ed_id)}
+            )
+
+    await _run_authed(sub, _op)
+
+
+async def fetch_encounter_diagnoses(sub: UUID, encounter_id: UUID) -> list[asyncpg.Record]:
+    """한 내원의 부착 진단 목록(주상병 우선·부착순, 활성만). 게이트=라우터(diagnosis.read).
+
+    service_role 경로라 RLS 우회 — 조회 권위는 라우터 require_permission(읽기 TOCTOU 저위험).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+        return await conn.fetch(
+            f"select {_ENCOUNTER_DIAGNOSIS_COLUMNS} {_ENCOUNTER_DIAGNOSIS_FROM} "
+            f"where ed.encounter_id = $1 and ed.is_active = true "
+            f"order by ed.is_primary desc, ed.created_at asc, ed.id asc",
+            encounter_id,
+        )
+
+    return await _run_authed(sub, _op)
+
+
+async def call_complete_encounter(sub: UUID, encounter_id: UUID) -> asyncpg.Record:
+    """complete_encounter RPC 호출(in_progress→completed, 주상병 게이트; FR-042·UX-DR18).
+
+    RPC 내부 has_permission('encounter.complete')(42501)·소스상태 status<>'in_progress'(PT409)·
+    not-found(PT404)·**주상병 미지정(PT422 — is_primary 활성 진단 0)** 을 raise → _run_authed 의
+    _map_pg_sqlstate 가 403/409/404/422 로 변환(여기 try/except 불요, call_start_consult 동형).
+    returns public.encounters → 전체 행(completed_at 세팅 반영).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        row = await conn.fetchrow("select * from public.complete_encounter($1)", encounter_id)
+        assert row is not None  # RPC 성공 시 returns encounters → 항상 1행
+        return row
 
     return await _run_authed(sub, _op)

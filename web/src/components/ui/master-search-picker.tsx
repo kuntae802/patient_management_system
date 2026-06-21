@@ -57,6 +57,10 @@ type BaseProps = {
   disabled?: boolean;
   required?: boolean;
   className?: string;
+  /** 검증 오류 표시(단일 선택만 — 422 인라인 등 소비처가 제어, UX-DR18). 입력에 aria-invalid 전파. */
+  ariaInvalid?: boolean;
+  /** 오류 메시지 요소 id(aria-describedby 연결 — AT 낭독, UX-DR18). */
+  ariaDescribedby?: string;
 };
 
 type SingleProps = BaseProps & {
@@ -86,6 +90,8 @@ export function MasterSearchPicker(props: MasterSearchPickerProps) {
     required,
     className,
     multiple,
+    ariaInvalid,
+    ariaDescribedby,
   } = props;
 
   const reactId = useId();
@@ -229,6 +235,8 @@ export function MasterSearchPicker(props: MasterSearchPickerProps) {
                 id={inputId}
                 placeholder={resolvedPlaceholder}
                 aria-label={accessibleName}
+                aria-invalid={ariaInvalid || undefined}
+                aria-describedby={ariaDescribedby}
                 className={INPUT}
               />
               <span className="absolute right-0 flex items-center">

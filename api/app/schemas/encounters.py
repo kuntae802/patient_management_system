@@ -141,3 +141,41 @@ class MedicalRecordResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+
+
+class DiagnosisAttach(BaseModel):
+    """진단 부착 요청(Story 4.7, FR-042). KCD diagnoses 마스터 행을 내원에 부착.
+
+    diagnosis_id 는 마스터 FK(free-text 차단의 구조적 강제 — 클라가 코드 문자열을 임의 입력 못 함).
+    is_primary=true 면 기존 활성 주상병을 강등(서버가 동일 트랜잭션). 기본은 부상병(false).
+    """
+
+    diagnosis_id: UUID
+    is_primary: bool = False
+
+
+class DiagnosisPrimaryUpdate(BaseModel):
+    """주/부상병 토글 요청(Story 4.7). is_primary=true → 기존 주상병 강등 후 이 진단을 주상병."""
+
+    is_primary: bool
+
+
+class EncounterDiagnosisResponse(BaseModel):
+    """내원진단 응답(0014 encounter_diagnoses + diagnoses 마스터 조인). snake_case 유지.
+
+    diagnosis_code·diagnosis_name 은 KCD 마스터 조인 합성(읽기시점). 진단명은 권한 게이트
+    (diagnosis.read)로 보호 — 행 자체엔 자유텍스트 없음(diagnosis_id=FK, 감사 마스킹 불요).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    encounter_id: UUID
+    diagnosis_id: UUID
+    diagnosis_code: str
+    diagnosis_name: str
+    is_primary: bool
+    recorded_by: UUID
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime

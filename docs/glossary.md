@@ -32,7 +32,7 @@
 | `fee_mapping` | 수가매핑 | 임상 행위 → 수가코드 규칙 |
 | `encounter` | 내원 | 파이프라인 허브(예약→접수→진행중→완료) |
 | `medical_record` | 진료기록 | SOAP, 한 내원 1:N |
-| `encounter_diagnosis` | 내원진단 | 주/부상병 구분 |
+| `encounter_diagnosis` | 내원진단 | `encounter_diagnoses`(0014)·KCD `diagnosis_id` FK·`is_primary` 주/부상병·활성 주상병 ≤1(부분 unique) |
 | `prescription` | 처방전 | 헤더 |
 | `prescription_detail` | 처방상세 | 약품·용량·횟수·일수·용법 |
 | `examination` | 검사 | 진단검사·영상검사 오더 |
@@ -228,14 +228,14 @@
 | `created_by` | 컬럼(FK users) | 접수 처리 직원 |
 | `register_encounter(uuid)` | RPC(SECURITY DEFINER) | `scheduled→registered`(예약 접수). 권한 `encounter.register`, `registered_at` 기록 |
 | `start_consult(uuid)` | RPC(SECURITY DEFINER) | `registered→in_progress`(진찰 시작). 권한 `encounter.start`, `consult_started_at`+`doctor_id=auth.uid()` |
-| `complete_encounter(uuid)` | RPC(SECURITY DEFINER) | `in_progress→completed`(진료 완료). 권한 `encounter.complete`, `completed_at`. 부분수행도 여기로 종결(정산 Epic7 FR-119) |
+| `complete_encounter(uuid)` | RPC(SECURITY DEFINER) | `in_progress→completed`(진료 완료). 권한 `encounter.complete`, `completed_at`. **주상병 게이트(0014 재정의, 4.7): 활성 주상병(`is_primary`) 미지정 시 `PT422`→422 차단**. 부분수행도 여기로 종결(정산 Epic7 FR-119) |
 | `cancel_encounter(uuid, text)` | RPC(SECURITY DEFINER) | `scheduled\|registered→cancelled`. 권한 `encounter.cancel`, `cancelled_at`+`cancel_reason`. 수가 미발생 정산 Epic7 FR-118 |
 | `mark_no_show(uuid, text)` | RPC(SECURITY DEFINER) | `scheduled→no_show`. 권한 `encounter.no_show`, `no_show_at` |
 | `enforce_encounter_transition()` | 트리거 함수(plpgsql, DEFINER 아님) | **전이 매트릭스 단일 진실** — BEFORE INSERT(초기상태 가드 scheduled\|registered)/UPDATE(전이 검증). 위반 → SQLSTATE `PT409` |
 | `trg_encounters_transition` | 트리거(BEFORE INSERT OR UPDATE) | 전이 강제(service_role 직접 update 까지 봉쇄, NFR-040 최종선) |
 | `trg_encounters_audit` | 트리거(AFTER, 0004 재사용) | 모든 전이(create/update/delete)를 actor 와 함께 append-only 감사 |
 | `encounter.read`·`encounter.cancel`·`encounter.no_show` | 권한(신규 시드) | 0010 카탈로그 확장 + admin 부트 grant(비-admin=1.7 매트릭스). `encounter.register/start/complete` 는 0002 기존 |
-| `PT409` / `PT404` | 커스텀 SQLSTATE | 전이 위반(→409)·내원 없음(→404). 클래스 `PT`=PMS transition(코어 미사용). 권한 위반은 표준 `insufficient_privilege`(42501→403). asyncpg `e.sqlstate` 로 4.2/4.4 가 `ConflictError`/`NotFoundError`/`ForbiddenError` 매핑 |
+| `PT409` / `PT404` / `PT422` | 커스텀 SQLSTATE | 전이 위반(→409)·내원 없음(→404)·**주상병 미지정 완료(→422 `primary_diagnosis_required`, 4.7 `complete_encounter` 게이트)**. 클래스 `PT`=PMS transition(코어 미사용). 권한 위반은 표준 `insufficient_privilege`(42501→403). asyncpg `e.sqlstate` 로 4.2/4.4/4.7 가 `ConflictError`/`NotFoundError`/`AppError`/`ForbiddenError` 매핑 |
 
 > **내원 상태 전이 매트릭스(full, Story 4.1 확정 — architecture Gap Analysis #3 소유):**
 > `(INSERT)`→`scheduled`(예약·Epic6)\|`registered`(walk-in·MVP) │ `scheduled`→`registered`\|`cancelled`\|`no_show` │ `registered`→`in_progress`\|`cancelled` │ `in_progress`→`completed`. 종결(`completed`·`cancelled`·`no_show`)=이탈 전이 없음(역행·건너뛰기·종결 재전이 = `PT409`). **`no_show` 는 `scheduled` 에서만**(접수=도착 증명). **`in_progress→cancelled` 기본 불허**(부분수행=`completed` 후 Epic7 정산, FR-119). 부분수행은 별도 상태 아님(`encounter_status` 6값 불변).
@@ -278,3 +278,22 @@
 | `useEncountersRealtime` | 웹 훅(`hooks/`) | 코드베이스 최초 realtime — `postgres_changes`(encounters, 진료과 필터) 구독 → 디바운스 refetch + 백스톱 폴링 + 신선도(채널 stale) 가드(UX-DR18/21⑪) |
 | `WaitingBoard` | 웹 컴포넌트(`components/encounters/`) | 대기 현황판(원무·의사 공유) — 상태 그룹 섹션·"다음 호출" 히어로·KPI·다음-액션(호출/접수)·stale 배너. 라우트 `/reception/waiting`·`/doctor/waiting` |
 | reception → `encounter.call` | seed grant(`seed.sql`) | 데모 호출 골든 패스(doctor 미부여 — 4.4) |
+
+## 내원진단 · 진료 완료 게이트 (Story 4.7, `0014_encounter_diagnoses.sql`)
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `encounter_diagnoses` | 테이블(0014) | 내원진단 1:N — `encounter_id`·`diagnosis_id`(KCD `diagnoses` 마스터 FK, free-text 구조 차단)·`is_primary`(주/부상병)·`recorded_by`·`is_active`. 건강민감 자유텍스트 컬럼 없음(진단명=마스터 조인 합성) → 감사 마스킹 불요(FK posture) |
+| `uq_encounter_diagnoses_primary` / `uq_encounter_diagnoses_dup` | 부분 unique 인덱스 | 활성 주상병 ≤1/내원(`where is_primary and is_active`) / 같은 코드 활성 중복 부착 차단(`where is_active`). 주상병 강등은 FastAPI 가 동일 트랜잭션(인덱스=최종선) |
+| `diagnosis.attach` / `diagnosis.read` | 권한 | 부착/토글/제거=`diagnosis.attach`(0002 기존, 첫 소비처) · 조회=`diagnosis.read`(0014 신규, 의사·관리자만 — 원무·간호 미열람 최소권한 + admin 부트 grant). 완료=`encounter.complete`(0002 기존) |
+| `GET /v1/encounters/{id}/diagnoses` | 엔드포인트 | 부착 진단 목록(주상병 우선·부착순). 게이트 `diagnosis.read`. `EncounterDiagnosisResponse[]`(KCD 코드·명칭 조인) |
+| `POST /v1/encounters/{id}/diagnoses` | 엔드포인트 | KCD 진단 부착(`{diagnosis_id, is_primary}`). 게이트 `diagnosis.attach`. 주상병 시 기존 강등(동일 txn). 미존재 내원 404·중복 409 `diagnosis_already_attached`·잘못된 diagnosis_id 422 `invalid_reference`(FK 백스톱) |
+| `PATCH /v1/encounters/{id}/diagnoses/{ed_id}` | 엔드포인트 | 주/부상병 토글(`{is_primary}`). 게이트 `diagnosis.attach`. 미존재 404 |
+| `DELETE /v1/encounters/{id}/diagnoses/{ed_id}` | 엔드포인트 | 부착 진단 제거(soft delete, 204). 게이트 `diagnosis.attach`. 미존재 404 |
+| `POST /v1/encounters/{id}/complete` | 엔드포인트(액션) | 진료 완료 — `complete_encounter` RPC 소비. status PATCH 아님. 게이트 `encounter.complete`. **주상병 미지정 → 422 `primary_diagnosis_required`**(PT422)·비-in_progress 409·미존재 404. ⚠️ 완료→수납 액션바·flow stepper·신원 확인은 Epic 7 |
+| `DiagnosisAttach`·`DiagnosisPrimaryUpdate`·`EncounterDiagnosisResponse` | 스키마(Pydantic) · 웹 타입 | 부착 요청 / 토글 요청 / 응답(조인 `diagnosis_code`·`diagnosis_name`). `EncounterDiagnosis`(web `lib/encounters/diagnoses.ts` 거울·snake_case) |
+| `attach_diagnosis`·`set_diagnosis_primary`·`remove_diagnosis`·`fetch_encounter_diagnoses`·`call_complete_encounter` | db 래퍼(`core/db.py`) | service_role 직접 INSERT/UPDATE(부착=walk-in/medical_records 패턴·`_require_diagnosis_attach` TOCTOU·강등 동일 txn·FK 23503→422) / 완료=RPC 호출(`call_start_consult` 동형) |
+| `DiagnosisBlock`·`ConsultationWorkspace`·`diagnoses.ts` | 웹(`components/encounters/`·`lib/encounters/`) | 진단 블록(SOAP 위, `MasterSearchPicker` 단일 어더 + 커스텀 칩·주/부상병 토글·422 인라인+포커스) / 중앙 작업영역(DiagnosisBlock+SoapLedger+진료 완료 최소 액션·primaryError 소유) / 진단 API 호출 |
+| doctor → `diagnosis.attach`·`diagnosis.read`·`encounter.complete` | seed grant(`seed.sql`) | 진단 부착·조회·진료 완료 골든 패스(nurse=무권한 baseline 403). 데모/통합테스트용(프로덕션=1.7 매트릭스) |
+
+> **진단 부착 경계(Story 4.7 확정):** 진단은 **KCD `diagnoses` 마스터 FK(`diagnosis_id`)로만** 부착 — free-text 차단(UX-DR12)의 구조적 강제. `encounter_diagnoses` 의 감사 스냅샷은 `diagnosis_id`(FK)·`is_primary`·플래그만 = 자유텍스트 미유입 → **`_SENSITIVE_KEY` 마스킹 집합 무변경**(4.6 SOAP 자유텍스트와의 핵심 차이). 주상병 불변식(≤1/내원)은 **부분 unique 인덱스**가 최종선(강등은 FastAPI 동일 트랜잭션). 진료 완료는 **주상병 1개 필수**(`complete_encounter` 게이트 PT422→422·웹은 진단 필드 포커스+인라인 "주상병을 1개 지정해야 합니다", UX-DR18). **완료→수납 정산·sticky 액션바·flow stepper·신원 확인 = Epic 7**(4.7 = 완료 게이트 + 최소 트리거). **처방↔진단 연결(FR-051)·과거 진단 타임라인(FR-031 좌패널 backfill) = Epic 5/이월**.

@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-21T20:45:00+0000
+last_updated: 2026-06-21T23:00:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -87,7 +87,7 @@ development_status:
   4-4-진료-대기열-진찰-시작: done
   4-5-진료-허브-환자-배너-과거-이력-활력-컨텍스트: done
   4-6-soap-진료기록-작성: done
-  4-7-진단-부착-kcd-주-부상병-구분: backlog
+  4-7-진단-부착-kcd-주-부상병-구분: done
   epic-4-retrospective: optional
 
   # ── Epic 5: 오더 · 수행 — 처방·검사·처치·간호·방사선 ──

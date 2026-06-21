@@ -594,15 +594,11 @@ def test_create_medical_record_doctor_golden_path(
     assert body["is_active"] is True
 
 
-def test_create_medical_record_forbidden_without_write(
-    client, admin_token, nurse_token, dept_id
-):
+def test_create_medical_record_forbidden_without_write(client, admin_token, nurse_token, dept_id):
     """medical_record.write 미보유(nurse baseline) → SOAP 작성 403(게이트가 본문 처리 전 차단)."""
     pid = _create_patient(client, admin_token)
     eid = _create_walk_in(client, admin_token, pid, dept_id)
-    res = client.post(
-        _records_url(eid), json={"subjective": "x"}, headers=_bearer(nurse_token)
-    )
+    res = client.post(_records_url(eid), json={"subjective": "x"}, headers=_bearer(nurse_token))
     assert res.status_code == 403, res.text
 
 
@@ -650,9 +646,7 @@ def test_create_medical_record_audited(client, admin_token, doctor_token, dept_i
     assert count == "1", f"감사 create 행 기대=1, 실제={count}"
 
 
-def test_update_medical_record_full_replace(
-    client, admin_token, doctor_token, dept_id
-):
+def test_update_medical_record_full_replace(client, admin_token, doctor_token, dept_id):
     """PUT 전체 교체(autosave) — 미전송 파트는 None 으로 덮임(부분 PATCH 아님)."""
     pid = _create_patient(client, admin_token)
     eid = _create_walk_in(client, admin_token, pid, dept_id)
@@ -686,9 +680,7 @@ def test_update_medical_record_forbidden_without_write(
         _records_url(eid), json={"subjective": "x"}, headers=_bearer(doctor_token)
     )
     rid = created.json()["id"]
-    res = client.put(
-        f"{_records_url(eid)}/{rid}", json={"plan": "y"}, headers=_bearer(nurse_token)
-    )
+    res = client.put(f"{_records_url(eid)}/{rid}", json={"plan": "y"}, headers=_bearer(nurse_token))
     assert res.status_code == 403, res.text
 
 
@@ -704,9 +696,7 @@ def test_update_medical_record_nonexistent_404(client, admin_token, doctor_token
     assert res.status_code == 404, res.text
 
 
-def test_list_medical_records_one_to_many(
-    client, admin_token, doctor_token, doctor_id, dept_id
-):
+def test_list_medical_records_one_to_many(client, admin_token, doctor_token, doctor_id, dept_id):
     """한 내원에 SOAP 2건(1:N, FR-041) → GET 길이 2·최근순·각 author_id=doctor·활성."""
     pid = _create_patient(client, admin_token)
     eid = _create_walk_in(client, admin_token, pid, dept_id)
@@ -738,3 +728,310 @@ def test_list_medical_records_forbidden_without_read(
     client.post(_records_url(eid), json={"subjective": "x"}, headers=_bearer(doctor_token))
     res = client.get(_records_url(eid), headers=_bearer(nurse_token))
     assert res.status_code == 403, res.text
+
+
+# ── Story 4.7: 진단 부착·주/부상병 + 완료 게이트 (encounter_diagnoses / complete) ──────────
+# 부착=마스터 FK(free-text 차단). 쓰기=diagnosis.attach(doctor/admin)·조회=diagnosis.read(동일).
+# 완료=encounter.complete(주상병 게이트 PT422→422). nurse=무권한 baseline(전부 403).
+
+
+@pytest.fixture(scope="module")
+def diagnosis_ids(psql: Psql) -> dict[str, str]:
+    """시드 KCD 진단 id 2종(I10 고혈압·J00 감기) — 부착 대상."""
+    return {
+        "i10": psql.scalar(
+            "select id::text from public.diagnoses where lower(code) = 'i10' limit 1"
+        ),
+        "j00": psql.scalar(
+            "select id::text from public.diagnoses where lower(code) = 'j00' limit 1"
+        ),
+    }
+
+
+def _diagnoses_url(eid: str) -> str:
+    return f"{_ENCOUNTERS_URL}/{eid}/diagnoses"
+
+
+def _in_progress_encounter(
+    client: TestClient, admin_token: str, doctor_token: str, dept_id: str
+) -> str:
+    """walk-in 생성(admin) → 진찰 시작(doctor) → in_progress 내원 id(완료 게이트 전제)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.post(f"{_ENCOUNTERS_URL}/{eid}/start-consult", headers=_bearer(doctor_token))
+    assert res.status_code == 200, res.text
+    return eid
+
+
+def test_attach_diagnosis_doctor_golden_path(
+    client, admin_token, doctor_token, doctor_id, dept_id, diagnosis_ids
+):
+    """doctor(diagnosis.attach 보유) → 201 + code/name 조인 + is_primary + recorded_by=doctor."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.post(
+        _diagnoses_url(eid),
+        json={"diagnosis_id": diagnosis_ids["i10"], "is_primary": True},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["encounter_id"] == eid
+    assert body["diagnosis_id"] == diagnosis_ids["i10"]
+    assert body["diagnosis_code"] == "I10"  # KCD 마스터 조인 합성
+    assert body["diagnosis_name"]  # 한글 진단명(비어있지 않음)
+    assert body["is_primary"] is True
+    assert body["recorded_by"] == doctor_id
+    assert body["is_active"] is True
+
+
+def test_attach_diagnosis_forbidden_without_attach(
+    client, admin_token, nurse_token, dept_id, diagnosis_ids
+):
+    """diagnosis.attach 미보유(nurse baseline) → 부착 403(게이트가 본문 처리 전 차단)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.post(
+        _diagnoses_url(eid),
+        json={"diagnosis_id": diagnosis_ids["i10"]},
+        headers=_bearer(nurse_token),
+    )
+    assert res.status_code == 403, res.text
+
+
+def test_attach_diagnosis_nonexistent_encounter_404(client, doctor_token, diagnosis_ids):
+    """미존재 내원에 부착 → 404(FK 위반 전 명시 선검사)."""
+    res = client.post(
+        _diagnoses_url(str(uuid.uuid4())),
+        json={"diagnosis_id": diagnosis_ids["i10"]},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 404, res.text
+
+
+def test_attach_diagnosis_invalid_diagnosis_422(client, admin_token, doctor_token, dept_id):
+    """잘못된 diagnosis_id(마스터 미존재) → 422(FK 23503 백스톱 — free-text 차단의 서버 최종선)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.post(
+        _diagnoses_url(eid),
+        json={"diagnosis_id": str(uuid.uuid4())},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "invalid_reference", res.text
+
+
+def test_attach_diagnosis_duplicate_code_409(
+    client, admin_token, doctor_token, dept_id, diagnosis_ids
+):
+    """같은 내원에 같은 KCD 코드 활성 중복 부착 → 409 diagnosis_already_attached(uq_dup)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    first = client.post(
+        _diagnoses_url(eid),
+        json={"diagnosis_id": diagnosis_ids["i10"]},
+        headers=_bearer(doctor_token),
+    )
+    assert first.status_code == 201, first.text
+    dup = client.post(
+        _diagnoses_url(eid),
+        json={"diagnosis_id": diagnosis_ids["i10"]},
+        headers=_bearer(doctor_token),
+    )
+    assert dup.status_code == 409, dup.text
+    assert dup.json()["error"]["code"] == "diagnosis_already_attached", dup.text
+
+
+def test_attach_second_primary_demotes_first(
+    client, admin_token, doctor_token, dept_id, diagnosis_ids
+):
+    """두 번째 진단을 주상병으로 부착 → 첫 주상병 강등(주상병 정확히 1개, uq_primary 불변식)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    first = client.post(
+        _diagnoses_url(eid),
+        json={"diagnosis_id": diagnosis_ids["i10"], "is_primary": True},
+        headers=_bearer(doctor_token),
+    )
+    second = client.post(
+        _diagnoses_url(eid),
+        json={"diagnosis_id": diagnosis_ids["j00"], "is_primary": True},
+        headers=_bearer(doctor_token),
+    )
+    assert first.status_code == 201 and second.status_code == 201, second.text
+    rows = client.get(_diagnoses_url(eid), headers=_bearer(doctor_token)).json()
+    primaries = [r for r in rows if r["is_primary"]]
+    assert len(primaries) == 1  # 주상병 정확히 1개
+    assert primaries[0]["diagnosis_id"] == diagnosis_ids["j00"]  # 마지막 주상병이 승격
+    # 목록은 주상병 우선 정렬 → 첫 행이 주상병.
+    assert rows[0]["is_primary"] is True
+
+
+def test_set_diagnosis_primary_toggle(
+    client, admin_token, doctor_token, nurse_token, dept_id, diagnosis_ids
+):
+    """PATCH 주상병 토글 → 부상병을 주상병으로 승격(기존 주상병 강등). nurse 403·미존재 404."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    p = client.post(
+        _diagnoses_url(eid),
+        json={"diagnosis_id": diagnosis_ids["i10"], "is_primary": True},
+        headers=_bearer(doctor_token),
+    ).json()
+    s = client.post(
+        _diagnoses_url(eid),
+        json={"diagnosis_id": diagnosis_ids["j00"], "is_primary": False},
+        headers=_bearer(doctor_token),
+    ).json()
+    # 부상병(j00)을 주상병으로 토글 → i10 강등.
+    res = client.patch(
+        f"{_diagnoses_url(eid)}/{s['id']}", json={"is_primary": True}, headers=_bearer(doctor_token)
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["is_primary"] is True
+    rows = {
+        r["id"]: r for r in client.get(_diagnoses_url(eid), headers=_bearer(doctor_token)).json()
+    }
+    assert rows[p["id"]]["is_primary"] is False  # 기존 주상병 강등
+    assert rows[s["id"]]["is_primary"] is True
+    # 권한·미존재.
+    assert (
+        client.patch(
+            f"{_diagnoses_url(eid)}/{s['id']}",
+            json={"is_primary": False},
+            headers=_bearer(nurse_token),
+        ).status_code
+        == 403
+    )
+    assert (
+        client.patch(
+            f"{_diagnoses_url(eid)}/{uuid.uuid4()}",
+            json={"is_primary": True},
+            headers=_bearer(doctor_token),
+        ).status_code
+        == 404
+    )
+
+
+def test_remove_diagnosis(client, admin_token, doctor_token, nurse_token, dept_id, diagnosis_ids):
+    """DELETE 제거(soft delete) → 204·목록에서 사라짐. nurse 403·미존재 404."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    ed = client.post(
+        _diagnoses_url(eid),
+        json={"diagnosis_id": diagnosis_ids["i10"]},
+        headers=_bearer(doctor_token),
+    ).json()
+    # nurse 403.
+    assert (
+        client.delete(f"{_diagnoses_url(eid)}/{ed['id']}", headers=_bearer(nurse_token)).status_code
+        == 403
+    )
+    # doctor 204.
+    res = client.delete(f"{_diagnoses_url(eid)}/{ed['id']}", headers=_bearer(doctor_token))
+    assert res.status_code == 204, res.text
+    rows = client.get(_diagnoses_url(eid), headers=_bearer(doctor_token)).json()
+    assert all(r["id"] != ed["id"] for r in rows)  # 활성 목록에서 제외
+    # 미존재(이미 제거) → 404.
+    assert (
+        client.delete(
+            f"{_diagnoses_url(eid)}/{ed['id']}", headers=_bearer(doctor_token)
+        ).status_code
+        == 404
+    )
+
+
+def test_list_diagnoses_forbidden_without_read(
+    client, admin_token, doctor_token, nurse_token, dept_id, diagnosis_ids
+):
+    """diagnosis.read 미보유(nurse) → 진단 목록 403(★ encounter.read 아닌 별도 게이트)."""
+    pid = _create_patient(client, admin_token)
+    eid = _create_walk_in(client, admin_token, pid, dept_id)
+    client.post(
+        _diagnoses_url(eid),
+        json={"diagnosis_id": diagnosis_ids["i10"]},
+        headers=_bearer(doctor_token),
+    )
+    res = client.get(_diagnoses_url(eid), headers=_bearer(nurse_token))
+    assert res.status_code == 403, res.text
+
+
+def test_complete_without_primary_diagnosis_422(client, admin_token, doctor_token, dept_id):
+    """진단 0건으로 진료 완료 → 422 primary_diagnosis_required, status 미전이(in_progress 유지)."""
+    eid = _in_progress_encounter(client, admin_token, doctor_token, dept_id)
+    res = client.post(f"{_ENCOUNTERS_URL}/{eid}/complete", headers=_bearer(doctor_token))
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "primary_diagnosis_required", res.text
+    # 미전이 확인.
+    got = client.get(f"{_ENCOUNTERS_URL}/{eid}", headers=_bearer(doctor_token)).json()
+    assert got["status"] == "in_progress"
+
+
+def test_complete_with_secondary_only_422(
+    client, admin_token, doctor_token, dept_id, diagnosis_ids
+):
+    """부상병만 부착하고 완료 → 422(주상병 1개 필수)."""
+    eid = _in_progress_encounter(client, admin_token, doctor_token, dept_id)
+    client.post(
+        _diagnoses_url(eid),
+        json={"diagnosis_id": diagnosis_ids["i10"], "is_primary": False},
+        headers=_bearer(doctor_token),
+    )
+    res = client.post(f"{_ENCOUNTERS_URL}/{eid}/complete", headers=_bearer(doctor_token))
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "primary_diagnosis_required", res.text
+
+
+def test_complete_with_primary_diagnosis_succeeds(
+    client, admin_token, doctor_token, dept_id, diagnosis_ids
+):
+    """주상병 부착 후 완료 → 200 + status='completed' + completed_at 설정."""
+    eid = _in_progress_encounter(client, admin_token, doctor_token, dept_id)
+    client.post(
+        _diagnoses_url(eid),
+        json={"diagnosis_id": diagnosis_ids["i10"], "is_primary": True},
+        headers=_bearer(doctor_token),
+    )
+    res = client.post(f"{_ENCOUNTERS_URL}/{eid}/complete", headers=_bearer(doctor_token))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "completed"
+    assert body["completed_at"] is not None
+
+
+def test_complete_forbidden_without_complete_permission(
+    client, admin_token, doctor_token, nurse_token, dept_id, diagnosis_ids
+):
+    """encounter.complete 미보유(nurse baseline) → 완료 403(게이트가 본문 처리 전 차단)."""
+    eid = _in_progress_encounter(client, admin_token, doctor_token, dept_id)
+    client.post(
+        _diagnoses_url(eid),
+        json={"diagnosis_id": diagnosis_ids["i10"], "is_primary": True},
+        headers=_bearer(doctor_token),
+    )
+    res = client.post(f"{_ENCOUNTERS_URL}/{eid}/complete", headers=_bearer(nurse_token))
+    assert res.status_code == 403, res.text
+
+
+def test_complete_already_completed_conflict_409(
+    client, admin_token, doctor_token, dept_id, diagnosis_ids
+):
+    """이미 completed 인 내원 재완료 → 409 invalid_transition(재수행 차단)."""
+    eid = _in_progress_encounter(client, admin_token, doctor_token, dept_id)
+    client.post(
+        _diagnoses_url(eid),
+        json={"diagnosis_id": diagnosis_ids["i10"], "is_primary": True},
+        headers=_bearer(doctor_token),
+    )
+    first = client.post(f"{_ENCOUNTERS_URL}/{eid}/complete", headers=_bearer(doctor_token))
+    assert first.status_code == 200, first.text
+    second = client.post(f"{_ENCOUNTERS_URL}/{eid}/complete", headers=_bearer(doctor_token))
+    assert second.status_code == 409, second.text
+    assert second.json()["error"]["code"] == "invalid_transition", second.text
+
+
+def test_complete_nonexistent_encounter_404(client, doctor_token):
+    """미존재 내원 완료 → 404(PT404 → NotFoundError 매핑)."""
+    res = client.post(f"{_ENCOUNTERS_URL}/{uuid.uuid4()}/complete", headers=_bearer(doctor_token))
+    assert res.status_code == 404, res.text

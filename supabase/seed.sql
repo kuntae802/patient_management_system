@@ -13,8 +13,8 @@
 --   로컬 자격증명(로컬 전용, 절대 운영 사용 금지, 전부 비번 Staff1234):
 --     · admin@pms.local      role=admin     → 23권한 전부(Story 1.3 시드)  → require_permission 통과
 --     · doctor@pms.local     role=doctor    → encounter.read/start(4.4) + patient.read/reveal_rrn/reveal_contact(4.5)
---       + medical_record.write/read(4.6) 보유 → 진료 대기·진찰 시작 + 진료 허브 환자 배너·임상 프로필·
---       RRN/연락처 reveal + SOAP 진료기록 작성·조회 골든 패스.
+--       + medical_record.write/read(4.6) + diagnosis.attach/read·encounter.complete(4.7) 보유 → 진료 대기·진찰
+--       시작 + 진료 허브 환자 배너·임상 프로필·RRN/연락처 reveal + SOAP 진료기록 작성·조회 + 진단 부착·진료 완료 골든 패스.
 --       rbac.manage 등 그 외 권한은 미보유 → /auth/check 등은 여전히 403(Story 1.5 매트릭스 검증).
 --     · nurse@pms.local      role=nurse     → 권한 0(간호 권한은 Epic 5)  → 무권한 baseline(403 통합 검증용, Story 4.4)
 --     · reception@pms.local  role=reception → encounter.register/read/call 보유(하단 grant) → walk-in 접수·호출
@@ -140,6 +140,18 @@ insert into public.role_permissions (role_id, permission_id)
 select r.id, p.id
 from public.roles r
 join public.permissions p on p.code in ('medical_record.write', 'medical_record.read')
+where r.code = 'doctor'
+on conflict (role_id, permission_id) do nothing;
+
+-- ── (DEV/데모) 의사(doctor) 역할 → 진단 부착·조회·진료 완료 권한 grant (Story 4.7) ──────────────
+-- 진단 블록 KCD 부착(`diagnosis.attach`, 0002 기존)·조회(`diagnosis.read`, 0014 신규)·주상병 게이트
+-- 동반 진료 완료(`encounter.complete`, 0002 기존)는 의사 핵심 직무. diagnosis.read 는 의사·관리자만
+-- (원무·간호는 진단 미열람 — 최소권한). ★ 프로덕션 런타임 grant 는 1.7 매트릭스 UI 소유 — 이 시드는
+-- 로컬 db reset 전용(운영 db push 미반영). 멱등.
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code in ('diagnosis.attach', 'diagnosis.read', 'encounter.complete')
 where r.code = 'doctor'
 on conflict (role_id, permission_id) do nothing;
 
