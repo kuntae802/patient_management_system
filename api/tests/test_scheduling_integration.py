@@ -1,0 +1,320 @@
+"""근무표·휴진 통합 테스트 (Story 6.1 AC1·2·3·4) — 실 토큰 + asyncpg + 0030.
+
+로컬 스택(`supabase start` + `db reset`)/부트스트랩 계정이 없으면 skip. 검증:
+  · AC1: admin 토큰으로 근무표 생성→수정→비활성→재활성 → 201/200 + 응답 모델
+  · AC1: 같은 의사·요일 시간 겹침 → 409 schedule_overlap
+  · AC2: 휴진·예외 생성→수정→비활성
+  · AC3: 비활성(is_active=false) 후 행 보존(soft delete); 미존재/비-의사 배정 → 422 invalid_doctor
+  · AC4: 생성이 audit_logs 에 actor=admin 으로 기록; 비-master.manage(doctor) → 403
+  · 의사 피커: GET /scheduling/doctors 가 재직 의사(EMP0002) 노출
+
+⚠️ 생성행은 잔존(soft delete만, db reset 이 초기화)하므로 테스트는 생성 근무표를 **종료 시 비활성**
+   처리한다(부분 EXCLUDE where(is_active) 가 inactive 를 무시 → 재실행 시 활성 겹침 회피). 테스트별
+   weekday 격리: lifecycle=6(토)·overlap=0(일) — 시드 데모(월–금) 와도 비충돌.
+"""
+
+from __future__ import annotations
+
+import os
+import uuid
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+
+from app.main import app
+from tests.conftest import Psql
+
+_API = os.getenv("SUPABASE_API_URL", "http://127.0.0.1:54321")
+_PUBLISHABLE = os.getenv(
+    "SUPABASE_PUBLISHABLE_KEY", "sb_publishable_ACJWlzQHlZjBrEguHvfOxg_3BJgxAaH"
+)
+_SCHED_URL = "/v1/scheduling/doctor-schedules"
+_TIMEOFF_URL = "/v1/scheduling/doctor-time-offs"
+_DOCTORS_URL = "/v1/scheduling/doctors"
+_AUDIT_URL = "/v1/admin/audit-logs"
+
+
+def _get_token(email: str, password: str) -> str | None:
+    try:
+        res = httpx.post(
+            f"{_API}/auth/v1/token",
+            params={"grant_type": "password"},
+            headers={"apikey": _PUBLISHABLE, "Content-Type": "application/json"},
+            json={"email": email, "password": password},
+            timeout=10.0,
+        )
+    except httpx.HTTPError:
+        return None
+    if res.status_code != 200:
+        return None
+    return res.json().get("access_token")
+
+
+@pytest.fixture(scope="module")
+def admin_token() -> str:
+    token = _get_token("admin@pms.local", "Staff1234")
+    if not token:
+        pytest.skip("로컬 Supabase 스택/부트스트랩 미가용 — supabase start && db reset 후 재실행")
+    return token
+
+
+@pytest.fixture(scope="module")
+def doctor_token() -> str:
+    token = _get_token("doctor@pms.local", "Staff1234")
+    if not token:
+        pytest.skip("doctor 부트스트랩 계정 미가용 — 'supabase db reset'(seed 갱신) 후 재실행")
+    return token
+
+
+@pytest.fixture(scope="module")
+def admin_id(psql: Psql) -> str:
+    return psql.scalar(
+        "select u.id::text from public.users u "
+        "join public.roles r on r.id = u.role_id where r.code = 'admin' limit 1"
+    ).lower()
+
+
+@pytest.fixture(scope="module")
+def demo_doctor_id(psql: Psql) -> str:
+    return psql.scalar("select id::text from public.users where employee_no = 'EMP0002'").lower()
+
+
+@pytest.fixture(scope="module")
+def demo_dept_id(psql: Psql) -> str:
+    return psql.scalar(
+        "select id::text from public.departments where lower(code) = lower('IM') limit 1"
+    ).lower()
+
+
+@pytest.fixture(scope="module")
+def demo_room_id(psql: Psql) -> str:
+    return psql.scalar(
+        "select id::text from public.rooms where lower(code) = lower('R101') limit 1"
+    ).lower()
+
+
+@pytest.fixture(scope="module")
+def client(admin_token: str):
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def _bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _deactivate(client: TestClient, token: str, schedule_id: str) -> None:
+    """재실행 안전성: 생성 근무표를 비활성(부분 EXCLUDE 가 inactive 무시)."""
+    client.patch(
+        f"{_SCHED_URL}/{schedule_id}/active", headers=_bearer(token), json={"is_active": False}
+    )
+
+
+def test_schedule_lifecycle_with_audit(
+    client: TestClient,
+    admin_token: str,
+    admin_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+    demo_room_id: str,
+) -> None:
+    """AC1+AC3+AC4: 근무표 생성→수정(진료실 배정)→비활성→재활성, 행 보존 + actor=admin 감사."""
+    created = client.post(
+        _SCHED_URL,
+        headers=_bearer(admin_token),
+        json={
+            "doctor_id": demo_doctor_id,
+            "department_id": demo_dept_id,
+            "weekday": 6,
+            "start_time": "09:00:00",
+            "end_time": "12:00:00",
+        },
+    )
+    assert created.status_code == 201, created.text
+    sched = created.json()
+    sid = sched["id"]
+    assert sched["weekday"] == 6 and sched["is_active"] is True and sched["room_id"] is None
+
+    # 수정(전 필드 교체) — 진료실 배정 + 시간 변경
+    updated = client.patch(
+        f"{_SCHED_URL}/{sid}",
+        headers=_bearer(admin_token),
+        json={
+            "doctor_id": demo_doctor_id,
+            "department_id": demo_dept_id,
+            "room_id": demo_room_id,
+            "weekday": 6,
+            "start_time": "13:00:00",
+            "end_time": "17:30:00",
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["room_id"] == demo_room_id and updated.json()["start_time"] == "13:00:00"
+
+    # 비활성(soft delete) → is_active=false, 행 보존
+    deact = client.patch(
+        f"{_SCHED_URL}/{sid}/active", headers=_bearer(admin_token), json={"is_active": False}
+    )
+    assert deact.status_code == 200 and deact.json()["is_active"] is False
+    assert deact.json()["weekday"] == 6  # 보존
+
+    # 재활성
+    react = client.patch(
+        f"{_SCHED_URL}/{sid}/active", headers=_bearer(admin_token), json={"is_active": True}
+    )
+    assert react.status_code == 200 and react.json()["is_active"] is True
+
+    # 생성이 actor=admin 으로 감사됨(AC4)
+    audit = client.get(
+        _AUDIT_URL,
+        headers=_bearer(admin_token),
+        params={"target_table": "doctor_schedules", "action": "create", "page_size": 50},
+    )
+    assert audit.status_code == 200
+    mine = [
+        e
+        for e in audit.json()["data"]
+        if (e["actor_id"] or "").lower() == admin_id and (e["after_data"] or {}).get("id") == sid
+    ]
+    assert mine, "근무표 생성이 actor=admin 으로 감사되지 않음(AC4 위반)"
+
+    _deactivate(client, admin_token, sid)  # 재실행 안전
+
+
+def test_schedule_overlap_conflict(
+    client: TestClient, admin_token: str, demo_doctor_id: str, demo_dept_id: str
+) -> None:
+    """AC1: 같은 의사·요일의 겹치는 활성 근무표 → 409 schedule_overlap(weekday=0 격리)."""
+    first = client.post(
+        _SCHED_URL,
+        headers=_bearer(admin_token),
+        json={
+            "doctor_id": demo_doctor_id,
+            "department_id": demo_dept_id,
+            "weekday": 0,
+            "start_time": "09:00:00",
+            "end_time": "12:00:00",
+        },
+    )
+    assert first.status_code == 201, first.text
+    fid = first.json()["id"]
+
+    overlap = client.post(
+        _SCHED_URL,
+        headers=_bearer(admin_token),
+        json={
+            "doctor_id": demo_doctor_id,
+            "department_id": demo_dept_id,
+            "weekday": 0,
+            "start_time": "11:00:00",  # 09–12 와 겹침
+            "end_time": "13:00:00",
+        },
+    )
+    assert overlap.status_code == 409, overlap.text
+    assert overlap.json()["error"]["code"] == "schedule_overlap"
+
+    _deactivate(client, admin_token, fid)  # 재실행 안전
+
+
+def test_invalid_doctor_rejected(
+    client: TestClient, admin_token: str, demo_dept_id: str, psql: Psql
+) -> None:
+    """AC3: 미존재 의사 → 422 invalid_doctor; 비-의사(간호) 직원 → 422 invalid_doctor."""
+    missing = client.post(
+        _SCHED_URL,
+        headers=_bearer(admin_token),
+        json={
+            "doctor_id": str(uuid.uuid4()),
+            "department_id": demo_dept_id,
+            "weekday": 5,
+            "start_time": "09:00:00",
+            "end_time": "12:00:00",
+        },
+    )
+    assert missing.status_code == 422 and missing.json()["error"]["code"] == "invalid_doctor"
+
+    nurse_id = psql.scalar(
+        "select id::text from public.users where employee_no = 'EMP0004'"
+    ).lower()
+    not_doctor = client.post(
+        _SCHED_URL,
+        headers=_bearer(admin_token),
+        json={
+            "doctor_id": nurse_id,
+            "department_id": demo_dept_id,
+            "weekday": 5,
+            "start_time": "09:00:00",
+            "end_time": "12:00:00",
+        },
+    )
+    assert not_doctor.status_code == 422 and not_doctor.json()["error"]["code"] == "invalid_doctor"
+
+
+def test_time_off_lifecycle(
+    client: TestClient, admin_token: str, demo_doctor_id: str
+) -> None:
+    """AC2: 휴진·예외 생성→수정→비활성(겹침 제약 없음 — 중첩 휴진 무해)."""
+    created = client.post(
+        _TIMEOFF_URL,
+        headers=_bearer(admin_token),
+        json={
+            "doctor_id": demo_doctor_id,
+            "start_at": "2030-03-01T00:00:00+09:00",
+            "end_at": "2030-03-03T00:00:00+09:00",
+            "reason": "학회",
+        },
+    )
+    assert created.status_code == 201, created.text
+    tid = created.json()["id"]
+    assert created.json()["reason"] == "학회"
+
+    updated = client.patch(
+        f"{_TIMEOFF_URL}/{tid}",
+        headers=_bearer(admin_token),
+        json={
+            "start_at": "2030-03-01T00:00:00+09:00",
+            "end_at": "2030-03-04T00:00:00+09:00",
+            "reason": "학회(연장)",
+        },
+    )
+    assert updated.status_code == 200 and updated.json()["reason"] == "학회(연장)"
+
+    deact = client.patch(
+        f"{_TIMEOFF_URL}/{tid}/active", headers=_bearer(admin_token), json={"is_active": False}
+    )
+    assert deact.status_code == 200 and deact.json()["is_active"] is False
+
+
+def test_doctor_forbidden_on_schedule_writes(
+    client: TestClient, doctor_token: str, demo_doctor_id: str, demo_dept_id: str
+) -> None:
+    """AC4: master.manage 미보유(doctor) → 근무표 쓰기 403."""
+    res = client.post(
+        _SCHED_URL,
+        headers=_bearer(doctor_token),
+        json={
+            "doctor_id": demo_doctor_id,
+            "department_id": demo_dept_id,
+            "weekday": 4,
+            "start_time": "09:00:00",
+            "end_time": "12:00:00",
+        },
+    )
+    assert res.status_code == 403 and res.json()["error"]["code"] == "forbidden"
+
+
+def test_list_scheduling_doctors(
+    client: TestClient, admin_token: str, demo_doctor_id: str
+) -> None:
+    """의사 피커: 재직 의사 목록에 데모 의사(EMP0002) 노출(id·name·department_id)."""
+    res = client.get(_DOCTORS_URL, headers=_bearer(admin_token))
+    assert res.status_code == 200, res.text
+    ids = {d["id"].lower() for d in res.json()}
+    assert demo_doctor_id in ids, "재직 의사 목록에 데모 의사가 없음"
+
+
+def test_doctor_forbidden_on_doctors_list(client: TestClient, doctor_token: str) -> None:
+    """AC4: master.manage 미보유(doctor) → 의사 피커 조회도 403."""
+    res = client.get(_DOCTORS_URL, headers=_bearer(doctor_token))
+    assert res.status_code == 403

@@ -23,7 +23,7 @@ import re
 import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, time
 from uuid import UUID
 
 import asyncpg
@@ -2056,5 +2056,284 @@ async def call_complete_encounter(sub: UUID, encounter_id: UUID) -> asyncpg.Reco
         row = await conn.fetchrow("select * from public.complete_encounter($1)", encounter_id)
         assert row is not None  # RPC 성공 시 returns encounters → 항상 1행
         return row
+
+    return await _run_authed(sub, _op)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 근무표 · 휴진 (Story 6.1 — 0030_doctor_schedules) — 관리자 관리 config(masters 미러)
+# 쓰기 = service_role + master.manage(_require_master_manage 동일-txn 재평가). 읽기(목록)는 web 이
+# Supabase 직접조회(전역 참조). 겹침 = DB EXCLUDE(23P01) → 409 schedule_overlap(code_taken 동형).
+# ══════════════════════════════════════════════════════════════════════════════
+
+_DOCTOR_SCHEDULE_COLUMNS = (
+    "id, doctor_id, department_id, room_id, weekday, start_time, end_time, "
+    "is_active, created_at, updated_at"
+)
+_DOCTOR_TIME_OFF_COLUMNS = (
+    "id, doctor_id, start_at, end_at, reason, is_active, created_at, updated_at"
+)
+
+
+async def _assert_doctor_assignable(conn: asyncpg.Connection, doctor_id: UUID) -> None:
+    """배정 대상이 존재 + 의사(role=doctor) + 재직(active)인지 동일 트랜잭션에서 검증.
+
+    미존재/비-의사 → 422 invalid_doctor, 휴직/퇴사 → 422 inactive_doctor(department 헬퍼의
+    invalid/inactive 2코드 패턴 동형). doctor_id FK 는 users 전체를 가리키므로 역할까지 좁혀야
+    한다(원무·간호를 의사 슬롯에 배정 차단).
+    """
+    row = await conn.fetchrow(
+        "select u.employment_status, r.code as role_code "
+        "from public.users u join public.roles r on r.id = u.role_id where u.id = $1",
+        doctor_id,
+    )
+    if row is None or row["role_code"] != "doctor":
+        raise AppError(
+            "존재하지 않거나 의사가 아닌 직원입니다.",
+            code="invalid_doctor",
+            status_code=422,
+            detail={"doctor_id": str(doctor_id)},
+        )
+    if row["employment_status"] != "active":
+        raise AppError(
+            "재직 중이 아닌 의사에게는 근무표를 배정할 수 없습니다.",
+            code="inactive_doctor",
+            status_code=422,
+            detail={"doctor_id": str(doctor_id)},
+        )
+
+
+async def _assert_room_assignable(conn: asyncpg.Connection, room_id: UUID) -> None:
+    """배정 대상 진료실이 존재 + 활성인지 검증(_assert_department_assignable 동형). 미존재 → 422
+    invalid_room, 비활성 → 422 inactive_room."""
+    is_active = await conn.fetchval("select is_active from public.rooms where id = $1", room_id)
+    if is_active is None:
+        raise AppError(
+            "존재하지 않는 진료실입니다.",
+            code="invalid_room",
+            status_code=422,
+            detail={"room_id": str(room_id)},
+        )
+    if not is_active:
+        raise AppError(
+            "비활성된 진료실에는 새로 배정할 수 없습니다.",
+            code="inactive_room",
+            status_code=422,
+            detail={"room_id": str(room_id)},
+        )
+
+
+def _schedule_overlap_error() -> ConflictError:
+    """근무표 겹침 EXCLUDE(23P01) → 409 schedule_overlap(masters code_taken 패턴)."""
+    return ConflictError(
+        "같은 의사·요일에 시간이 겹치는 근무표가 있습니다.", code="schedule_overlap"
+    )
+
+
+async def insert_doctor_schedule(
+    sub: UUID,
+    *,
+    doctor_id: UUID,
+    department_id: UUID,
+    room_id: UUID | None,
+    weekday: int,
+    start_time: time,
+    end_time: time,
+) -> asyncpg.Record:
+    """근무표 INSERT(자동 감사). 겹침 → 409, 비활성/미존재 의사·진료과·진료실 → 422."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        await _assert_doctor_assignable(conn, doctor_id)
+        await _assert_department_assignable(conn, department_id)
+        if room_id is not None:
+            await _assert_room_assignable(conn, room_id)
+        try:
+            row = await conn.fetchrow(
+                f"insert into public.doctor_schedules "
+                f"(doctor_id, department_id, room_id, weekday, start_time, end_time) "
+                f"values ($1, $2, $3, $4, $5, $6) returning {_DOCTOR_SCHEDULE_COLUMNS}",
+                doctor_id,
+                department_id,
+                room_id,
+                weekday,
+                start_time,
+                end_time,
+            )
+        except asyncpg.ExclusionViolationError as exc:
+            raise _schedule_overlap_error() from exc
+        except asyncpg.ForeignKeyViolationError as exc:  # 명시 검사 백스톱(레이스 대비)
+            raise AppError(
+                "존재하지 않는 참조입니다.", code="invalid_reference", status_code=422
+            ) from exc
+        assert row is not None
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def update_doctor_schedule(
+    sub: UUID,
+    schedule_id: UUID,
+    *,
+    doctor_id: UUID,
+    department_id: UUID,
+    room_id: UUID | None,
+    weekday: int,
+    start_time: time,
+    end_time: time,
+) -> asyncpg.Record:
+    """근무표 수정(전 필드 교체). 미존재 → 404, 겹침 → 409, 변경된 FK 비활성/미존재 → 422.
+
+    FK 활성 검사는 **변경분만**(현 값 유지는 허용 — update_room AC3 패턴). soft delete 만 하므로
+    현 row 읽기↔UPDATE 사이 행 소멸은 불가(같은 tx).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        current = await conn.fetchrow(
+            "select doctor_id, department_id, room_id from public.doctor_schedules where id = $1",
+            schedule_id,
+        )
+        if current is None:
+            raise NotFoundError(detail={"schedule_id": str(schedule_id)})
+        if doctor_id != current["doctor_id"]:
+            await _assert_doctor_assignable(conn, doctor_id)
+        if department_id != current["department_id"]:
+            await _assert_department_assignable(conn, department_id)
+        if room_id is not None and room_id != current["room_id"]:
+            await _assert_room_assignable(conn, room_id)
+        try:
+            row = await conn.fetchrow(
+                f"update public.doctor_schedules set doctor_id = $2, department_id = $3, "
+                f"room_id = $4, weekday = $5, start_time = $6, end_time = $7, updated_at = now() "
+                f"where id = $1 returning {_DOCTOR_SCHEDULE_COLUMNS}",
+                schedule_id,
+                doctor_id,
+                department_id,
+                room_id,
+                weekday,
+                start_time,
+                end_time,
+            )
+        except asyncpg.ExclusionViolationError as exc:
+            raise _schedule_overlap_error() from exc
+        except asyncpg.ForeignKeyViolationError as exc:  # 명시 검사 백스톱
+            raise AppError(
+                "존재하지 않는 참조입니다.", code="invalid_reference", status_code=422
+            ) from exc
+        if row is None:
+            raise NotFoundError(detail={"schedule_id": str(schedule_id)})
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def set_doctor_schedule_active(
+    sub: UUID, schedule_id: UUID, *, is_active: bool
+) -> asyncpg.Record:
+    """근무표 활성/비활성(soft delete) 토글. 미존재 → 404, 재활성 시 겹침 → 409 schedule_overlap
+    (부분 EXCLUDE where(is_active) 가 false→true 전이에서 발화)."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        try:
+            row = await conn.fetchrow(
+                f"update public.doctor_schedules set is_active = $2, updated_at = now() "
+                f"where id = $1 returning {_DOCTOR_SCHEDULE_COLUMNS}",
+                schedule_id,
+                is_active,
+            )
+        except asyncpg.ExclusionViolationError as exc:  # 재활성이 활성 겹침 유발
+            raise _schedule_overlap_error() from exc
+        if row is None:
+            raise NotFoundError(detail={"schedule_id": str(schedule_id)})
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def insert_doctor_time_off(
+    sub: UUID, *, doctor_id: UUID, start_at: datetime, end_at: datetime, reason: str | None
+) -> asyncpg.Record:
+    """휴진·예외 INSERT(자동 감사). 미존재/비활성 의사 → 422(겹침 제약 없음 — 중첩 휴진 무해)."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        await _assert_doctor_assignable(conn, doctor_id)
+        try:
+            row = await conn.fetchrow(
+                f"insert into public.doctor_time_offs (doctor_id, start_at, end_at, reason) "
+                f"values ($1, $2, $3, $4) returning {_DOCTOR_TIME_OFF_COLUMNS}",
+                doctor_id,
+                start_at,
+                end_at,
+                reason,
+            )
+        except asyncpg.ForeignKeyViolationError as exc:  # 명시 검사 백스톱
+            raise AppError(
+                "존재하지 않는 의사입니다.", code="invalid_doctor", status_code=422
+            ) from exc
+        assert row is not None
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def update_doctor_time_off(
+    sub: UUID, time_off_id: UUID, *, start_at: datetime, end_at: datetime, reason: str | None
+) -> asyncpg.Record:
+    """휴진·예외 수정(기간·사유). doctor 불변. 미존재 → 404."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        row = await conn.fetchrow(
+            f"update public.doctor_time_offs set start_at = $2, end_at = $3, reason = $4, "
+            f"updated_at = now() where id = $1 returning {_DOCTOR_TIME_OFF_COLUMNS}",
+            time_off_id,
+            start_at,
+            end_at,
+            reason,
+        )
+        if row is None:
+            raise NotFoundError(detail={"time_off_id": str(time_off_id)})
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def set_doctor_time_off_active(
+    sub: UUID, time_off_id: UUID, *, is_active: bool
+) -> asyncpg.Record:
+    """휴진·예외 활성/비활성(soft delete) 토글. 미존재 → 404."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_master_manage(conn)
+        row = await conn.fetchrow(
+            f"update public.doctor_time_offs set is_active = $2, updated_at = now() "
+            f"where id = $1 returning {_DOCTOR_TIME_OFF_COLUMNS}",
+            time_off_id,
+            is_active,
+        )
+        if row is None:
+            raise NotFoundError(detail={"time_off_id": str(time_off_id)})
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_active_doctors(sub: UUID) -> list[asyncpg.Record]:
+    """재직 의사 목록(근무표 폼 피커용 — id·name·department_id). users RLS(본인행, 0003)를
+    service_role 풀이 우회하므로 전체 의사 조회 가능(클라 직접조회로는 불가 — 이 엔드포인트가 필요한
+    이유, count_department_dependents 동형). 조회는 엔드포인트 require_master_manage 게이트로 충분 →
+    권한 재평가 불요."""
+
+    async def _op(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+        return await conn.fetch(
+            "select u.id, u.name, u.department_id from public.users u "
+            "join public.roles r on r.id = u.role_id "
+            "where r.code = 'doctor' and u.employment_status = 'active' "
+            "order by u.name"
+        )
 
     return await _run_authed(sub, _op)
