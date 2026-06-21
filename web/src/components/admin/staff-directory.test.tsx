@@ -4,7 +4,13 @@ import { afterEach, beforeAll, describe, expect, it, vi, type Mock } from "vites
 
 import { StaffDirectory } from "@/components/admin/staff-directory";
 import { apiFetch, ApiError } from "@/lib/api/client";
+import type { Department } from "@/lib/admin/masters";
 import type { StaffMember } from "@/lib/admin/staff";
+
+const DEPARTMENTS: Department[] = [
+  { id: "dept-im", code: "IM", name: "내과", description: null, is_active: true, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z" },
+  { id: "dept-fm", code: "FM", name: "가정의학과", description: null, is_active: true, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z" },
+];
 
 vi.mock("@/lib/api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api/client")>();
@@ -66,7 +72,7 @@ const ONLEAVE = member({ employee_no: "EMP9002", name: "원무1", role_code: "re
 describe("StaffDirectory", () => {
   it("마운트 시 FastAPI 목록 조회 → 직원·재직상태 배지 렌더", async () => {
     (apiFetch as Mock).mockResolvedValueOnce([ACTIVE, ONLEAVE]);
-    render(<StaffDirectory />);
+    render(<StaffDirectory departments={DEPARTMENTS} />);
 
     expect(apiFetch).toHaveBeenCalledWith("/v1/admin/users");
     expect(await screen.findByText("간호사1")).toBeInTheDocument();
@@ -80,7 +86,7 @@ describe("StaffDirectory", () => {
     (apiFetch as Mock)
       .mockResolvedValueOnce([ONLEAVE])
       .mockResolvedValueOnce({ ...ONLEAVE, employment_status: "active" });
-    render(<StaffDirectory />);
+    render(<StaffDirectory departments={DEPARTMENTS} />);
     await screen.findByText("원무1");
 
     await userEvent.selectOptions(screen.getByLabelText("원무1 재직상태 변경"), "active");
@@ -96,7 +102,7 @@ describe("StaffDirectory", () => {
     (apiFetch as Mock)
       .mockResolvedValueOnce([ACTIVE])
       .mockResolvedValueOnce({ ...ACTIVE, employment_status: "on_leave" });
-    render(<StaffDirectory />);
+    render(<StaffDirectory departments={DEPARTMENTS} />);
     await screen.findByText("간호사1");
 
     await userEvent.selectOptions(screen.getByLabelText("간호사1 재직상태 변경"), "on_leave");
@@ -116,7 +122,7 @@ describe("StaffDirectory", () => {
     (apiFetch as Mock)
       .mockResolvedValueOnce([ONLEAVE])
       .mockRejectedValueOnce(new ApiError("self_lockout", "본인 계정은 변경할 수 없습니다.", 409));
-    render(<StaffDirectory />);
+    render(<StaffDirectory departments={DEPARTMENTS} />);
     await screen.findByText("원무1");
 
     await userEvent.selectOptions(screen.getByLabelText("원무1 재직상태 변경"), "active");
@@ -127,9 +133,41 @@ describe("StaffDirectory", () => {
     (apiFetch as Mock).mockRejectedValueOnce(
       new ApiError("service_unavailable", "직원 목록을 불러오지 못했습니다.", 503),
     );
-    render(<StaffDirectory />);
+    render(<StaffDirectory departments={DEPARTMENTS} />);
 
     expect(await screen.findByText("직원 목록을 불러오지 못했습니다.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "다시 시도" })).toBeInTheDocument();
+  });
+
+  it("소속 진료과 변경 → PATCH /department 호출 + 목록 갱신 (AC2)", async () => {
+    (apiFetch as Mock)
+      .mockResolvedValueOnce([ACTIVE]) // 목록(department_id=null)
+      .mockResolvedValueOnce({ ...ACTIVE, department_id: "dept-im" }); // 재배정 응답
+    render(<StaffDirectory departments={DEPARTMENTS} />);
+    await screen.findByText("간호사1");
+
+    // 소속 진료과 select(현재 "소속 없음") → 내과(dept-im) 선택.
+    await userEvent.selectOptions(screen.getByLabelText(/간호사1 소속 진료과 변경/), "dept-im");
+
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+    const [path, init] = (apiFetch as Mock).mock.calls[1];
+    expect(path).toBe(`/v1/admin/users/${ACTIVE.id}/department`);
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body)).toEqual({ department_id: "dept-im" });
+  });
+
+  it("비활성/미존재 진료과 배정 실패 → 오류 토스트 (AC2 가드)", async () => {
+    (apiFetch as Mock)
+      .mockResolvedValueOnce([ACTIVE])
+      .mockRejectedValueOnce(
+        new ApiError("inactive_department", "비활성된 진료과에는 새로 배정할 수 없습니다.", 422),
+      );
+    render(<StaffDirectory departments={DEPARTMENTS} />);
+    await screen.findByText("간호사1");
+
+    await userEvent.selectOptions(screen.getByLabelText(/간호사1 소속 진료과 변경/), "dept-fm");
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith("비활성된 진료과에는 새로 배정할 수 없습니다."),
+    );
   });
 });

@@ -98,6 +98,8 @@ export function MasterSearchPicker(props: MasterSearchPickerProps) {
   // ("현재 유효"만, 서버 today SQL 필터). itemsProp 를 state 에 동기화하지 않아 set-state-in-effect 회피.
   const [fetched, setFetched] = useState<MasterPickerItem[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // 재시도 트리거(Story 2.6/AC5) — 증가 시 effect 가 재실행돼 재조회한다(페이지 전체 remount 없이 복구).
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (itemsProp) return; // 주입 모드 — 네트워크 조회 불필요
@@ -118,7 +120,14 @@ export function MasterSearchPicker(props: MasterSearchPickerProps) {
     return () => {
       active = false;
     };
-  }, [kind, today, itemsProp]);
+  }, [kind, today, itemsProp, reloadKey]);
+
+  // 재시도: 로딩 상태로 되돌리고(에러 해제·fetched=null) reloadKey 를 올려 effect 재조회를 유발.
+  function retryLoad() {
+    setLoadError(null);
+    setFetched(null);
+    setReloadKey((k) => k + 1);
+  }
 
   // 방어 필터: 어떤 경로로 온 항목이든 동일 술어·동일 today 로 "현재 유효"만(드리프트 제거 = 이월 해소).
   const validItems = useMemo(
@@ -280,8 +289,15 @@ export function MasterSearchPicker(props: MasterSearchPickerProps) {
       </Combobox.Root>
 
       {loadError ? (
-        <p role="alert" className="mt-1 text-[11.5px] text-status-cancelled">
-          {loadError}
+        <p role="alert" className="mt-1 flex items-center gap-2 text-[11.5px] text-status-cancelled">
+          <span>{loadError}</span>
+          <button
+            type="button"
+            onClick={retryLoad}
+            className="rounded border border-status-cancelled/40 px-1.5 py-0.5 text-[11px] font-medium text-status-cancelled hover:bg-status-cancelled/10"
+          >
+            다시 시도
+          </button>
         </p>
       ) : null}
     </div>

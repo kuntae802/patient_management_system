@@ -10,13 +10,14 @@ export default async function MastersPage() {
   await requirePermission("master.manage", STAFF_HOME);
 
   const supabase = await createClient();
-  const initial = await fetchMasters(supabase);
+  // 부분 강등(Story 2.6/AC4): 한 테이블 실패가 화면 전체를 다운시키지 않게 data + per-table errors 를 받는다.
+  const { data, errors } = await fetchMasters(supabase);
   // 서버(KST 컨테이너) today 를 단일 권위로 주입 — 코드 마스터 시점 배지가 2.3 검색 피커와 동일 today 공유.
   const today = todayISO();
 
   return (
     <div className="px-6 py-6">
-      <MastersManager initial={initial} today={today} />
+      <MastersManager initial={data} today={today} loadErrors={errors} />
     </div>
   );
 }

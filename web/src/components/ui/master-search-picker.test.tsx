@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi, type Mock } from "vitest";
 
 import { MasterSearchPicker } from "@/components/ui/master-search-picker";
 import {
@@ -396,5 +396,55 @@ describe("순수 헬퍼", () => {
         amount_krw: 12000,
       },
     ]);
+  });
+});
+
+describe("MasterSearchPicker — AC5 로드 실패 재시도(Story 2.6)", () => {
+  it("로드 실패 → 에러+다시 시도, 재시도 클릭 시 재조회 성공으로 복구", async () => {
+    const user = userEvent.setup();
+    // 실제 fetchCurrentlyValidMasters 가 가짜 supabase 체인으로 실행되게 한다(다른 fetch-경로 테스트 패턴).
+    // .order() 가 1회차 error → 2회차 success 로 resolve.
+    const order = vi
+      .fn()
+      .mockResolvedValueOnce({ data: null, error: { message: "네트워크 오류" } })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: "dx1",
+            code: "I10",
+            name: "본태성 고혈압",
+            effective_from: "2020-01-01",
+            effective_to: null,
+            is_active: true,
+          },
+        ],
+        error: null,
+      });
+    const or = vi.fn(() => ({ order }));
+    const lte = vi.fn(() => ({ or }));
+    const eq = vi.fn(() => ({ lte }));
+    const select = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ select }));
+    (createClient as Mock).mockReturnValue({ from });
+
+    render(
+      <MasterSearchPicker
+        kind="diagnosis"
+        today={TODAY}
+        value={null}
+        onValueChange={vi.fn()}
+        ariaLabel="진단 검색"
+      />,
+    );
+
+    // 첫 조회 실패 → 에러 메시지 + 다시 시도 버튼(페이지 remount 없이 복구 경로 제공).
+    expect(await screen.findByText(/코드 마스터 조회 실패/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "다시 시도" }));
+
+    // 재조회(2회차) 성공 → 에러 사라짐.
+    await waitFor(() => expect(order).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.queryByText(/코드 마스터 조회 실패/)).not.toBeInTheDocument(),
+    );
   });
 });

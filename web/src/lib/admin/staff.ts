@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { apiFetch } from "@/lib/api/client";
 import { ROLE_LABELS } from "@/lib/nav/staff-nav";
 
 // 직원 계정 관리(Story 1.8) 공용 타입·상수·검증. API 응답은 snake_case 유지(전 경로 일관, project-context).
@@ -89,6 +90,8 @@ export const staffCreateSchema = z.object({
     .refine((v) => ["", "doctor", "radiologist"].includes(v), "면허종류가 올바르지 않습니다"),
   phone: z.string().trim().max(30),
   hire_date: z.string(),
+  // 소속 진료과(선택) — 빈 문자열="소속 없음". 활성 진료과 id 만 폼이 노출(Story 2.6). 서버가 비활성/미존재 거부.
+  department_id: z.string(),
 });
 
 export type StaffCreateValues = z.infer<typeof staffCreateSchema>;
@@ -106,5 +109,20 @@ export function toCreatePayload(values: StaffCreateValues): Record<string, unkno
   if (values.license_type) payload.license_type = values.license_type;
   if (values.phone) payload.phone = values.phone;
   if (values.hire_date) payload.hire_date = values.hire_date;
+  if (values.department_id) payload.department_id = values.department_id;
   return payload;
+}
+
+/**
+ * 직원 소속 진료과 배정/변경/해제(Story 2.6). null=소속 해제. 쓰기 권위=FastAPI(user.manage 게이트).
+ * 비활성/미존재 진료과 → ApiError(422 inactive_department/invalid_department), 미존재 직원 → 404.
+ */
+export function assignDepartment(
+  userId: string,
+  departmentId: string | null,
+): Promise<StaffMember> {
+  return apiFetch<StaffMember>(`/v1/admin/users/${userId}/department`, {
+    method: "PATCH",
+    body: JSON.stringify({ department_id: departmentId }),
+  });
 }

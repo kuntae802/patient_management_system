@@ -6,6 +6,7 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 
 import { apiFetch, ApiError } from "@/lib/api/client";
+import { type Department } from "@/lib/admin/masters";
 import {
   LICENSE_TYPE_OPTIONS,
   STAFF_ROLE_OPTIONS,
@@ -30,6 +31,7 @@ const DEFAULTS: StaffCreateValues = {
   license_type: "",
   phone: "",
   hire_date: "",
+  department_id: "",
 };
 
 // 직원 계정 생성 폼(모달). RHF + Zod(Pydantic 거울). 쓰기 = FastAPI(apiFetch) — Auth 사용자 + users 프로필.
@@ -38,11 +40,15 @@ export function StaffCreateForm({
   open,
   onOpenChange,
   onCreated,
+  departments,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: (member: StaffMember) => void;
+  departments: Department[];
 }) {
+  // 신규 직원은 활성 진료과에만 배정(비활성은 신규 배정 대상 아님 — API 도 422 로 차단).
+  const activeDepartments = departments.filter((d) => d.is_active);
   const {
     register,
     handleSubmit,
@@ -182,9 +188,16 @@ export function StaffCreateForm({
               </Field>
             </div>
 
-            <p className="text-[11.5px] text-muted-foreground">
-              소속 진료과는 진료과 마스터 구축 후 배정합니다.
-            </p>
+            <Field label="소속 진료과 (선택)" error={errors.department_id?.message}>
+              <select {...register("department_id")} className={FIELD}>
+                <option value="">소속 없음</option>
+                {activeDepartments.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
 
             <div className="mt-5 flex justify-end gap-2">
               <button

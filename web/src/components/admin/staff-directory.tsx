@@ -7,7 +7,9 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/admin/confirm-dialog";
 import { StaffCreateForm } from "@/components/admin/staff-create-form";
 import { apiFetch, ApiError } from "@/lib/api/client";
+import { departmentLabel, type Department } from "@/lib/admin/masters";
 import {
+  assignDepartment,
   EMPLOYMENT_STATUS_META,
   EMPLOYMENT_STATUS_ORDER,
   isBlockingStatus,
@@ -19,14 +21,38 @@ import { cn } from "@/lib/utils";
 
 type PendingConfirm = { member: StaffMember; next: EmploymentStatus };
 
+// 신규 배정 가능한 진료과(활성)만 노출하되, 현 소속이 비활성이면 이탈 강요 금지로 그 항목도 포함
+// (room-form 정책 동형). "소속 없음"(null)은 옵션 value="" 로 표현.
+function departmentOptions(departments: Department[], currentId: string | null): Department[] {
+  const active = departments.filter((d) => d.is_active);
+  if (currentId && !active.some((d) => d.id === currentId)) {
+    const current = departments.find((d) => d.id === currentId);
+    if (current) return [current, ...active];
+  }
+  return active;
+}
+
 // 직원 계정 관리(관리자). 목록·생성·재직상태 변경 = 모두 FastAPI 경유(users RLS 본인행 → 직접조회 불가).
 // 재직상태 변경: 휴직/퇴사(접근·로그인 차단)는 확인 다이얼로그, 복귀(active)는 즉시. 변경은 0004 자동 감사.
-export function StaffDirectory() {
+export function StaffDirectory({ departments }: { departments: Department[] }) {
   const [members, setMembers] = useState<StaffMember[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [pendingId, setPendingId] = useState<string | null>(null);
+  // per-id pending 집합(AC3) — 여러 행을 빠르게 토글해도 각 행이 독립적으로 disable/해제된다(단일
+  // pendingId 가 늦은 finally 로 무관한 행을 조기 해제하던 경합 제거).
+  const [pending, setPending] = useState<Set<string>>(new Set());
   const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
+
+  const startPending = useCallback((id: string) => {
+    setPending((p) => new Set(p).add(id));
+  }, []);
+  const endPending = useCallback((id: string) => {
+    setPending((p) => {
+      const next = new Set(p);
+      next.delete(id);
+      return next;
+    });
+  }, []);
 
   // 첫 setState 가 await 이후라 effect 내 동기 setState 가 아님(set-state-in-effect 회피).
   const load = useCallback(async () => {
@@ -48,7 +74,7 @@ export function StaffDirectory() {
   }, [load]);
 
   async function applyStatus(member: StaffMember, next: EmploymentStatus) {
-    setPendingId(member.id);
+    startPending(member.id);
     try {
       const updated = await apiFetch<StaffMember>(
         `/v1/admin/users/${member.id}/employment-status`,
@@ -60,7 +86,7 @@ export function StaffDirectory() {
       // 실패 시 목록 상태는 그대로(서버 권위) — 자가-락아웃(409) 등은 봉투 메시지로 안내.
       toast.error(err instanceof ApiError ? err.message : "재직상태를 변경하지 못했습니다.");
     } finally {
-      setPendingId(null);
+      endPending(member.id);
     }
   }
 
@@ -71,6 +97,26 @@ export function StaffDirectory() {
       return;
     }
     void applyStatus(member, next); // 복귀(active)는 즉시.
+  }
+
+  // 소속 진료과 배정/변경/해제(Story 2.6, AC2) — FastAPI(user.manage). 비활성/미존재 → 422 토스트.
+  async function applyDepartment(member: StaffMember, departmentId: string | null) {
+    startPending(member.id);
+    try {
+      const updated = await assignDepartment(member.id, departmentId);
+      setMembers((prev) => prev?.map((m) => (m.id === member.id ? updated : m)) ?? null);
+      toast.success(`${member.name} · 소속 진료과가 변경되었습니다.`);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "소속 진료과를 변경하지 못했습니다.");
+    } finally {
+      endPending(member.id);
+    }
+  }
+
+  function onDepartmentSelect(member: StaffMember, value: string) {
+    const next = value || null; // "" = 소속 없음(null)
+    if (next === member.department_id) return;
+    void applyDepartment(member, next);
   }
 
   function onCreated(member: StaffMember) {
@@ -146,6 +192,7 @@ export function StaffDirectory() {
                   <th scope="col" className="border-b border-border px-4 py-2.5 text-left">사번</th>
                   <th scope="col" className="border-b border-border px-4 py-2.5 text-left">이름</th>
                   <th scope="col" className="border-b border-border px-4 py-2.5 text-left">역할</th>
+                  <th scope="col" className="border-b border-border px-4 py-2.5 text-left">소속 진료과</th>
                   <th scope="col" className="border-b border-border px-4 py-2.5 text-left">면허</th>
                   <th scope="col" className="border-b border-border px-4 py-2.5 text-left">재직상태</th>
                   <th scope="col" className="border-b border-border px-4 py-2.5 text-left">변경</th>
@@ -154,7 +201,7 @@ export function StaffDirectory() {
               <tbody>
                 {members.map((m) => {
                   const meta = EMPLOYMENT_STATUS_META[m.employment_status];
-                  const isPending = pendingId === m.id;
+                  const isPending = pending.has(m.id);
                   return (
                     <tr key={m.id} className="hover:bg-muted/50">
                       <th
@@ -166,6 +213,23 @@ export function StaffDirectory() {
                       <td className="border-b border-border px-4 py-2.5 text-foreground">{m.name}</td>
                       <td className="border-b border-border px-4 py-2.5 text-muted-foreground">
                         {roleLabel(m.role_code)}
+                      </td>
+                      <td className="border-b border-border px-4 py-2.5">
+                        <select
+                          aria-label={`${m.name} 소속 진료과 변경 (현재 ${departmentLabel(departments, m.department_id)})`}
+                          value={m.department_id ?? ""}
+                          disabled={isPending}
+                          onChange={(e) => onDepartmentSelect(m, e.target.value)}
+                          className="h-8 rounded-md border border-border bg-card px-2 text-[12.5px] text-foreground outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 disabled:opacity-60"
+                        >
+                          <option value="">소속 없음</option>
+                          {departmentOptions(departments, m.department_id).map((d) => (
+                            <option key={d.id} value={d.id}>
+                              {d.name}
+                              {d.is_active ? "" : " (비활성)"}
+                            </option>
+                          ))}
+                        </select>
                       </td>
                       <td className="border-b border-border px-4 py-2.5 text-muted-foreground">
                         {m.license_no ? (
@@ -216,7 +280,12 @@ export function StaffDirectory() {
         )}
       </section>
 
-      <StaffCreateForm open={createOpen} onOpenChange={setCreateOpen} onCreated={onCreated} />
+      <StaffCreateForm
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        onCreated={onCreated}
+        departments={departments}
+      />
 
       <ConfirmDialog
         open={confirm !== null}

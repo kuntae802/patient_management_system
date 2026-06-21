@@ -24,6 +24,7 @@ import {
   type Diagnosis,
   type Drug,
   type FeeSchedule,
+  type MasterLoadErrors,
   type MastersData,
   type Room,
 } from "@/lib/admin/masters";
@@ -83,7 +84,15 @@ function confirmDescription(c: PendingConfirm): string {
 // 조직 마스터(진료과·진료실, 2.1) + 코드 마스터(진단·수가·약품 + 유효기간, 2.2)를 탭으로 통합.
 // today 는 RSC 서버 주입(KST, DB 권위) — 코드 마스터 시점 배지와 2.3 검색 피커가 동일 today 를 공유해
 // 자정 경계·비-KST 브라우저 불일치를 제거(2.2 이월 해소). 미주입 시 클라 todayISO() 폴백(하위호환).
-export function MastersManager({ initial, today }: { initial: MastersData; today?: string }) {
+export function MastersManager({
+  initial,
+  today,
+  loadErrors,
+}: {
+  initial: MastersData;
+  today?: string;
+  loadErrors?: MasterLoadErrors;
+}) {
   const serverToday = today ?? todayISO();
   const [tab, setTab] = useState<Tab>("departments");
   const [departments, setDepartments] = useState<Department[]>(sortByCode(initial.departments));
@@ -112,8 +121,21 @@ export function MastersManager({ initial, today }: { initial: MastersData; today
     open: false,
     editing: null,
   });
-  const [pendingId, setPendingId] = useState<string | null>(null);
+  // per-id pending 집합(AC3) — 여러 행/탭 항목을 빠르게 토글해도 각 행이 독립적으로 disable/해제된다
+  // (단일 pendingId 가 늦은 finally 로 무관한 행 pending 을 조기 해제하던 경합 제거).
+  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
   const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
+
+  function startPending(id: string) {
+    setPendingIds((p) => new Set(p).add(id));
+  }
+  function endPending(id: string) {
+    setPendingIds((p) => {
+      const next = new Set(p);
+      next.delete(id);
+      return next;
+    });
+  }
 
   function openCreate() {
     if (tab === "departments") setDeptForm({ open: true, editing: null });
@@ -124,7 +146,7 @@ export function MastersManager({ initial, today }: { initial: MastersData; today
   }
 
   async function applyActive(kind: Tab, id: string, name: string, next: boolean) {
-    setPendingId(id);
+    startPending(id);
     try {
       const path = `/v1/masters/${RESOURCE[kind]}/${id}/active`;
       const body = JSON.stringify({ is_active: next });
@@ -159,7 +181,7 @@ export function MastersManager({ initial, today }: { initial: MastersData; today
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "상태를 변경하지 못했습니다.");
     } finally {
-      setPendingId(null);
+      endPending(id);
     }
   }
 
@@ -180,16 +202,16 @@ export function MastersManager({ initial, today }: { initial: MastersData; today
   }
 
   // 진료과 비활성 확인 — 의존성 카운트를 조회해 경고에 싣는다. 조회 실패는 fail-soft(경고는 보조
-  // 정보일 뿐 비활성을 막지 않음 — 일반 문구로 폴백). 조회 중 pendingId 로 행 버튼 disable.
+  // 정보일 뿐 비활성을 막지 않음 — 일반 문구로 폴백). 조회 중 pendingIds 로 행 버튼 disable.
   async function openDepartmentConfirm(item: { id: string; name: string; code: string }) {
-    setPendingId(item.id);
+    startPending(item.id);
     let dependents: DepartmentDependents | undefined;
     try {
       dependents = await fetchDepartmentDependents(item.id);
     } catch {
       dependents = undefined;
     } finally {
-      setPendingId(null);
+      endPending(item.id);
     }
     setConfirm({ kind: "departments", id: item.id, name: item.name, code: item.code, dependents });
   }
@@ -238,10 +260,20 @@ export function MastersManager({ initial, today }: { initial: MastersData; today
         </TabButton>
       </div>
 
+      {/* 부분 강등(AC4): 활성 탭의 마스터 조회가 실패했으면 그 탭만 에러로 강등(다른 탭은 정상). */}
+      {loadErrors?.[tab] && (
+        <p
+          role="alert"
+          className="rounded-md border border-status-cancelled/40 bg-status-cancelled/10 px-3 py-2 text-[12.5px] text-status-cancelled"
+        >
+          이 마스터를 불러오지 못했습니다: {loadErrors[tab]} · 다른 탭은 정상 표시됩니다.
+        </p>
+      )}
+
       {tab === "departments" && (
         <DepartmentTable
           departments={departments}
-          pendingId={pendingId}
+          pendingIds={pendingIds}
           onEdit={(d) => setDeptForm({ open: true, editing: d })}
           onToggleActive={(d) => onToggleActive("departments", d)}
         />
@@ -250,7 +282,7 @@ export function MastersManager({ initial, today }: { initial: MastersData; today
         <RoomTable
           rooms={rooms}
           departments={departments}
-          pendingId={pendingId}
+          pendingIds={pendingIds}
           onEdit={(r) => setRoomForm({ open: true, editing: r })}
           onToggleActive={(r) => onToggleActive("rooms", r)}
         />
@@ -258,7 +290,7 @@ export function MastersManager({ initial, today }: { initial: MastersData; today
       {tab === "diagnoses" && (
         <DiagnosisTable
           diagnoses={diagnoses}
-          pendingId={pendingId}
+          pendingIds={pendingIds}
           today={serverToday}
           onEdit={(d) => setDxForm({ open: true, editing: d })}
           onToggleActive={(d) => onToggleActive("diagnoses", d)}
@@ -267,7 +299,7 @@ export function MastersManager({ initial, today }: { initial: MastersData; today
       {tab === "feeSchedules" && (
         <FeeScheduleTable
           feeSchedules={feeSchedules}
-          pendingId={pendingId}
+          pendingIds={pendingIds}
           today={serverToday}
           onEdit={(f) => setFeeForm({ open: true, editing: f })}
           onToggleActive={(f) => onToggleActive("feeSchedules", f)}
@@ -276,7 +308,7 @@ export function MastersManager({ initial, today }: { initial: MastersData; today
       {tab === "drugs" && (
         <DrugTable
           drugs={drugs}
-          pendingId={pendingId}
+          pendingIds={pendingIds}
           today={serverToday}
           onEdit={(d) => setDrugForm({ open: true, editing: d })}
           onToggleActive={(d) => onToggleActive("drugs", d)}
@@ -471,12 +503,12 @@ function TableShell({
 
 function DepartmentTable({
   departments,
-  pendingId,
+  pendingIds,
   onEdit,
   onToggleActive,
 }: {
   departments: Department[];
-  pendingId: string | null;
+  pendingIds: Set<string>;
   onEdit: (d: Department) => void;
   onToggleActive: (d: Department) => void;
 }) {
@@ -507,7 +539,7 @@ function DepartmentTable({
             <td className={TD}>
               <RowActions
                 isActive={d.is_active}
-                pending={pendingId === d.id}
+                pending={pendingIds.has(d.id)}
                 onEdit={() => onEdit(d)}
                 onToggleActive={() => onToggleActive(d)}
               />
@@ -522,13 +554,13 @@ function DepartmentTable({
 function RoomTable({
   rooms,
   departments,
-  pendingId,
+  pendingIds,
   onEdit,
   onToggleActive,
 }: {
   rooms: Room[];
   departments: Department[];
-  pendingId: string | null;
+  pendingIds: Set<string>;
   onEdit: (r: Room) => void;
   onToggleActive: (r: Room) => void;
 }) {
@@ -559,7 +591,7 @@ function RoomTable({
             <td className={TD}>
               <RowActions
                 isActive={r.is_active}
-                pending={pendingId === r.id}
+                pending={pendingIds.has(r.id)}
                 onEdit={() => onEdit(r)}
                 onToggleActive={() => onToggleActive(r)}
               />
@@ -573,13 +605,13 @@ function RoomTable({
 
 function DiagnosisTable({
   diagnoses,
-  pendingId,
+  pendingIds,
   today,
   onEdit,
   onToggleActive,
 }: {
   diagnoses: Diagnosis[];
-  pendingId: string | null;
+  pendingIds: Set<string>;
   today: string;
   onEdit: (d: Diagnosis) => void;
   onToggleActive: (d: Diagnosis) => void;
@@ -615,7 +647,7 @@ function DiagnosisTable({
             <td className={TD}>
               <RowActions
                 isActive={d.is_active}
-                pending={pendingId === d.id}
+                pending={pendingIds.has(d.id)}
                 onEdit={() => onEdit(d)}
                 onToggleActive={() => onToggleActive(d)}
               />
@@ -629,13 +661,13 @@ function DiagnosisTable({
 
 function FeeScheduleTable({
   feeSchedules,
-  pendingId,
+  pendingIds,
   today,
   onEdit,
   onToggleActive,
 }: {
   feeSchedules: FeeSchedule[];
-  pendingId: string | null;
+  pendingIds: Set<string>;
   today: string;
   onEdit: (f: FeeSchedule) => void;
   onToggleActive: (f: FeeSchedule) => void;
@@ -679,7 +711,7 @@ function FeeScheduleTable({
             <td className={TD}>
               <RowActions
                 isActive={f.is_active}
-                pending={pendingId === f.id}
+                pending={pendingIds.has(f.id)}
                 onEdit={() => onEdit(f)}
                 onToggleActive={() => onToggleActive(f)}
               />
@@ -693,13 +725,13 @@ function FeeScheduleTable({
 
 function DrugTable({
   drugs,
-  pendingId,
+  pendingIds,
   today,
   onEdit,
   onToggleActive,
 }: {
   drugs: Drug[];
-  pendingId: string | null;
+  pendingIds: Set<string>;
   today: string;
   onEdit: (d: Drug) => void;
   onToggleActive: (d: Drug) => void;
@@ -743,7 +775,7 @@ function DrugTable({
             <td className={TD}>
               <RowActions
                 isActive={d.is_active}
-                pending={pendingId === d.id}
+                pending={pendingIds.has(d.id)}
                 onEdit={() => onEdit(d)}
                 onToggleActive={() => onToggleActive(d)}
               />

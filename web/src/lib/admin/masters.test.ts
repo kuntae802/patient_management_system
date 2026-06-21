@@ -3,11 +3,31 @@ import { describe, expect, it } from "vitest";
 import {
   codeStatus,
   departmentLabel,
+  fetchMasters,
   formatKrw,
   isCurrentlyValid,
   todayISO,
   type Department,
 } from "@/lib/admin/masters";
+
+// fetchMasters(부분 강등, AC4) 검증용 가짜 SupabaseClient — from().select().order() 가 테이블별
+// {data,error} 로 resolve. Supabase 쿼리는 reject 가 아니라 error 를 객체로 돌려준다.
+type TableResult = { data: unknown[] | null; error: { message: string } | null };
+function fakeSupabase(results: Partial<Record<string, TableResult>>) {
+  return {
+    from(table: string) {
+      return {
+        select() {
+          return {
+            order() {
+              return Promise.resolve(results[table] ?? { data: [], error: null });
+            },
+          };
+        },
+      };
+    },
+  } as unknown as Parameters<typeof fetchMasters>[0];
+}
 
 function dept(over: Partial<Department>): Department {
   return {
@@ -101,5 +121,28 @@ describe("departmentLabel (Story 2.4 / AC5)", () => {
 
   it("미매칭은 (미상) 폴백(오해성 '삭제된 진료과' 대신)", () => {
     expect(departmentLabel(depts, "zzz")).toBe("(미상)");
+  });
+});
+
+describe("fetchMasters 부분 강등 (Story 2.6 / AC4)", () => {
+  it("한 테이블만 실패하면 나머지는 data, 실패 테이블만 errors 에 담는다", async () => {
+    const supabase = fakeSupabase({
+      departments: { data: [dept({})], error: null },
+      diagnoses: { data: null, error: { message: "진단 조회 실패" } },
+      // rooms·fee_schedules·drugs 는 기본 {data:[],error:null}
+    });
+    const { data, errors } = await fetchMasters(supabase);
+
+    expect(data.departments).toHaveLength(1); // 정상 테이블은 그대로
+    expect(data.diagnoses).toEqual([]); // 실패 테이블은 빈 배열로 강등
+    expect(errors.diagnoses).toBe("진단 조회 실패"); // 실패만 errors 에
+    expect(errors.departments).toBeUndefined();
+    expect(errors.rooms).toBeUndefined();
+  });
+
+  it("전부 성공이면 errors 가 비어 있다(회귀 — 정상 경로 무영향)", async () => {
+    const { data, errors } = await fetchMasters(fakeSupabase({}));
+    expect(Object.keys(errors)).toHaveLength(0);
+    expect(data.departments).toEqual([]);
   });
 });

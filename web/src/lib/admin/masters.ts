@@ -93,12 +93,20 @@ export function activeMeta(isActive: boolean): { label: string; badgeClass: stri
   return isActive ? ACTIVE_STATUS_META.active : ACTIVE_STATUS_META.inactive;
 }
 
+/** 탭(마스터 종류)별 조회 에러 메시지 — 부분 강등용(Story 2.6/AC4). */
+export type MasterLoadErrors = Partial<Record<keyof MastersData, string>>;
+/** fetchMasters 결과 — 정상 테이블 data + 실패 테이블 errors(부분 강등). */
+export type MastersLoad = { data: MastersData; errors: MasterLoadErrors };
+
 /**
  * 마스터 데이터를 Supabase 직접 조회로 구성(전역 참조 데이터 — RLS authenticated SELECT, 0006).
  * active+inactive 전부 반환(관리화면이 비활성도 표시; 소비처 피커는 is_active=true 로 필터).
- * fail-loud: 에러를 []로 강등하면 '데이터 없음'으로 오인되므로 RSC 에러로 throw.
+ *
+ * **부분 강등(Story 2.6/AC4):** Supabase 쿼리는 reject 가 아니라 `{data,error}` 를 돌려주므로 5개를
+ * Promise.all 로 모은 뒤 **첫 에러로 전체를 throw 하지 않고** 테이블별 에러를 errors 에 담는다. 한 테이블
+ * 실패가 관리화면 전체를 다운시키던 단일 실패점을 제거 — 정상 테이블은 표시, 실패 탭만 에러로 강등한다.
  */
-export async function fetchMasters(supabase: SupabaseClient): Promise<MastersData> {
+export async function fetchMasters(supabase: SupabaseClient): Promise<MastersLoad> {
   const [deptRes, roomRes, dxRes, feeRes, drugRes] = await Promise.all([
     supabase
       .from("departments")
@@ -121,18 +129,38 @@ export async function fetchMasters(supabase: SupabaseClient): Promise<MastersDat
       .select("id, code, name, ingredient_code, unit, effective_from, effective_to, is_active, created_at, updated_at")
       .order("code"),
   ]);
-  const firstError =
-    deptRes.error ?? roomRes.error ?? dxRes.error ?? feeRes.error ?? drugRes.error;
-  if (firstError) {
-    throw new Error(`마스터 조회 실패: ${firstError.message}`);
-  }
+  const errors: MasterLoadErrors = {};
+  if (deptRes.error) errors.departments = deptRes.error.message;
+  if (roomRes.error) errors.rooms = roomRes.error.message;
+  if (dxRes.error) errors.diagnoses = dxRes.error.message;
+  if (feeRes.error) errors.feeSchedules = feeRes.error.message;
+  if (drugRes.error) errors.drugs = drugRes.error.message;
   return {
-    departments: (deptRes.data ?? []) as Department[],
-    rooms: (roomRes.data ?? []) as Room[],
-    diagnoses: (dxRes.data ?? []) as Diagnosis[],
-    feeSchedules: (feeRes.data ?? []) as FeeSchedule[],
-    drugs: (drugRes.data ?? []) as Drug[],
+    data: {
+      departments: (deptRes.data ?? []) as Department[],
+      rooms: (roomRes.data ?? []) as Room[],
+      diagnoses: (dxRes.data ?? []) as Diagnosis[],
+      feeSchedules: (feeRes.data ?? []) as FeeSchedule[],
+      drugs: (drugRes.data ?? []) as Drug[],
+    },
+    errors,
   };
+}
+
+/**
+ * 진료과 전체(active+inactive, code 순) 직접조회 — 직원 진료과 배정 피커·소속 라벨용(Story 2.6).
+ * active+inactive 전부 반환: 비활성 소속 직원의 라벨에 "(비활성)" 표기를 위해 라벨용엔 전체가 필요하고,
+ * 신규 배정 피커는 호출부가 is_active 로 필터한다(room-form 패턴 동형). fail-loud(에러 throw).
+ */
+export async function fetchDepartments(supabase: SupabaseClient): Promise<Department[]> {
+  const { data, error } = await supabase
+    .from("departments")
+    .select("id, code, name, description, is_active, created_at, updated_at")
+    .order("code");
+  if (error) {
+    throw new Error(`진료과 조회 실패: ${error.message}`);
+  }
+  return (data ?? []) as Department[];
 }
 
 // ── 진료과 의존성 카운트(Story 2.4 / AC4) — 비활성 경고용 ─────────────────────────────────────
