@@ -336,3 +336,24 @@
 | doctor → 데모 근무표·휴진 | seed(`seed.sql`) | 데모 의사(EMP0002) 월–금 오전/오후 근무 + 미래 학회 휴진(파일 최하단·FK 순서·멱등·db reset 전용) |
 
 > **근무 스케줄 경계(Story 6.1 확정):** 근무표·휴진 = 관리자 관리 config(masters 동형·`master.manage` 재사용·전 직원 읽기). 겹침 불변식 = **DB EXCLUDE**(btree_gist·`tsrange` 관용구·`where(is_active)` 부분 제약) → 409 `schedule_overlap`(서비스 catch, `_map_pg_sqlstate` 무변경). 컬럼 비-PII/비-건강민감 → **감사 마스킹 집합 무변경**(0006/0010 동일). **appointments(예약 본체)·동적 슬롯 계산(근무−예외−기예약, FR-012)·더블부킹·SMS·노쇼·휴진 재배정 = 6.2~6.8**. `weekday`=PG dow(0=일) — 6.2 슬롯 계산이 예약일 dow 로 근무 전개.
+
+## 예약 본체 · 동적 가용 슬롯 (Story 6.2, `0031_appointments.sql`)
+
+> ⚠️ **마이그 번호 0031**: Epic 6 블록 0030~ 의 두 번째 조각(6.1 이 이월한 "appointments 소유 결정" = 6.2). 6.1 묶음 계획(`0011_scheduling.sql` 3테이블)을 스토리별 분리 → 0031 = 예약 본체 + 더블부킹 EXCLUDE + `encounters.reservation_id` FK 청산. **예약 쓰기(생성/변경/취소)·전이 트리거·캘린더·booking-peek·더블부킹 409 인라인 = 6.3/6.4**. 본 스토리 = 스키마 + 슬롯 계산(읽기).
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `appointment` | 용어 | 예약 — 슬롯 기반 의사 예약. `encounter`(내원)와 별개; 예약 환자 도착 접수 시 내원이 `reservation_id` 로 원 예약을 가리킨다(6.3/6.4 배선) |
+| `appointments` | 테이블(0031) | 예약 본체 — `patient_id`(patients FK)·`doctor_id`(users FK)·`department_id`(departments FK)·`room_id`(rooms FK, nullable)·`scheduled_start`/`scheduled_end`(timestamptz UTC, CHECK start<end)·`status`(text CHECK)·`created_by`·`created_at`/`updated_at`. ⚠️ **`is_active` 없음**(encounters 형 트랜잭션 레코드 — soft-delete/취소=`status='cancelled'`, 0030 config 모델과 다름). 자유텍스트/PII 컬럼 0(메모는 6.3 추가 시 마스킹 검토) |
+| `appointment_status` | 값 어휘(CHECK) | `booked`(예약·활성·기본)·`cancelled`(취소)·`no_show`(미방문)·`completed`(도착·진료완료). **전 도메인 0031 정의**(미래 CHECK ALTER 회피). **6.2 는 `booked` 만 쓰기/읽기**(슬롯 차감); 전이(booked→cancelled/no_show/completed)·no_show 진실원(appointment vs encounter)=6.3/6.4/6.7 |
+| `appointments_no_double_booking` | EXCLUDE 제약(btree_gist) | 같은 `doctor_id`·시간 겹치는 활성(`status='booked'`) 예약 차단 — `tstzrange(scheduled_start, scheduled_end, '[)') &&`(반열림=인접 비겹침). `where (status='booked')` 부분 제약(취소·노쇼·완료는 슬롯 미차단·재예약 가능). 위반 23P01 → **6.3 예약 쓰기가 409 `double_booking`** 표면화(6.2 는 seed/test 직접 INSERT 로 발화 검증). btree_gist=0030 설치 재사용 |
+| `encounters.reservation_id` | 컬럼(FK, 0031 ALTER) | 내원 → 원 예약 링크(nullable·walk-in=NULL). 0010:54 "Epic 6 ALTER" 이월 청산. **컬럼 추가만** — 읽기/쓰기 배선·`_ENCOUNTER_COLUMNS`/`EncounterResponse` 반영=6.3/6.4(기존 내원 경로 무영향·누설 없음) |
+| `appointment.read` | 권한(0031 신규) | 슬롯·예약 조회 게이트(원무·관리자 — 의사·환자는 6.4/6.5 grant). **admin 부트 grant 재실행**(test_admin_role_has_all_permissions 회귀 회피). **appointment 403 baseline = nurse**(미보유). RLS: 직원=appointment.read 전체 SELECT·환자=본인 예약(patient_id→auth_uid) |
+| `SlotStatus` / `Slot` / `SlotGridResponse` | 스키마(Pydantic)·웹 타입 | 슬롯 상태 `available`(선택가능)·`booked`(마감)·`time_off`(휴진)·`past`(지남). 슬롯 `{start,end(timestamptz UTC),status}`. 그리드 `{doctor_id,date,slot_minutes,slots[]}`. web `lib/scheduling/slots.ts` 거울(snake_case) |
+| `GET /v1/scheduling/slots?doctor_id&date` | 엔드포인트 | 의사·날짜(KST)의 가용 슬롯 = 근무−휴진−booked예약(FR-012). 게이트 `appointment.read`. 비활성/미존재 의사 → 빈 슬롯(404 아님). FastAPI service_role 계산(가용성만·환자 PII 미반환) |
+| `GET /v1/scheduling/bookable-doctors?department_id` | 엔드포인트 | 예약 피커용 재직 의사(`{id,name,department_id}`·dept 필터 옵션). 게이트 `appointment.read`(기존 `/doctors` 는 master.manage admin 전용이라 원무·예약 흐름엔 본 엔드포인트) |
+| `compute_available_slots`·`_build_slots`(순수)·`SLOT_MINUTES=30`·`_KST` | 서비스(`services/scheduling.py`) | 슬롯 계산 = 순수 `_build_slots`(DB 무관·단위 테스트) + 얇은 DB 래퍼. KST=고정 +9(무 DST). `pg_dow=isoweekday()%7`(0=일). 슬롯 status 우선순위 past>time_off>booked>available |
+| `fetch_doctor_schedules_for_weekday`·`fetch_doctor_time_offs_in_range`·`fetch_booked_appointments_in_range`·`fetch_bookable_doctors` | db 래퍼(`core/db.py`) | 슬롯 계산 service_role 읽기(RLS 우회·`fetch_active_doctors` 패턴). **active 의사 조인 필터**(employment_status='active'·role='doctor') = 6.1 이월 "스케줄 employment 재검증" 흡수 |
+| `SlotGrid`·`slots.ts`·`/reception/schedule` | 웹(`components/scheduling/`·`lib/scheduling/`) | 슬롯 그리드(4상태·음영 비의존·읽기전용·선택=6.3) / apiFetch / 라우트 `/reception/schedule`("예약 관리" nav 기존·역할 노출). 진료과→의사→날짜→슬롯 |
+
+> **동적 슬롯 경계(Story 6.2 확정):** `appointments` = encounters 형 트랜잭션 레코드(status 만·`is_active` 없음). 더블부킹·슬롯 차감 불변식 = **DB(EXCLUDE)·service_role 읽기**. 슬롯 계산 = `근무 − 휴진 − booked예약`(FastAPI 순수 함수·KST). 컬럼 비-PII/비-건강민감 → **감사 마스킹 집합 무변경**(0010/0014/0015 동일·메모 컬럼 추가 시 6.3 재검토). **예약 쓰기(생성/변경/취소)·전이 트리거·캘린더·booking-peek·더블부킹 409 = 6.3/6.4 · 환자 앱 슬롯·부서별 집계 = 6.5 · SMS = 6.6 · 노쇼 카운트 = 6.7 · 휴진 재배정 = 6.8 · 진료실 자원충돌·슬롯 길이 가변·점심 명시 상태 = 이월.**
