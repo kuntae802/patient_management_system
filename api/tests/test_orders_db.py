@@ -447,6 +447,24 @@ def test_reexecution_block_treatment(psql: Psql, admin_id: str, nurse_id: str, d
     )
 
 
+def test_reexecution_block_complete_examination(psql: Psql, nurse_id: str, doctor_id: str):
+    """이미 completed 인 검사에 complete_examination 재호출 → PT409(소스상태 performed 선검사).
+
+    perform 재실행 차단과 대칭 — 완료 단계도 재수행 불가(FR-093)."""
+    pid, eid, xid = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    _assert_sqlstate(
+        psql,
+        setup=_patient_sql(pid)
+        + _encounter_sql(eid, pid)
+        + _seed_exam_to_status(
+            xid, eid, doctor_id, "completed", perform_by=nurse_id, complete_by=doctor_id
+        ),
+        op="perform public.complete_examination('" + xid + "');",
+        sqlstate="PT409",
+        claims_uid=doctor_id,
+    )
+
+
 # ── AC5: 권한 게이트 + not-found ──────────────────────────────────────────────
 
 
@@ -587,6 +605,34 @@ def test_rls_patient_sees_only_own_orders(psql: Psql, admin_id: str, reception_i
         + own_x
         + "'),false)::text"
         "||'|'||(count(*)=1)::text from public.examinations;"
+        "rollback;"
+    )
+    assert _verdict(out) == "true|true", out
+
+
+def test_rls_patient_sees_only_own_prescription_details(
+    psql: Psql, admin_id: str, reception_id: str
+):
+    """환자 본인 처방의 상세 라인만 가시 — prescription_details self 정책 3홉 조인 검증.
+
+    상세→처방→내원→환자→auth_uid. reception(order.read 미보유) 가장 — 본인 라인만, 타인 비가시."""
+    own_p, own_e, own_r, own_d = (str(uuid.uuid4()) for _ in range(4))
+    oth_p, oth_e, oth_r, oth_d = (str(uuid.uuid4()) for _ in range(4))
+    out = psql.scalar(
+        "begin;"
+        + _patient_sql(own_p, auth_uid=reception_id)
+        + _encounter_sql(own_e, own_p)
+        + _rx_sql(own_r, own_e, admin_id)
+        + _rxd_sql(own_d, own_r)
+        + _patient_sql(oth_p)  # auth_uid NULL(타인)
+        + _encounter_sql(oth_e, oth_p)
+        + _rx_sql(oth_r, oth_e, admin_id)
+        + _rxd_sql(oth_d, oth_r)
+        + _as_authenticated(reception_id)
+        + "select 'V:'||coalesce(bool_and(id::text='"
+        + own_d
+        + "'),false)::text"
+        "||'|'||(count(*)=1)::text from public.prescription_details;"
         "rollback;"
     )
     assert _verdict(out) == "true|true", out
