@@ -2,6 +2,19 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: code review of 3-3-보호자-정보-기록 (2026-06-21)
+
+> 3레이어 적대적 리뷰. Acceptance Auditor: AC1~3 + 이월 인수 3건 위반 0. patch 3건(datalist id 중복·삭제 더블서밋·update_guardian 422 테스트) 처리, dismiss 6, 아래는 defer.
+
+- **TOCTOU 재평가 전용 테스트 부재** [api/app/core/db.py `insert_guardian`/`update_guardian`/`delete_guardian`] — guardian 쓰기 3개가 `_op` 안에서 `_require_patient_update(conn)` in-txn 재평가(권한 평가↔쓰기 레이스 차단)를 수행하나, 이를 격리 검증하는 전용 테스트가 없다(통합 테스트는 라우터 게이트 403 만 확인). 재평가 자체는 구현·동작 확인됨(Acceptance Auditor). **2.1 리뷰의 프로젝트 전역 defer "in-tx 재평가·일부 분기 전용 테스트 부재"와 동형** — 권한 revoke 레이스 시뮬레이션(db 직접 호출 또는 grant 회수 후 호출)으로 in-txn 재평가가 실제 차단함을 단언하는 전용 케이스를 동시성 하드닝 묶음에서 일괄 추가.
+
+## Deferred from: dev of 3-3-보호자-정보-기록 (2026-06-21)
+
+> Story 3.3 가 보호자 CRUD 를 구현하면서 에픽 AC2/UX-DR22(보호자 연락처 reveal = 주민번호 동일 게이트+감사)와 현 구현 선례의 충돌을 노출. **사용자 결정: 선례 미러 + reveal 이월.** 코드 변경 없이 아래로 이월.
+
+- **🆕 연락처 PII reveal 일관화 (교차절단)** [api/app/api/v1/patients.py · core/db.py · schemas/{patients,guardians}.py · web/src/components/reception/{patient-detail,patient-guardians}.tsx] — UX-DR22/EXPERIENCE.md L192 는 "연락처·주소·보험·보호자 **모든 PII reveal = 주민번호 동일 권한 게이트+감사**"를 일관 규칙으로 요구한다. 그러나 현 구현은 **주민번호(resident_no)에만** reveal(암호화+마스킹+`decrypt_sensitive` 자가-감사)을 적용하고, **환자 phone/address/email + 보호자 phone 은 평문·`patient.read` staff 직접조회**(마스킹·reveal 게이트 미적용)다. 근거: (a) 평문 컬럼 SELECT 에는 `decrypt_sensitive` 같은 깨끗한 read-감사 훅이 없고(앱의 audit_logs 직접 INSERT 금지=트리거 전용, SELECT 미발화), (b) 연락처용 reveal 권한 미시드(`patient.reveal_rrn`만 존재), (c) 환자 phone 평문 노출 + 보호자 phone 만 게이트하면 일관성 붕괴(보호자가 환자보다 더 보호되는 모순). **전 연락처 PII(환자+보호자)를 한 번에 통일하는 교차절단** — 3.3 한 스토리에서 풀지 않고 이월. **UX-DR22 미충족 갭으로 명시 기록**(은폐 아님). 일괄 해결처: 전용 감사·reveal 하드닝 스토리 또는 Epic 4 진료 허브 배너(UX-DR9). 그 스토리에서 **메커니즘 확정** — (옵션1) 평문 phone 암호화(신규 마이그레이션 + decrypt_sensitive 자가-감사 재사용) vs (옵션2) 평문 자가-감사 RPC + 신규 reveal 권한(`patient.reveal_contact` 류) 시드.
+- **A-3 감사 PII (계속 추적 — 중복 신설 안 함)** [supabase/migrations/0009_patients.sql guardians 감사 트리거] — guardian INSERT/UPDATE/DELETE 가 `audit_logs.before/after_data` 에 `name`/`phone`(평문 식별 PII)을 적재한다. 이는 이미 본 파일 L153(3.1 리뷰) "patients/**guardians** 의 평문 PII 컬럼(name/phone/address/email)"이 통합 추적 중인 항목이므로 **신규 항목을 만들지 않고 확인만** 한다(guardian 은 건강민감 데이터 아님 → 3.2 같은 긴급도 상승 불요). 서버측 감사 PII 마스킹 정책은 L153 단일 항목에서 처리.
+
 ## Deferred from: code review of 3-2-환자-임상-프로필-입력-조회 (2026-06-21)
 
 > 3레이어 적대적 리뷰. Acceptance Auditor: AC1~AC3 + 이월 인수 clean pass(위반 0). patch 1건(blood_type select 중복 defaultValue) 처리, dismiss 7, 아래는 defer.
