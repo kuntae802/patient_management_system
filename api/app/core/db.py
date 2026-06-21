@@ -1257,6 +1257,39 @@ async def update_patient_clinical_profile(
     return await _run_authed(sub, _op)
 
 
+# ── 민감정보 reveal(Story 4.5, FR-241·242 / UX-DR9·22) ───────────────────────────
+# 진료 허브 배너의 주민번호·연락처 열람 = 권한 게이트 + 감사. 메커니즘 = 0012 SECURITY DEFINER RPC:
+# RPC 안에서 has_permission 동일-txn 재평가(42501)·미존재(PT404)·감사(RRN=decrypt_sensitive 자동·
+# 연락처=수동 'read' insert) → _map_pg_sqlstate 가 403/404 자동 변환(여기 try/except·신규 매핑 불요,
+# call_start_consult 동형). resident_no_enc 는 authenticated GRANT 제외라 RPC(definer)만 복호 가능.
+
+
+async def reveal_rrn(sub: UUID, patient_id: UUID) -> str:
+    """주민번호 복호(full RRN) + 'read' 자가-감사. 게이트=patient.reveal_rrn(RPC 내부 재평가).
+
+    ⚠️ 반환 raw RRN 은 호출 서비스가 응답 바디로만 노출 — 로그·toast·에러봉투 echo 금지(PII 경계).
+    권한 미보유 → 42501(→403), 미존재 → PT404(→404). 복호=감사는 0012/0005 가 DB 강제(우회 불가)."""
+
+    async def _op(conn: asyncpg.Connection) -> str:
+        return await conn.fetchval("select public.reveal_rrn($1)", patient_id)
+
+    return await _run_authed(sub, _op)
+
+
+async def reveal_contact(sub: UUID, patient_id: UUID) -> asyncpg.Record:
+    """연락처(phone·address·email) full 조회 + 'read' 자가-감사. 게이트=patient.reveal_contact.
+
+    table-returning RPC → 단일 행. RPC 가 미존재 시 PT404 raise 하므로 row 는 항상 non-None
+    (call_start_consult 의 assert 동형). 권한 미보유 → 42501(→403)."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        row = await conn.fetchrow("select * from public.reveal_contact($1)", patient_id)
+        assert row is not None  # RPC 가 not-found 를 PT404 로 raise → 도달 시 항상 1행
+        return row
+
+    return await _run_authed(sub, _op)
+
+
 # ── 앱 자가가입 본인 연결(Story 3.4, FR-001·FR-003) ──────────────────────────────
 # 가입(세션)한 환자가 `blind_index(normalize_rrn)` 로 기존 레코드를 찾아 `auth_uid` 를 본인 JWT 주체
 # (sub)로 설정한다. service_role 연결(RLS 우회)이라 cross-patient hash 조회 가능(본인행 RLS 로
@@ -1649,6 +1682,30 @@ async def fetch_encounters(
         rows = await conn.fetch(list_sql, *values, page_size, offset)
         total = int(await conn.fetchval(count_sql, *values) or 0)
         return rows, total
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_patient_encounters(sub: UUID, patient_id: UUID) -> list[asyncpg.Record]:
+    """한 환자의 과거 내원 이력(진료 허브 좌 컨텍스트, Story 4.5 / FR-031). 진료과 무관·최근순.
+
+    대기 현황판의 denormalized 조인(`_ENCOUNTER_LIST_COLUMNS` — 진료과·담당의)을 재사용하되 WHERE 는
+    `patient_id`(이 환자 전체 내원), ORDER 는 최근순(registered_at desc → created_at). 비-PII 투영
+    (raw RRN/연락처 제외, EncounterListItem). 게이트=라우터 encounter.read(읽기 TOCTOU 저위험,
+    fetch_encounters 동형). 한 환자 내원 수는 적어 페이지네이션 불요(안전 상한 limit 100)."""
+
+    async def _op(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+        return await conn.fetch(
+            f"select {_ENCOUNTER_LIST_COLUMNS} from public.encounters e "
+            "join public.patients p on p.id = e.patient_id "
+            "join public.departments d on d.id = e.department_id "
+            "left join public.rooms rm on rm.id = e.room_id "
+            "left join public.users doc on doc.id = e.doctor_id "
+            "where e.patient_id = $1 and e.is_active = true "
+            "order by e.registered_at desc nulls last, e.created_at desc "
+            "limit 100",
+            patient_id,
+        )
 
     return await _run_authed(sub, _op)
 

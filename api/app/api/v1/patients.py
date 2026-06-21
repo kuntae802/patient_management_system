@@ -15,13 +15,16 @@ from fastapi import APIRouter, Depends, Query, status
 
 from app.core.errors import NotFoundError
 from app.core.security import CurrentUser, get_current_patient, require_permission
+from app.schemas.encounters import EncounterListItem
 from app.schemas.guardians import GuardianCreate, GuardianResponse, GuardianUpdate
 from app.schemas.patients import (
     PatientClinicalProfileUpdate,
+    PatientContactReveal,
     PatientCreate,
     PatientPage,
     PatientPageMeta,
     PatientResponse,
+    PatientRrnReveal,
     PatientSelfLinkRequest,
     PatientSelfSummary,
 )
@@ -34,6 +37,10 @@ router = APIRouter(prefix="/patients", tags=["patients"])
 require_patient_create = require_permission("patient.create")
 require_patient_read = require_permission("patient.read")
 require_patient_update = require_permission("patient.update")
+require_patient_reveal_rrn = require_permission("patient.reveal_rrn")
+require_patient_reveal_contact = require_permission("patient.reveal_contact")
+# 과거 내원 이력은 encounter 데이터 → encounter.read 게이트(진료 허브, Story 4.5).
+require_encounter_read = require_permission("encounter.read")
 
 
 # ── 앱 자가가입 본인 연결(Story 3.4, FR-001·FR-003) ──────────────────────────────
@@ -114,6 +121,46 @@ async def update_clinical_profile(
     sub-resource action(상태 PATCH 아님) — 5필드 전체 교체(PUT). 게이트 patient.update → 403,
     실제 쓰기는 동일 트랜잭션 권한 재평가(TOCTOU). 미존재 → 404. 갱신=0009 감사 트리거 기록."""
     return await patients_service.update_clinical_profile(user.sub, patient_id, payload)
+
+
+# ── 민감정보 reveal + 과거 내원 이력(Story 4.5, 진료 허브 배너·좌 컨텍스트) ─────────
+# reveal = 부수효과(감사)가 있는 읽기 → POST(액션 엔드포인트, GET 아님). 권한 게이트(라우터) +
+# RPC 동일-txn has_permission 재평가 + 감사(DB 강제, 0012). raw 값은 응답 바디로만(PII 경계).
+
+
+@router.post("/{patient_id}/reveal-rrn", response_model=PatientRrnReveal)
+async def reveal_rrn_action(
+    patient_id: UUID,
+    user: CurrentUser = Depends(require_patient_reveal_rrn),
+) -> PatientRrnReveal:
+    """주민번호 reveal(FR-242, UX-DR9) — full RRN + 'read' 자가-감사(0012/0005 RPC).
+
+    부수효과(감사) 있는 읽기 → POST. 권한 미보유 → 403, 미존재 → 404. 복호=감사는 DB 강제.
+    ⚠️ 반환 raw RRN 은 응답 바디 전용 — 로그·에러봉투 echo 금지(PII 경계)."""
+    return await patients_service.reveal_rrn(user.sub, patient_id)
+
+
+@router.post("/{patient_id}/reveal-contact", response_model=PatientContactReveal)
+async def reveal_contact_action(
+    patient_id: UUID,
+    user: CurrentUser = Depends(require_patient_reveal_contact),
+) -> PatientContactReveal:
+    """연락처 reveal(UX-DR22) — full phone/address/email + 'read' 자가-감사(0012 RPC).
+
+    부수효과(감사) 있는 읽기 → POST. 권한 미보유 → 403, 미존재 → 404."""
+    return await patients_service.reveal_contact(user.sub, patient_id)
+
+
+@router.get("/{patient_id}/encounters", response_model=list[EncounterListItem])
+async def list_patient_encounters(
+    patient_id: UUID,
+    user: CurrentUser = Depends(require_encounter_read),
+) -> list[EncounterListItem]:
+    """환자의 과거 내원 이력(FR-031) — 진료 허브 좌 컨텍스트 타임라인. 최근순·조인(진료과·담당의).
+
+    작은 sub-collection → 직접 배열(guardians 목록 선례). 데이터=encounters → encounter.read 게이트.
+    진단/처방 per-visit 부착은 4.7/Epic5(이력 항목은 내원 메타만). 권한 없으면 403."""
+    return await patients_service.list_patient_encounters(user.sub, patient_id)
 
 
 # ── 보호자(guardians) 서브리소스(Story 3.3, FR-006) ──────────────────────────────

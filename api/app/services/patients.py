@@ -15,11 +15,14 @@ import asyncpg
 
 from app.core import db
 from app.core.errors import AppError, ConflictError, NotFoundError
+from app.schemas.encounters import EncounterListItem
 from app.schemas.patients import (
     PatientClinicalProfileUpdate,
+    PatientContactReveal,
     PatientCreate,
     PatientListItem,
     PatientResponse,
+    PatientRrnReveal,
     PatientSelfLinkRequest,
     PatientSelfSummary,
 )
@@ -102,6 +105,29 @@ async def update_clinical_profile(
     if row is None:
         raise NotFoundError("환자를 찾을 수 없습니다.")
     return _to_patient(row)
+
+
+async def reveal_rrn(sub: UUID, patient_id: UUID) -> PatientRrnReveal:
+    """주민번호 reveal(Story 4.5, FR-242). 권한 게이트(patient.reveal_rrn)+감사는 RPC(0012)가 강제.
+
+    db.reveal_rrn 이 42501(→403)·PT404(→404)를 _map_pg_sqlstate 로 매핑. 반환 raw RRN 은 응답 바디
+    전용(로그·에러 echo 금지). 미존재 환자 → 404(라우터/매핑)."""
+    raw = await db.reveal_rrn(sub, patient_id)
+    return PatientRrnReveal(resident_no=raw)
+
+
+async def reveal_contact(sub: UUID, patient_id: UUID) -> PatientContactReveal:
+    """연락처 reveal(Story 4.5, UX-DR22). 권한 게이트(reveal_contact)+감사는 RPC(0012)가 강제."""
+    row = await db.reveal_contact(sub, patient_id)
+    return PatientContactReveal.model_validate(dict(row))
+
+
+async def list_patient_encounters(sub: UUID, patient_id: UUID) -> list[EncounterListItem]:
+    """한 환자의 과거 내원 이력(Story 4.5, FR-031) — 진료 허브 좌 컨텍스트 타임라인. 최근순·조인.
+
+    게이트=라우터 encounter.read. 진단/처방 per-visit 부착은 4.7/Epic5(이력 항목은 내원 메타만)."""
+    rows = await db.fetch_patient_encounters(sub, patient_id)
+    return [EncounterListItem.model_validate(dict(r)) for r in rows]
 
 
 async def link_self_patient(sub: UUID, payload: PatientSelfLinkRequest) -> PatientSelfSummary:

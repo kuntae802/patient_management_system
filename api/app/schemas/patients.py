@@ -138,6 +138,22 @@ class PatientResponse(BaseModel):
     updated_at: datetime
 
 
+class PatientRrnReveal(BaseModel):
+    """주민번호 reveal 응답(Story 4.5, FR-242) — full RRN(권한 게이트 + 감사 후). 응답 바디 전용.
+
+    ⚠️ 이 값(raw 주민번호)은 응답 바디로만 노출 — 로그·toast·에러봉투에 echo 금지(PII 경계)."""
+
+    resident_no: str
+
+
+class PatientContactReveal(BaseModel):
+    """연락처 reveal 응답(Story 4.5, UX-DR22) — full phone/address/email(권한 게이트 + 감사 후)."""
+
+    phone: str | None = None
+    address: str | None = None
+    email: str | None = None
+
+
 class PatientListItem(BaseModel):
     """환자 목록 경량 항목 — 마스킹·식별 최소 필드(검색·확인용, 민감정보 없음)."""
 

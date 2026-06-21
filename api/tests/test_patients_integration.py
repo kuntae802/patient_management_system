@@ -76,13 +76,33 @@ def admin_id(psql: Psql) -> str:
 
 @pytest.fixture(scope="module")
 def doctor_id(psql: Psql) -> str:
-    """의사 auth uid — 권한 0(patient.read 미보유) + auth.users 실재(FK). RLS '본인행만' 검증 기준.
-
-    staff 정책(has_permission)은 false 라 전체 행이 안 보이고, self 정책(auth.uid()=auth_uid)으로
-    본인 행만 보이는지 확인(별도 환자 계정 생성은 3.4 — 기존 uid 재사용)."""
+    """의사 auth uid — 4.5 부터 patient.read/reveal_* 보유(진료 허브). reveal·이력 검증 기준."""
     return psql.scalar(
         "select u.id::text from public.users u "
         "join public.roles r on r.id = u.role_id where r.code = 'doctor' limit 1"
+    ).lower()
+
+
+@pytest.fixture(scope="module")
+def nurse_token() -> str:
+    """무권한 baseline(Story 4.4/4.5) — nurse 는 patient.* 미보유(간호 권한=Epic 5).
+
+    doctor 가 4.5 에서 patient.read/reveal 를 받은 뒤 "권한 미보유 403" 검증 계정을 대체한다."""
+    token = _get_token("nurse@pms.local", "Staff1234")
+    if not token:
+        pytest.skip("nurse 부트스트랩 미가용 — 'supabase db reset'(seed 갱신) 후 재실행")
+    return token
+
+
+@pytest.fixture(scope="module")
+def nurse_id(psql: Psql) -> str:
+    """nurse auth uid — patient.read 미보유 + auth.users 실재(FK). RLS '본인행만' 기준(4.5).
+
+    staff 정책(has_permission)은 false 라 전체 행이 안 보이고, self 정책(auth.uid()=auth_uid)으로
+    본인 행만 보이는지 확인(doctor 는 4.5 에서 patient.read 보유 → 더 이상 무권한 baseline 아님)."""
+    return psql.scalar(
+        "select u.id::text from public.users u "
+        "join public.roles r on r.id = u.role_id where r.code = 'nurse' limit 1"
     ).lower()
 
 
@@ -236,7 +256,7 @@ def test_create_patient_invalid_email_422(client, admin_token):
 
 
 def test_create_patient_forbidden_without_permission(client, doctor_token):
-    """doctor(권한 0)는 patient.create 미보유 → 403."""
+    """doctor 는 patient.read 보유(4.5)하나 patient.create 미보유 → 403(read↔create 분리)."""
     res = client.post(
         _PATIENTS_URL, json=_create_payload(_unique_rrn()), headers=_bearer(doctor_token)
     )
@@ -264,8 +284,9 @@ def test_list_and_get_patient_masked(client, admin_token):
     assert detail.json()["resident_no_masked"] == "900101-1******"
 
 
-def test_list_patients_forbidden_without_read(client, doctor_token):
-    res = client.get(_PATIENTS_URL, headers=_bearer(doctor_token))
+def test_list_patients_forbidden_without_read(client, nurse_token):
+    """patient.read 미보유(nurse — 4.5 부터 무권한 baseline) → 403(doctor 는 이제 read 보유)."""
+    res = client.get(_PATIENTS_URL, headers=_bearer(nurse_token))
     assert res.status_code == 403, res.text
 
 
@@ -342,9 +363,9 @@ def test_search_blank_q_returns_full_list(client, admin_token):
     assert res.json()["meta"]["total"] >= 1
 
 
-def test_search_patients_forbidden_without_read(client, doctor_token):
-    """검색도 patient.read 게이트 — 미보유(doctor) → 403."""
-    res = client.get(_PATIENTS_URL, params={"q": "x"}, headers=_bearer(doctor_token))
+def test_search_patients_forbidden_without_read(client, nurse_token):
+    """검색도 patient.read 게이트 — 미보유(nurse, Story 4.5 무권한 baseline) → 403."""
+    res = client.get(_PATIENTS_URL, params={"q": "x"}, headers=_bearer(nurse_token))
     assert res.status_code == 403, res.text
 
 
@@ -378,10 +399,11 @@ def test_rls_staff_with_read_sees_patients(client, admin_token, admin_id, psql):
     assert nums and int(nums[-1]) >= 1, f"직원 RLS 가 환자 행을 차단함: {count!r}"
 
 
-def test_rls_patient_sees_only_own_row(client, admin_token, doctor_id, psql):
+def test_rls_patient_sees_only_own_row(client, admin_token, nurse_id, psql):
     """환자 본인행 격리 — 본인 auth_uid 행만 가시, 타인(NULL-auth) 행 비가시(자기 권한 없음).
 
-    doctor_id(권한 0·auth.users 실재)를 본인 uid 로 가장한다 — staff 정책 false 라 self 정책만 작동.
+    nurse_id(patient.read 미보유·auth.users 실재 — 4.5 무권한 baseline)를 본인 uid 로 가장한다.
+    staff 정책(has_permission) false 라 self 정책(auth.uid()=auth_uid)만 작동.
     """
     # 타인 행(auth_uid NULL) 최소 1개 committed 보장 — 격리되어 안 보여야 함.
     client.post(_PATIENTS_URL, json=_create_payload(_unique_rrn()), headers=_bearer(admin_token))
@@ -392,10 +414,10 @@ def test_rls_patient_sees_only_own_row(client, admin_token, doctor_id, psql):
         "  resident_no_masked, insurance_type, auth_uid) "
         "values ('RLS본인','1990-01-01','male','\\x00'::bytea,"
         "  '__rls_self__'||gen_random_uuid()::text,"
-        "  '900101-1******','health_insurance','" + doctor_id + "');"
-        + _as_authenticated(doctor_id)
+        "  '900101-1******','health_insurance','" + nurse_id + "');"
+        + _as_authenticated(nurse_id)
         # 가시 행이 모두 본인 것인지(타인 행 누출 없음) + 본인 행은 보이는지.
-        + "select coalesce(bool_and(auth_uid::text = '" + doctor_id + "'), false)::text "
+        + "select coalesce(bool_and(auth_uid::text = '" + nurse_id + "'), false)::text "
         "  || '|' || count(*)::text from public.patients;"
         "rollback;"
     )
@@ -663,10 +685,12 @@ def test_guardian_write_forbidden_without_permission(client, admin_token, doctor
     assert res.json()["error"]["code"] == "forbidden"
 
 
-def test_guardian_read_forbidden_without_permission(client, admin_token, doctor_token):
-    """AC2: patient.read 미보유(doctor 권한 0) → 목록 조회 403."""
+def test_guardian_read_forbidden_without_permission(client, admin_token, nurse_token):
+    """AC2: patient.read 미보유(nurse, Story 4.5 무권한 baseline) → 목록 조회 403.
+
+    doctor 는 4.5 에서 patient.read 를 받았으므로 더 이상 read 미보유 baseline 이 아니다."""
     pid = _create_patient(client, admin_token)
-    res = client.get(f"{_PATIENTS_URL}/{pid}/guardians", headers=_bearer(doctor_token))
+    res = client.get(f"{_PATIENTS_URL}/{pid}/guardians", headers=_bearer(nurse_token))
     assert res.status_code == 403, res.text
 
 
@@ -688,3 +712,150 @@ def test_guardian_mutations_are_audited(client, admin_token, psql):
             f"where target_table='guardians' and target_id='{gid}' and action='{action}'"
         )
         assert int(count) >= 1, f"보호자 {action} 가 감사 로그에 기록되지 않음"
+
+
+# ── Story 4.5: 민감정보 reveal(주민번호·연락처) + 과거 내원 이력(진료 허브) ─────────
+
+
+@pytest.fixture(scope="module")
+def dept_id(psql: Psql) -> str:
+    """시드 진료과(내과 IM) id — 과거 내원 이력 생성 대상."""
+    return psql.scalar("select id::text from public.departments where lower(code) = 'im' limit 1")
+
+
+def _create_patient_with_rrn(client, token: str) -> tuple[str, str, str]:
+    """reveal 테스트용 환자 생성 — (patient_id, full_rrn(정규화 13자리), phone) 반환."""
+    rrn = _unique_rrn()
+    phone = "010-1234-5678"
+    res = client.post(
+        _PATIENTS_URL,
+        json={
+            "resident_no": rrn,
+            "name": "리빌환자",
+            "phone": phone,
+            "insurance_type": "health_insurance",
+        },
+        headers=_bearer(token),
+    )
+    assert res.status_code == 201, res.text
+    return res.json()["id"], normalize_rrn(rrn), phone
+
+
+def _create_walk_in(client, token: str, pid: str, dept_id: str) -> str:
+    """walk-in 내원 생성(POST /v1/encounters) — 과거 이력 행 생성(admin=encounter.register 보유)."""
+    res = client.post(
+        "/v1/encounters",
+        json={"patient_id": pid, "department_id": dept_id},
+        headers=_bearer(token),
+    )
+    assert res.status_code == 201, res.text
+    return res.json()["id"]
+
+
+def test_reveal_rrn_returns_full_and_audits(client, admin_token, psql):
+    """AC2: reveal-rrn → 200 + full RRN(복호=원본) + 'read' 감사. GET 상세는 여전히 마스킹."""
+    pid, full_rrn, _ = _create_patient_with_rrn(client, admin_token)
+    res = client.post(f"{_PATIENTS_URL}/{pid}/reveal-rrn", headers=_bearer(admin_token))
+    assert res.status_code == 200, res.text
+    assert res.json()["resident_no"] == full_rrn  # full(복호) = 정규화 원본(마스킹 아님)
+    # reveal 은 별도 엔드포인트 — GET 상세는 여전히 마스킹만(PII 경계 유지).
+    got = client.get(f"{_PATIENTS_URL}/{pid}", headers=_bearer(admin_token))
+    assert got.json()["resident_no_masked"].endswith("******")
+    assert "resident_no" not in got.json()  # 상세엔 full 키 없음
+    assert "resident_no_enc" not in got.text
+    # 'read' 자가-감사(DB 강제 — 0012 reveal_rrn → 0005 decrypt_sensitive).
+    cnt = psql.scalar(
+        "select count(*) from public.audit_logs "
+        f"where action='read' and target_table='patients' and target_id='{pid}'"
+    )
+    assert int(cnt) >= 1, "reveal-rrn 이 'read' 감사를 남기지 않음"
+
+
+def test_reveal_rrn_doctor_allowed(client, admin_token, doctor_token):
+    """doctor 는 4.5 에서 patient.reveal_rrn 보유 → 200(진료 허브 골든 패스)."""
+    pid, full_rrn, _ = _create_patient_with_rrn(client, admin_token)
+    res = client.post(f"{_PATIENTS_URL}/{pid}/reveal-rrn", headers=_bearer(doctor_token))
+    assert res.status_code == 200, res.text
+    assert res.json()["resident_no"] == full_rrn
+
+
+def test_reveal_rrn_forbidden_without_permission(client, admin_token, nurse_token):
+    """patient.reveal_rrn 미보유(nurse 무권한 baseline) → 403."""
+    pid, _, _ = _create_patient_with_rrn(client, admin_token)
+    res = client.post(f"{_PATIENTS_URL}/{pid}/reveal-rrn", headers=_bearer(nurse_token))
+    assert res.status_code == 403, res.text
+
+
+def test_reveal_rrn_not_found_404(client, admin_token):
+    """미존재 환자 reveal → 404(RPC PT404 → _map_pg_sqlstate)."""
+    res = client.post(
+        f"{_PATIENTS_URL}/00000000-0000-4000-8000-000000000000/reveal-rrn",
+        headers=_bearer(admin_token),
+    )
+    assert res.status_code == 404, res.text
+
+
+def test_reveal_contact_not_found_404(client, admin_token):
+    """미존재 환자 reveal-contact → 404(RPC PT404 → _map_pg_sqlstate, reveal-rrn 대칭)."""
+    res = client.post(
+        f"{_PATIENTS_URL}/00000000-0000-4000-8000-000000000000/reveal-contact",
+        headers=_bearer(admin_token),
+    )
+    assert res.status_code == 404, res.text
+
+
+def test_reveal_contact_returns_full_and_audits(client, admin_token, psql):
+    """AC2: reveal-contact → 200 + full 연락처 + 'read' 자가-감사(UX-DR22 일관 게이트)."""
+    pid, _, phone = _create_patient_with_rrn(client, admin_token)
+    res = client.post(f"{_PATIENTS_URL}/{pid}/reveal-contact", headers=_bearer(admin_token))
+    assert res.status_code == 200, res.text
+    assert res.json()["phone"] == phone
+    cnt = psql.scalar(
+        "select count(*) from public.audit_logs "
+        f"where action='read' and target_table='patients' and target_id='{pid}'"
+    )
+    assert int(cnt) >= 1, "reveal-contact 이 'read' 감사를 남기지 않음"
+
+
+def test_reveal_contact_doctor_allowed(client, admin_token, doctor_token):
+    """doctor 는 4.5 에서 patient.reveal_contact 보유 → 200."""
+    pid, _, phone = _create_patient_with_rrn(client, admin_token)
+    res = client.post(f"{_PATIENTS_URL}/{pid}/reveal-contact", headers=_bearer(doctor_token))
+    assert res.status_code == 200, res.text
+    assert res.json()["phone"] == phone
+
+
+def test_reveal_contact_forbidden_without_permission(client, admin_token, nurse_token):
+    """patient.reveal_contact 미보유(nurse) → 403."""
+    pid, _, _ = _create_patient_with_rrn(client, admin_token)
+    res = client.post(f"{_PATIENTS_URL}/{pid}/reveal-contact", headers=_bearer(nurse_token))
+    assert res.status_code == 403, res.text
+
+
+def test_patient_encounters_history(client, admin_token, doctor_token, dept_id):
+    """FR-031: 환자 과거 내원 이력 → 이 환자 전 내원 + 조인(진료과명) · 비-PII. doctor 200."""
+    pid, _, _ = _create_patient_with_rrn(client, admin_token)
+    e1 = _create_walk_in(client, admin_token, pid, dept_id)
+    e2 = _create_walk_in(client, admin_token, pid, dept_id)
+    res = client.get(f"{_PATIENTS_URL}/{pid}/encounters", headers=_bearer(doctor_token))
+    assert res.status_code == 200, res.text
+    items = res.json()
+    ids = {e["id"] for e in items}
+    assert {e1, e2} <= ids and len(items) == 2  # 이 환자 내원만(신규 환자라 정확히 2건)
+    assert items[0]["department_name"]  # denormalized 조인 표시 필드
+    assert "resident_no_enc" not in res.text and "resident_no_masked" not in res.text  # 비-PII
+
+
+def test_patient_encounters_empty(client, admin_token):
+    """내원 0건 환자 → 200 빈 배열."""
+    pid, _, _ = _create_patient_with_rrn(client, admin_token)
+    res = client.get(f"{_PATIENTS_URL}/{pid}/encounters", headers=_bearer(admin_token))
+    assert res.status_code == 200, res.text
+    assert res.json() == []
+
+
+def test_patient_encounters_forbidden_without_read(client, admin_token, nurse_token):
+    """encounter.read 미보유(nurse) → 403."""
+    pid, _, _ = _create_patient_with_rrn(client, admin_token)
+    res = client.get(f"{_PATIENTS_URL}/{pid}/encounters", headers=_bearer(nurse_token))
+    assert res.status_code == 403, res.text
