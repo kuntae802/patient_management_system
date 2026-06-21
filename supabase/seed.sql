@@ -12,10 +12,11 @@
 --   실제 직원 계정 생성은 Story 1.8(관리자 UI). db reset 시 재생성됨.
 --   로컬 자격증명(로컬 전용, 절대 운영 사용 금지, 전부 비번 Staff1234):
 --     · admin@pms.local      role=admin     → 23권한 전부(Story 1.3 시드)  → require_permission 통과
---     · doctor@pms.local     role=doctor    → 권한 0(1.7 매트릭스 전)       → require_permission 403
---       (Story 1.5 의 401/403/200 인증·권한 매트릭스 통합 검증용)
---     · reception@pms.local  role=reception → encounter.register/read 보유(하단 grant) → walk-in 접수
---       골든 패스 가동(Story 4.2). 역할 grant 는 데모/통합테스트용 — 프로덕션은 1.7 매트릭스가 부여.
+--     · doctor@pms.local     role=doctor    → encounter.read/start 보유(하단 grant, Story 4.4) → 진료 대기·진찰 시작
+--       골든 패스. rbac.manage 등 그 외 권한은 미보유 → /auth/check 등은 여전히 403(Story 1.5 매트릭스 검증).
+--     · nurse@pms.local      role=nurse     → 권한 0(간호 권한은 Epic 5)  → 무권한 baseline(403 통합 검증용, Story 4.4)
+--     · reception@pms.local  role=reception → encounter.register/read/call 보유(하단 grant) → walk-in 접수·호출
+--       골든 패스 가동(Story 4.2/4.3). 역할 grant 는 데모/통합테스트용 — 프로덕션은 1.7 매트릭스가 부여.
 --   ★ 안전: seed.sql 은 로컬 `supabase db reset` 에서만 실행된다. 운영 배포는 `supabase db push`
 --     (마이그레이션만, seed 미실행)이므로 클라우드에 이 계정이 생기지 않는다.
 --     🚫 `supabase db reset --linked`(클라우드 대상)는 절대 실행 금지 — DB 전체가 초기화된다.
@@ -30,7 +31,11 @@ declare
     jsonb_build_object('uid','000000a2-0000-4000-8000-0000000000a2',
       'email','doctor@pms.local','employee_no','EMP0002','name','의사(테스트)','role','doctor'),
     jsonb_build_object('uid','000000a3-0000-4000-8000-0000000000a3',
-      'email','reception@pms.local','employee_no','EMP0003','name','원무(테스트)','role','reception')
+      'email','reception@pms.local','employee_no','EMP0003','name','원무(테스트)','role','reception'),
+    -- 무권한 baseline(Story 4.4) — doctor 가 encounter.read/start 를 받으면 admin·reception·doctor 셋 다
+    -- encounter.read 보유 → "권한 미보유 403" 검증 계정이 사라진다. nurse(간호 권한=Epic 5) 가 그 baseline.
+    jsonb_build_object('uid','000000a4-0000-4000-8000-0000000000a4',
+      'email','nurse@pms.local','employee_no','EMP0004','name','간호사(테스트)','role','nurse')
   );
   v_acct jsonb;
   v_uid uuid;
@@ -93,13 +98,23 @@ on conflict (role_id, permission_id) do nothing;
 
 -- ── (DEV/데모) 원무(reception) 역할 → 환자 호출 권한 grant (Story 4.3) ──────────────────────
 -- 대기 현황판 "다음 호출"(encounter.call)은 원무 직무 본질(접수→호출→진찰 골든 패스 가동). 0011 시드.
--- ★ doctor 는 미부여 — 의사 보드 접근(encounter.read)·진찰 시작(encounter.start)은 Story 4.4 가
--- 의사 플로우와 함께 켠다(현 테스트 스위트의 'doctor=권한0' baseline 보존). 프로덕션은 1.7 매트릭스.
 insert into public.role_permissions (role_id, permission_id)
 select r.id, p.id
 from public.roles r
 join public.permissions p on p.code = 'encounter.call'
 where r.code = 'reception'
+on conflict (role_id, permission_id) do nothing;
+
+-- ── (DEV/데모) 의사(doctor) 역할 → 진료 대기·진찰 시작 권한 grant (Story 4.4) ──────────────────
+-- 의사 보드 접근(encounter.read)·진찰 시작(encounter.start)은 의사 핵심 직무 — 진료 대기열 조회 +
+-- start_consult 골든 패스 가동(접수→호출→진찰). encounter.read/start 는 0002/0010 시드, 여기선 역할
+-- 매핑만. ★ 프로덕션 런타임 grant 는 Story 1.7 RBAC 매트릭스 UI 소유(rbac-ui-exposure-model: 직무
+-- 핵심은 역할 노출) — 이 시드는 로컬 db reset 전용(데모·통합테스트, 운영 db push 엔 미반영). 멱등.
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code in ('encounter.read', 'encounter.start')
+where r.code = 'doctor'
 on conflict (role_id, permission_id) do nothing;
 
 -- ════════════════════════════════════════════════════════════════════════════
