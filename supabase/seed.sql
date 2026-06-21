@@ -189,10 +189,11 @@ insert into public.drugs (code, name, ingredient_code, unit, effective_from, eff
   ('661200340', '리도카인염산염주 2%',                        '251801AIJ', '앰플', '2020-01-01', null)
 on conflict (lower(code)) do nothing;
 
--- ── (DEV ONLY · 선택) 데모 의사 → 진료과 배정 ───────────────────────────────
+-- ── (DEV ONLY) 데모 의사 → 진료과 배정 ──────────────────────────────────────
 -- 골든 패스(Epic 4 접수·Epic 6 예약)는 "진료과 소속 의사"를 전제한다. 위 DEV ONLY doctor 계정을
--- 내과(IM)에 배정해 후속 시연을 매끄럽게 한다. 멱등(department_id 가 NULL 일 때만) · 운영 미영향
--- (seed 는 로컬 db reset 전용). 실제 직원 소속 배정 UI 는 Story 1.8/후속.
+-- 내과(IM)에 배정해 후속 시연을 매끄럽게 한다 — **데모 시드**이며, 실제 직원 진료과 배정 기능은
+-- Story 2.6(관리자 직원 배정 UI + PATCH /admin/users/{id}/department)이 뒷받침한다(우회 아님).
+-- 멱등(department_id 가 NULL 일 때만) · 운영 미영향(seed 는 로컬 db reset 전용).
 update public.users
   set department_id = (select id from public.departments where lower(code) = lower('IM'))
   where id = '000000a2-0000-4000-8000-0000000000a2'
