@@ -91,6 +91,17 @@ join public.permissions p on p.code in ('encounter.register', 'encounter.read')
 where r.code = 'reception'
 on conflict (role_id, permission_id) do nothing;
 
+-- ── (DEV/데모) 원무(reception) 역할 → 환자 호출 권한 grant (Story 4.3) ──────────────────────
+-- 대기 현황판 "다음 호출"(encounter.call)은 원무 직무 본질(접수→호출→진찰 골든 패스 가동). 0011 시드.
+-- ★ doctor 는 미부여 — 의사 보드 접근(encounter.read)·진찰 시작(encounter.start)은 Story 4.4 가
+-- 의사 플로우와 함께 켠다(현 테스트 스위트의 'doctor=권한0' baseline 보존). 프로덕션은 1.7 매트릭스.
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code = 'encounter.call'
+where r.code = 'reception'
+on conflict (role_id, permission_id) do nothing;
+
 -- ════════════════════════════════════════════════════════════════════════════
 -- 마스터 시드 (Story 2.5) — 진료과 · 진료실 · KCD 진단 · EDI 수가 · 약품
 -- ════════════════════════════════════════════════════════════════════════════
