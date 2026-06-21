@@ -2,6 +2,15 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: code review of 3-5-전역-환자-검색-ctrl-k-커맨드-팔레트 (2026-06-21)
+
+> 3레이어 적대적 리뷰. Acceptance Auditor: 위반 0(AC1~4 + 이월 ①~③ + D-1~D-3 충족). patch 4건(ILIKE 와일드카드 이스케이프·디바운스 정착 전 Enter stale 가드·검색 잘림 안내·aria-activedescendant 가드) 처리, dismiss 3, 아래는 defer.
+
+- **검색 매칭·정렬 튜닝(짧은 숫자 노이즈 + 한글 정렬 컷오프)** [api/app/core/db.py `fetch_patients`] — (a) `q="010"` 같은 짧은 자릿수가 거의 모든 연락처에 부분일치(국내 휴대폰 전부 010 시작), 이름에 숫자가 섞이면 `digits` 가 전화번호 OR 조건을 항상 추가해 결과 노이즈 확대 — 연락처 검색 최소 자릿수 하한(예 4자리) 가드 부재. (b) 검색 정렬 `name asc` 가 DB 콜레이션/유니코드 정규화(NFC/NFD)에 의존해 한글 정렬이 흔들리면 상위 N 컷오프에 영향. **검색 품질 튜닝**(min-digit 임계·정렬 정규화·필요 시 trigram 인덱스)으로 일괄 — phone 성능 인덱스(스토리 D-1 이월)와 같은 검색-하드닝 묶음 후보. 패치(와일드카드 이스케이프·잘림 안내)로 1차 영향 완화됨.
+- **한글 IME 조합 중 Ctrl K / Esc** [web/src/components/shell/patient-search-command.tsx] — IME on(한글 조합 중)이면 `e.key` 가 "Process"라 전역 `Ctrl K` 가 안 먹을 수 있고, Esc 1회는 조합 취소만 소비(팔레트 닫기 2회 필요). `isComposing`/조합 상태 미고려. 한국어 사용자 빈도 높은 단축키 UX 엣지 — **키보드 단축키 하드닝**(전역 단축키 IME 안전 처리)에서 일괄.
+- **입력 비운 직후 200ms 마스킹 결과 잔존** [web/src/components/shell/patient-search-command.tsx] — 빈 입력 클리어가 디바운스 setTimeout 안이라 입력을 모두 지운 직후 200ms 동안 이전(마스킹) 검색 결과가 화면에 남음(닫으면 즉시 초기화). 마스킹 PII·200ms·활성 사용 중이라 영향 경미 — 빈 입력 즉시 클리어는 팔레트 UX 폴리시에서.
+- **`apiFetch` 가 `AbortError` 를 `network_error` 로 변환(암묵 결합)** [web/src/lib/api/client.ts · patient-search-command.tsx] — 디바운스 abort 시 `apiFetch` 가 `AbortError` 를 잡아 `ApiError("network_error")` 로 재throw → 컴포넌트 catch 가 에러 종류가 아니라 `controller.signal.aborted` 로 분기해 정상 동작(버그 아님). 다만 향후 `apiFetch` 가 abort 를 자체 resolve 로 바꾸면 깨질 수 있는 암묵 결합 — `apiFetch` 에 abort 1급 처리(예: AbortError 그대로 throw 또는 명시 무시)를 도입할 때 함께 정리.
+
 ## Deferred from: code review of 3-4-환자-앱-자가가입-기존-레코드-자동-연결 (2026-06-21)
 
 > 3레이어 적대적 리뷰. Acceptance Auditor: PASS-WITH-FINDINGS(AC1~4 + 이월 인수 ①~⑤ + PII 경계 위반 0). patch 3건(동시성 advisory lock·`_norm_name` NFC·onboarding 사문 분기) 처리, dismiss 9, 아래는 defer.
