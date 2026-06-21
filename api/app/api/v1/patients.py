@@ -79,11 +79,17 @@ async def create_patient(
 @router.get("", response_model=PatientPage)
 async def list_patients(
     user: CurrentUser = Depends(require_patient_read),
+    q: str | None = Query(default=None, max_length=100),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> PatientPage:
-    """환자 목록(최신순, 마스킹) — 페이지네이션 봉투 {data, meta}. 권한 없으면 403."""
-    items, total = await patients_service.list_patients(user.sub, page=page, page_size=page_size)
+    """환자 목록(최신순, 마스킹) — 페이지네이션 봉투 {data, meta}. 권한 없으면 403.
+
+    q 가 주어지면 이름·차트번호·연락처로 검색(Story 3.5, 전역 Ctrl K 커맨드 팔레트). q 는 PII
+    (이름·연락처)라 로그에 남기지 않는다(라우트=불투명, 검색은 service_role 마스킹 투영만 반환)."""
+    items, total = await patients_service.list_patients(
+        user.sub, q=q, page=page, page_size=page_size
+    )
     meta = PatientPageMeta(page=page, page_size=page_size, total=total)
     return PatientPage(data=items, meta=meta)
 

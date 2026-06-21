@@ -269,6 +269,98 @@ def test_list_patients_forbidden_without_read(client, doctor_token):
     assert res.status_code == 403, res.text
 
 
+# ── Story 3.5: 전역 환자 검색(GET /patients?q=) — 이름·차트번호·연락처 ──────────
+
+
+def _create_named(client, token: str, *, name: str, phone: str) -> dict:
+    """검색 테스트용 환자 생성(이름·연락처 지정, RRN 은 고유)."""
+    payload = {
+        "resident_no": _unique_rrn(),
+        "name": name,
+        "phone": phone,
+        "insurance_type": "health_insurance",
+    }
+    res = client.post(_PATIENTS_URL, json=payload, headers=_bearer(token))
+    assert res.status_code == 201, res.text
+    return res.json()
+
+
+def _alpha_token() -> str:
+    """순수 알파벳 토큰(숫자 없음) — 이름 검색이 차트번호/연락처(자릿수) 조건과 섞이지 않게."""
+    letters = "".join(c for c in uuid.uuid4().hex if c.isalpha())
+    return f"ZQ{letters[:8]}"
+
+
+def test_search_patients_by_name(client, admin_token):
+    """이름 부분일치 검색 → 해당 환자 포함. 무관 토큰 → 0건. 마스킹 경계 유지."""
+    token = _alpha_token()
+    created = _create_named(client, admin_token, name=f"검색{token}", phone="010-0000-0000")
+
+    res = client.get(_PATIENTS_URL, params={"q": token}, headers=_bearer(admin_token))
+    assert res.status_code == 200, res.text
+    page = res.json()
+    assert created["id"] in [p["id"] for p in page["data"]]
+    # 마스킹·식별 단서만 — _enc/_hash 미노출(PII 경계).
+    assert "resident_no_enc" not in res.text and "resident_no_hash" not in res.text
+    assert page["data"][0]["resident_no_masked"].endswith("******")
+
+    # 존재하지 않는(순수 알파벳) 토큰 → 결과 0(이름·차트번호 어디에도 없음).
+    miss = client.get(_PATIENTS_URL, params={"q": _alpha_token()}, headers=_bearer(admin_token))
+    assert miss.status_code == 200, miss.text
+    assert miss.json()["meta"]["total"] == 0
+    assert miss.json()["data"] == []
+
+
+def test_search_patients_by_chart_no(client, admin_token):
+    """차트번호 부분일치 검색 → 해당 환자 포함."""
+    created = _create_named(client, admin_token, name=f"차트{_alpha_token()}", phone="010-1-2")
+    res = client.get(
+        _PATIENTS_URL, params={"q": created["chart_no"]}, headers=_bearer(admin_token)
+    )
+    assert res.status_code == 200, res.text
+    assert created["id"] in [p["id"] for p in res.json()["data"]]
+
+
+def test_search_patients_by_phone_hyphen_insensitive(client, admin_token):
+    """연락처 검색은 하이픈 유/무 동일(자릿수 정규화) → 두 형태 모두 같은 환자 매칭."""
+    # 고유 8자리 → 다른 환자 연락처와 충돌 사실상 0.
+    suffix = f"{uuid.uuid4().int % 100_000_000:08d}"
+    phone = f"010-{suffix[:4]}-{suffix[4:]}"
+    created = _create_named(client, admin_token, name=f"연락{_alpha_token()}", phone=phone)
+
+    for query in (f"010-{suffix[:4]}-{suffix[4:]}", f"010{suffix}", suffix):
+        res = client.get(_PATIENTS_URL, params={"q": query}, headers=_bearer(admin_token))
+        assert res.status_code == 200, res.text
+        assert created["id"] in [p["id"] for p in res.json()["data"]], f"q={query} 매칭 실패"
+
+
+def test_search_blank_q_returns_full_list(client, admin_token):
+    """공백 q → 검색 아님(전체 목록 동작 회귀)."""
+    _create_named(client, admin_token, name=f"전체{_alpha_token()}", phone="010-0000-0000")
+    res = client.get(_PATIENTS_URL, params={"q": "   "}, headers=_bearer(admin_token))
+    assert res.status_code == 200, res.text
+    assert res.json()["meta"]["total"] >= 1
+
+
+def test_search_patients_forbidden_without_read(client, doctor_token):
+    """검색도 patient.read 게이트 — 미보유(doctor) → 403."""
+    res = client.get(_PATIENTS_URL, params={"q": "x"}, headers=_bearer(doctor_token))
+    assert res.status_code == 403, res.text
+
+
+def test_search_wildcard_is_escaped_not_match_all(client, admin_token):
+    """리뷰 패치: LIKE 메타문자(`%`·`_`)는 리터럴 이스케이프 — 와일드카드로 전체 매칭 안 됨.
+
+    `q="%"` 가 이스케이프 없이 패턴이면 전 환자(마스킹 PII) 반환(공백-차단 우회). 이스케이프되면
+    이름/차트번호에 literal '%' 든 행만 매칭 → 정상 이름의 created 는 미포함.
+    """
+    created = _create_named(client, admin_token, name=f"와일드{_alpha_token()}", phone="010-1-2")
+    res = client.get(_PATIENTS_URL, params={"q": "%"}, headers=_bearer(admin_token))
+    assert res.status_code == 200, res.text
+    ids = [p["id"] for p in res.json()["data"]]
+    assert created["id"] not in ids, "'%' 가 와일드카드로 전체 매칭됨(이스케이프 실패)"
+
+
 # ── AC3: RLS 경계(psql, 방어심층) ─────────────────────────────────────────────
 
 

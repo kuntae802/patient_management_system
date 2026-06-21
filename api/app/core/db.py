@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -1132,23 +1133,61 @@ async def insert_patient(
 
 
 async def fetch_patients(
-    sub: UUID, *, page: int = 1, page_size: int = 50
+    sub: UUID, *, q: str | None = None, page: int = 1, page_size: int = 50
 ) -> tuple[list[asyncpg.Record], int]:
     """환자 목록 페이지(최신순, 마스킹 컬럼만) + 전체 건수. 게이트(patient.read)는 라우터가 강제.
 
+    q(검색어, Story 3.5)가 주어지면 이름(부분일치)·차트번호(부분일치)·연락처(자릿수 부분일치)로
+    필터한다 — q 가 None/공백이면 전체 목록(최신순). phone 은 자유 형식(하이픈 등) 저장이라 비숫자를
+    제거한 자릿수끼리 비교한다(입력도 동일 정규화 → 010-1234 == 0101234). q 는 PII(이름·연락처)라
+    로그에 남기지 않는다(파라미터 바인딩 = 인젝션 안전 + LIKE 메타문자(%·_)는 리터럴 이스케이프 —
+    `q="%"` 같은 와일드카드로 공백-차단을 우회해 전체 행을 끌어오지 못하게).
+
     service_role 경로라 RLS 우회 — 직원 목록 접근 권위는 라우터 require_permission('patient.read')
     (읽기 TOCTOU 저위험 → 재평가 불요, fetch_audit_logs 동형). 마스킹 컬럼만 투영(_enc/_hash 제외).
+    검색 인덱스: 이름=idx_patients_name·차트번호=UNIQUE(0009). phone 은 인덱스 없음(MVP ILIKE 수용 —
+    성능 인덱스는 하드닝 이월, 다음 마이그레이션 0010 은 Epic 4 예약이라 본 경로는 DDL 무변경).
     """
     offset = (page - 1) * page_size
+    term = (q or "").strip()
+    digits = re.sub(r"\D", "", term)
+    # LIKE 메타문자 리터럴화(기본 escape '\') — 사용자 입력 %·_ 가 와일드카드로 해석되지 않게.
+    like_term = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     async def _op(conn: asyncpg.Connection) -> tuple[list[asyncpg.Record], int]:
+        if not term:
+            rows = await conn.fetch(
+                f"select {_PATIENT_LIST_COLUMNS} from public.patients "
+                f"order by created_at desc limit $1 offset $2",
+                page_size,
+                offset,
+            )
+            total = int(await conn.fetchval("select count(*) from public.patients") or 0)
+            return rows, total
+
+        # 이름·차트번호 부분일치(이스케이프 term) + (자릿수면) 연락처 자릿수 부분일치. OR 결합.
+        conds = ["name ilike '%'||$1||'%'", "chart_no ilike '%'||$1||'%'"]
+        params: list[object] = [like_term]
+        if digits:
+            params.append(digits)
+            conds.append(
+                f"regexp_replace(coalesce(phone,''),'[^0-9]','','g') like '%'||${len(params)}||'%'"
+            )
+        where = " or ".join(conds)
+        limit_idx, offset_idx = len(params) + 1, len(params) + 2
         rows = await conn.fetch(
-            f"select {_PATIENT_LIST_COLUMNS} from public.patients "
-            f"order by created_at desc limit $1 offset $2",
+            f"select {_PATIENT_LIST_COLUMNS} from public.patients where {where} "
+            f"order by name asc, created_at desc limit ${limit_idx} offset ${offset_idx}",
+            *params,
             page_size,
             offset,
         )
-        total = int(await conn.fetchval("select count(*) from public.patients") or 0)
+        total = int(
+            await conn.fetchval(
+                f"select count(*) from public.patients where {where}", *params
+            )
+            or 0
+        )
         return rows, total
 
     return await _run_authed(sub, _op)

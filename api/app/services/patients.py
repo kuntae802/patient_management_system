@@ -71,10 +71,10 @@ async def create_patient(sub: UUID, payload: PatientCreate) -> PatientResponse:
 
 
 async def list_patients(
-    sub: UUID, *, page: int, page_size: int
+    sub: UUID, *, q: str | None = None, page: int, page_size: int
 ) -> tuple[list[PatientListItem], int]:
-    """환자 목록(최신순, 마스킹) + 전체 건수. 권한 게이트(patient.read)는 라우터가 강제."""
-    rows, total = await db.fetch_patients(sub, page=page, page_size=page_size)
+    """환자 목록(최신순, 마스킹) + 건수. q(3.5)면 이름·차트번호·연락처 검색. 게이트=라우터."""
+    rows, total = await db.fetch_patients(sub, q=q, page=page, page_size=page_size)
     return [_to_list_item(r) for r in rows], total
 
 
