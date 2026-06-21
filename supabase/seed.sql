@@ -186,6 +186,19 @@ join public.permissions p on p.code in ('order.read', 'examination.perform')
 where r.code = 'radiologist'
 on conflict (role_id, permission_id) do nothing;
 
+-- ── (DEV/데모) 원무(reception) 역할 → 예약 슬롯 조회 권한 grant (Story 6.2) ──────────────────────
+-- 가용 슬롯 조회·예약 피커(appointment.read)는 원무 직무 본질(전화·방문 예약 흐름 6.4 가동). appointment.read
+-- 는 0031 신규 — 여기선 역할 매핑만. ★ 프로덕션 런타임 grant 는 1.7 매트릭스 UI 소유 — 이 시드는 로컬
+-- db reset 전용(운영 db push 미반영). 멱등.
+-- ⚠️ appointment 403 검증 baseline = nurse(appointment.read 미보유; 의사·환자 grant 는 6.4/6.5).
+--    reception 이 appointment.read 를 받아도 encounter/patient/order baseline 은 비중첩 유지(무영향).
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code = 'appointment.read'
+where r.code = 'reception'
+on conflict (role_id, permission_id) do nothing;
+
 -- ════════════════════════════════════════════════════════════════════════════
 -- 마스터 시드 (Story 2.5) — 진료과 · 진료실 · KCD 진단 · EDI 수가 · 약품
 -- ════════════════════════════════════════════════════════════════════════════

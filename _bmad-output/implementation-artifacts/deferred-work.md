@@ -262,3 +262,11 @@
 - **`issued→dispensed` 전이 권한 게이트 부재** [supabase/migrations/0015_orders.sql] — 처방 발급 전이는 트리거가 허용(매트릭스 내)하나, 모든 다른 전이(perform/complete)와 달리 **권한 체크·전용 RPC 가 없다**. 현재 `prescriptions` 는 authenticated SELECT-only 라 service_role 만 도달 가능(노출 제한적). dispense 동작·권한(`prescription.dispense` 류)·RPC = **Epic 7(7.7 원외처방전 출력·발급)** 소유. 그때 per-action 권한 모델로 정합.
 
 - **`_assert_sqlstate` 가 SQLSTATE 클래스만 비교(메시지 미비교)** [api/tests/test_orders_db.py] — 여러 코드 경로가 `PT409` 를 던진다(트리거 초기상태 가드·전이 매트릭스·RPC 소스상태 precondition). 테스트는 SQLSTATE 클래스만 단언하므로, 실패가 *다른* PT409 경로로 이동하는 회귀(예: RPC precondition 제거됐으나 트리거 매트릭스가 잡음)를 구분하지 못할 수 있다. `test_encounters_db._assert_sqlstate` 계승 패턴(코드베이스 전반 동형). **보강 경로**: 에러 메시지 substring 단언 추가 또는 re-perform 후 `performed_by` 보존 단언(같은 묶음=위 attribution 불변성). 현 커버리지는 동작은 검증(PT409 발생)하되 발생원은 미특정.
+
+## Deferred from: code review of 6-2-동적-가용-슬롯-계산 (2026-06-21)
+
+- **슬롯 계산이 선택 진료과 미필터** [api/app/services/scheduling.py·api/app/core/db.py `fetch_doctor_schedules_for_weekday`] — `GET /scheduling/slots` 는 `doctor_id+date` 만 받아 의사의 **모든** 요일 근무 블록(진료과 무관)을 슬롯화한다. `doctor_schedules.department_id` 는 블록별(의사가 다중 진료과 커버 가능, 0030:27)이고 `bookable-doctors` 는 `users.department_id`(주 진료과)로만 필터 → (a) 다중과 의사 선택 시 타과 슬롯 노출, (b) 부차 진료과 블록만 가진 의사는 그 진료과 필터에 미노출. 스토리상 슬롯=doctor+date 스코프·진료과별 집계=6.5(진료과→의사→날짜 흐름) 소유. 데모(단일과 의사) 무영향. 해소: 슬롯 엔드포인트에 `department_id` 옵션 필터 추가(6.3 캘린더/6.5 환자앱이 IA 확정 시).
+
+- **completed·in_progress 예약이 자기 슬롯 미차단** [supabase/migrations/0031_appointments.sql EXCLUDE·db.py `fetch_booked_appointments_in_range`] — 더블부킹 EXCLUDE·슬롯 차감 모두 `status='booked'` 만 본다. `completed`(도착·진료완료)/향후 `in_progress` 예약은 슬롯을 비우고 EXCLUDE 도 막지 않는다. 6.2 엔 예약 전이 경로 부재로 `completed` 도달 불가(전이 RPC=6.3/6.4)·완료 예약 슬롯은 과거→`past` → 실무 영향 미미. 6.3/6.4 가 booking→completed 전이 추가 시 "점유 슬롯=booked∪completed(∪in_progress)" 차감/EXCLUDE 확장 여부 결정(특히 당일 조기 완료된 미래 슬롯 재예약 방지).
+
+- **부분 진료과 로드 실패 UX** [web/src/components/scheduling/slot-availability.tsx `loadRefs`] — `Promise.all` 의 Supabase 진료과 조회 실패 시 에러 배너 + 빈 진료과 picker 가 공존하고 재시도 affordance 가 없다(`allDoctors` 는 정상 로드 가능 → 어느 호출 실패인지 불명확). 엣지·저영향. 해소: 자원별 부분 강등 + 재시도 버튼(masters fetchMasters 부분 강등 패턴).
