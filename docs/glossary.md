@@ -297,3 +297,24 @@
 | doctor → `diagnosis.attach`·`diagnosis.read`·`encounter.complete` | seed grant(`seed.sql`) | 진단 부착·조회·진료 완료 골든 패스(nurse=무권한 baseline 403). 데모/통합테스트용(프로덕션=1.7 매트릭스) |
 
 > **진단 부착 경계(Story 4.7 확정):** 진단은 **KCD `diagnoses` 마스터 FK(`diagnosis_id`)로만** 부착 — free-text 차단(UX-DR12)의 구조적 강제. `encounter_diagnoses` 의 감사 스냅샷은 `diagnosis_id`(FK)·`is_primary`·플래그만 = 자유텍스트 미유입 → **`_SENSITIVE_KEY` 마스킹 집합 무변경**(4.6 SOAP 자유텍스트와의 핵심 차이). 주상병 불변식(≤1/내원)은 **부분 unique 인덱스**가 최종선(강등은 FastAPI 동일 트랜잭션). 진료 완료는 **주상병 1개 필수**(`complete_encounter` 게이트 PT422→422·웹은 진단 필드 포커스+인라인 "주상병을 1개 지정해야 합니다", UX-DR18). **완료→수납 정산·sticky 액션바·flow stepper·신원 확인 = Epic 7**(4.7 = 완료 게이트 + 최소 트리거). **처방↔진단 연결(FR-051)·과거 진단 타임라인(FR-031 좌패널 backfill) = Epic 5/이월**.
+
+## 근무표 · 휴진 (Story 6.1, `0030_doctor_schedules.sql`)
+
+> ⚠️ **마이그 번호 0030**: Epic 6 = 병렬 worktree → 마이그 블록 0030~(main 0014/Epic5 0015~0029 와 충돌 회피). 에픽/아키 묶음 계획 `0011_scheduling.sql`(3테이블)을 **스토리별 분리**(4.6/4.7 선례) → 6.1 = 근무표·휴진 2테이블만, **예약(appointments)·예약 생성·`encounters.reservation_id` FK·더블부킹은 booking 스토리(6.2/6.3)** 소유.
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `doctor_schedules` | 테이블(0030) | 의사 주간 근무표 — `doctor_id`(users FK)·`department_id`(departments FK)·`room_id`(rooms FK, nullable)·`weekday`(smallint CHECK 0–6, **PG `extract(dow)` 정합: 0=일**)·`start_time`/`end_time`(time, CHECK start<end)·`is_active`. 비-PII/비-건강민감 → 감사 마스킹 불요 |
+| `doctor_time_offs` | 테이블(0030) | 휴진/예외 — `doctor_id`(users FK)·`start_at`/`end_at`(timestamptz, CHECK start<end)·`reason`(저민감 운영 사유, **임상/PII 자유텍스트 금지**=cancel_reason 정합)·`is_active`. 겹침 제약 없음(중첩 휴진 무해) |
+| `doctor_schedules_no_overlap` | EXCLUDE 제약(btree_gist) | 같은 `doctor_id`·`weekday`의 활성 시간블록 겹침 차단 — `tsrange(date+start, date+end) &&`(내장 timerange 부재 → date-anchored). `where (is_active)` 부분 제약(비활성 무시·재활성도 발화). 위반 23P01 → 409 `schedule_overlap` |
+| `master.manage` | 권한(재사용) | 근무표·휴진 쓰기 게이트 — **신규 권한 아님**(0002 기존·admin cross-join 보유). 진료과·진료실 masters 동형(관리자 관리 config). 읽기=전 직원 authenticated SELECT(슬롯 계산·예약). **schedule.* 신설·admin 부트 grant 재실행 없음** → `test_admin_role_has_all_permissions` 무영향 |
+| `schedule_overlap`(409) / `invalid_doctor`·`inactive_doctor`·`invalid_room`·`inactive_room`(422) | 도메인 에러코드 | 겹침(EXCLUDE 23P01 서비스 catch, `code_taken` 패턴) / FK 대상 검증(`_assert_doctor_assignable`=role=doctor·active, `_assert_room_assignable`, `_assert_department_assignable` 재사용). **`_map_pg_sqlstate` 변경 없음**(서비스 레이어 catch) |
+| `POST·PATCH·PATCH/active /v1/scheduling/doctor-schedules` | 엔드포인트 | 근무표 생성·수정(전 필드 교체)·비활성(soft delete). 게이트 `master.manage`. 겹침 409·미존재 404·FK 422 |
+| `POST·PATCH·PATCH/active /v1/scheduling/doctor-time-offs` | 엔드포인트 | 휴진·예외 생성·수정(기간·사유, doctor 불변)·비활성. 게이트 `master.manage` |
+| `GET /v1/scheduling/doctors` | 엔드포인트 | 근무표 폼 의사 피커용 재직 의사(`{id,name,department_id}`) — users RLS(본인행) 우회 service_role read(`count_department_dependents` 동형). 게이트 `master.manage` |
+| `DoctorSchedule*`·`DoctorTimeOff*`·`SchedulingDoctor` | 스키마(Pydantic)·웹 타입 | 응답·요청 거울(snake_case). `ActiveUpdate`(schemas.masters) 재사용. web `lib/admin/schedule.ts` |
+| `insert/update/set_*_active_doctor_schedule`·`_doctor_time_off`·`fetch_active_doctors` | db 래퍼(`core/db.py`) | service_role 직접 INSERT/UPDATE(masters insert_room 패턴·`_require_master_manage` TOCTOU·FK 활성 검증·EXCLUDE/FK catch) |
+| `ScheduleManager`·`DoctorScheduleForm`·`DoctorTimeOffForm`·`schedule.ts` | 웹(`components/admin/`·`lib/admin/`) | 근무표·휴진 탭 관리(masters-manager 미러: useState·apiFetch 쓰기·pendingIds·ConfirmDialog·부분 강등) / RHF+Zod+Base UI 폼 / 라우트 `/admin/schedule`(nav `requiredPermission: master.manage`). **의사 목록은 마운트 시 클라 apiFetch**(users RLS → RSC 직접조회 불가, StaffDirectory 패턴) |
+| doctor → 데모 근무표·휴진 | seed(`seed.sql`) | 데모 의사(EMP0002) 월–금 오전/오후 근무 + 미래 학회 휴진(파일 최하단·FK 순서·멱등·db reset 전용) |
+
+> **근무 스케줄 경계(Story 6.1 확정):** 근무표·휴진 = 관리자 관리 config(masters 동형·`master.manage` 재사용·전 직원 읽기). 겹침 불변식 = **DB EXCLUDE**(btree_gist·`tsrange` 관용구·`where(is_active)` 부분 제약) → 409 `schedule_overlap`(서비스 catch, `_map_pg_sqlstate` 무변경). 컬럼 비-PII/비-건강민감 → **감사 마스킹 집합 무변경**(0006/0010 동일). **appointments(예약 본체)·동적 슬롯 계산(근무−예외−기예약, FR-012)·더블부킹·SMS·노쇼·휴진 재배정 = 6.2~6.8**. `weekday`=PG dow(0=일) — 6.2 슬롯 계산이 예약일 dow 로 근무 전개.
