@@ -22,6 +22,13 @@ describe("maskSnapshotValue", () => {
     }
   });
 
+  it("SOAP 자유텍스트(S/O/A/P)는 항상 마스킹(Story 4.6 — medical_records 감사 유입)", () => {
+    // 0013 트리거가 SOAP 평문을 audit 에 유입 → 서버 _SENSITIVE_KEY 와 동일 4종 마스킹(드리프트 가드).
+    for (const k of ["subjective", "objective", "assessment", "plan"]) {
+      expect(maskSnapshotValue(k, "두통 3일").masked).toBe(true);
+    }
+  });
+
   it("name 은 테이블 인지 — maskName 일 때만 마스킹(masters/roles 名 보존)", () => {
     // 환자/보호자 컨텍스트(maskName) → 마스킹.
     expect(maskSnapshotValue("name", "홍길동", { maskName: true }).masked).toBe(true);

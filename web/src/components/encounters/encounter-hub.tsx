@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { PatientBanner } from "@/components/encounters/patient-banner";
 import { PatientContextPanel } from "@/components/encounters/patient-context-panel";
+import { SoapLedger } from "@/components/encounters/soap-ledger";
 import { StatusBadge } from "@/components/encounters/status-badge";
 import { useActiveEncounter } from "@/hooks/use-active-encounter";
 import { ApiError } from "@/lib/api/client";
@@ -159,12 +160,8 @@ export function EncounterHub({ encounterId }: { encounterId: string }) {
               patientId={encounter.patient_id}
               currentEncounterId={encounter.id}
             />
-            <section className="rounded-xl border border-dashed border-border bg-card/60 px-4 py-6">
-              <h2 className="text-[13px] font-semibold text-foreground">SOAP 진료기록</h2>
-              <p className="mt-1.5 text-[12px] text-muted-foreground">
-                S/O/A/P 작성·자동저장 (Story 4.6) · 진단 부착 (Story 4.7)
-              </p>
-            </section>
+            {/* 중앙 작성 = SOAP ledger(Story 4.6). 진단 부착(KCD)은 Story 4.7. */}
+            <SoapLedger encounter={encounter} />
             <section className="rounded-xl border border-dashed border-border bg-card/60 px-4 py-6">
               <h2 className="text-[13px] font-semibold text-foreground">오더</h2>
               <p className="mt-1.5 text-[12px] text-muted-foreground">처방·검사·영상·처치 (Epic 5)</p>
