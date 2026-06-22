@@ -369,6 +369,26 @@
 
 > **오더 패널 통합 경계(Story 5.5 확정):** **신규 마이그 1건(0016=컬럼 2개)·신규 권한 0**(알레르기 오버라이드도 `prescription.create` 범위). **정직한 한계**: 알레르기=자유텍스트 → 직접 토큰 매칭만(클래스 매칭 불가)·실제 약물상호작용 DB 없음("활성 투약 상호작용"=FR-052 동일성분 surface)·약가 없음(처방 pay-chip 분류만·프리뷰 금액 제외). **표시 전용**: 수가 프리뷰·pay-chip = 분류·근사 표시, **수가 자동발생(수납상세 적재)·본인부담 산정=5.10/Epic7**. **누락 0 디텍터**=진료 허브 오더 패널만(워크리스트 측 인디케이터=5.7 간호/5.8 방사선·UI 미존재). 알레르기 체크=약품 처방만(검사·영상·처치 act 알레르겐 데이터 없음).
 
+## 간호 활력징후 (Story 5.6, `0017_nursing.sql`)
+
+> ⚠️ **마이그 번호 0017**: Epic 5 블록 0015~0029 의 세 번째(5.1=0015·5.5=0016). 에픽/아키 stale `0010_nursing` — 실제 0017(0017~0029 갭 사용·Epic 6 워크트리 0030~ 비침범). **신규 권한 0**(`vital.record`=0002 기존·admin 보유 → admin 재grant 불요·5.2 posture). **vital_signs 만**(일상 간호기록 `nursing_record`·처치 수행 = 5.7).
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `vital_signs` | 테이블(0017) | 활력징후 전용 기록(한 내원 N건·매 측정 새 행 append). `encounter_id` FK(1:N)·`systolic`/`diastolic`(혈압)·`pulse`(맥박)·`body_temp` numeric(4,1)(체온)·`respiratory_rate`(호흡수)·`spo2`(SpO2) **전부 nullable(부분 측정)**·`notes` text(PII 금지)·`recorded_by` FK(기록 간호사)·`recorded_at`. examinations(0015) DDL 미러. 수정/삭제·시계열 차트 = 이월 |
+| `vital_signs_at_least_one` | CHECK(0017) | 6 측정값 중 **최소 1개 not null** 강제(빈 활력 행 차단 — DB 최종선). 클라 `hasAnyVital`(1차선)·서버 `VitalSignsCreate.model_validator`(2차선·422)·DB CHECK(최종선) 3중. 범위 CHECK(systolic 50~300 등)=물리 안전망(임상 정상범위 ≠ DB 한계) |
+| `vital_signs_select_staff`/`_self` | RLS(0017) | 직원=`has_permission('encounter.read') OR has_permission('vital.record')`(의사 허브 ∨ 간호 기록자)·환자=본인 내원(encounter→patient→auth_uid). ⚠️ **방어심층** — FastAPI=service_role 가 RLS 우회·조회 권위=라우터; 본 정책은 환자 포털 Supabase 직결(Epic 8) 대비 |
+| `vital.record` | 권한(0002 기존) | 활력 기록 게이트(간호 직무). 0017 신규 아님 → **nurse seed grant 1건만**(`seed.sql`·5.6)·admin 재grant 불요. **활력 기록 403 baseline = reception(권한 0) + doctor(encounter.read 有·vital.record 無 = read-yes/record-no)**. nurse 의 encounter.read 0(4.4/4.5 baseline)은 유지 — 비중첩 무영향 |
+| `require_any_permission(*codes)` | 의존성(0017 신규·`core/security.py`) | `require_permission` 의 **OR 변형**(codes 중 하나라도 보유 시 통과·short-circuit). 첫 소비처=활력 조회(의사 encounter.read ∨ 간호 vital.record — 둘은 공통 권한 0). RLS `vital_signs_select_staff` 가 동일 OR 거울 |
+| `POST …/encounters/{id}/vitals` | 엔드포인트(api·`nursing`·201) | 활력 기록(FR-091). 게이트 `vital.record`. recorded_by=토큰 주체·recorded_at=now(). 미존재 내원 404·빈 활력/범위 422(Pydantic·DB CHECK 백스톱)·권한 403. service_role 직접 INSERT(`_require_vital_record` TOCTOU·내원 선검사). body_temp=Decimal 변환(orders.dose 선례) |
+| `GET …/encounters/{id}/vitals` | 엔드포인트(api·`nursing`) | 한 내원 활력 목록(최신순·users 조인 `recorded_by_name`). 게이트 `require_any_permission("encounter.read","vital.record")`(의사 진료 허브 FR-032 ∨ 간호 read-back). 직접 배열 |
+| `GET …/nursing/vitals-worklist` | 엔드포인트(api·`nursing`) | 활력 워크리스트(AC3) — 오늘(KST) 활성 내원(registered·in_progress) + patients·departments 조인 + `latest_vital_recorded_at`(상관 서브쿼리·미측정 신호). 게이트 `vital.record`(간호 진입). 비-PII 투영(resident_no 제외). ⚠️ **`/nursing/*` 네임스페이스**(`/encounters/vitals-worklist` 는 `GET /encounters/{encounter_id}`[encounters.py:125·먼저 등록]에 흡수되어 422 → `/encounters/*` 밖에 둔다·nursing 라우터 prefix 없음) |
+| `VitalSigns`·`VitalsDisplay`·`isAbnormal` | 웹(`lib/encounters/vitals.ts`·`components/encounters/`) | 활력 타입(snake_case 거울)·읽기전용 표시(최신 1건·혈압 합산·`isAbnormal` 정상범위 밖 danger 강조 — 표시 전용·능동 경고 아님). `patient-context-panel` 활력 카드가 빈-상태→실데이터(FR-032). 입력은 간호 전용 |
+| `(staff)/nurse/vitals`·`VitalsWorklistPage`·`VitalsInputForm` | 웹(`app/(staff)/`·`components/nurse/`) | 활력 입력 화면(AC1·AC3). 서버 가드 `requirePermission('vital.record')`. 워크리스트(좌)→선택 내원 기존 활력+입력 폼(우). 폼=6 항목 number(선택)·`hasAnyVital` 가드·busy disable(이중 제출)·비정상 aria-invalid·toast. nav "활력징후 입력"=nurse 역할 노출(기정의). 5.7 처치 워크리스트가 이 진입 확장 |
+| nurse → `vital.record` | seed grant(`seed.sql`) | 활력 기록 권한(간호 직무·rbac-ui-exposure-model). DEV/데모 전용(운영=1.7 매트릭스). 데모 활력 시드 없음(통합 테스트가 walk-in 후 인라인 기록 커버) |
+
+> **간호 활력징후 경계(Story 5.6 확정):** **신규 마이그 1건(0017=vital_signs)·신규 권한 0**(`vital.record`=0002 기존·nurse seed grant 만). 활력=항목별 선택+최소 1개 강제(3중 방어). 기록=간호(`/nurse/vitals` 워크리스트 진입·encounter.read 0 유지)·조회=의사 진료 허브 좌 패널(FR-032·`require_any_permission`). 워크리스트=`/nursing/*`(라우트 충돌 회피). 수치=구조화 → **감사 마스킹 집합 무변경**. **일상 간호기록 `nursing_record`·처치 수행·재수행 차단 = 5.7 / 활력 수정·삭제·시계열 차트·오더-by-내원상태 게이트·환자 포털 활력 조회(RLS self 미연결) = 이월.**
+
 ## 근무표 · 휴진 (Story 6.1, `0030_doctor_schedules.sql`)
 
 > ⚠️ **마이그 번호 0030**: Epic 6 = 병렬 worktree → 마이그 블록 0030~(main 0014/Epic5 0015~0029 와 충돌 회피). 에픽/아키 묶음 계획 `0011_scheduling.sql`(3테이블)을 **스토리별 분리**(4.6/4.7 선례) → 6.1 = 근무표·휴진 2테이블만, **예약(appointments)·예약 생성·`encounters.reservation_id` FK·더블부킹은 booking 스토리(6.2/6.3)** 소유.

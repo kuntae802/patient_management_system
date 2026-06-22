@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-22T20:00:00+0000
+last_updated: 2026-06-23T00:30:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -97,7 +97,7 @@ development_status:
   5-3-검사-영상-오더: done
   5-4-처치-오더: done
   5-5-오더-패널-알레르기-교차검증-누락-0-디텍터: done
-  5-6-간호-활력징후-기록: backlog
+  5-6-간호-활력징후-기록: done
   5-7-간호-처치-수행-재수행-차단-일상-간호기록: backlog
   5-8-방사선-촬영-영상-업로드-장비: backlog
   5-9-영상-판독-검사-오더-완료: backlog
