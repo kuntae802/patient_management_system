@@ -362,3 +362,174 @@ def test_bookable_doctors_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     res = _slots_client(monkeypatch).get("/v1/scheduling/bookable-doctors")
     assert res.status_code == 200
     assert res.json() == []
+
+
+# ── 캘린더 합성: 순수 _build_calendar (Story 6.3, DB 무관) ─────────────────────
+
+
+def _appt(start: datetime, end: datetime, status: str, name: str) -> dict[str, Any]:
+    return {
+        "id": uuid.uuid4(),
+        "doctor_id": _DOCTOR_ID,
+        "scheduled_start": start,
+        "scheduled_end": end,
+        "status": status,
+        "note": None,
+        "patient_name": name,
+    }
+
+
+def test_build_calendar_confirmed_overlay() -> None:
+    """booked 예약 → 해당 슬롯 confirmed + 환자명, 나머지 available."""
+    appt = _appt(_u(0, 0), _u(0, 30), "booked", "홍길동")
+    cal = sched_service._build_calendar(
+        _DATE, [(_DOCTOR_ID, "의사A", [(time(9, 0), time(10, 0))], [], [appt])], _PAST
+    )
+    assert len(cal.doctors) == 1 and cal.doctors[0].doctor_name == "의사A"
+    slots = cal.doctors[0].slots
+    assert slots[0].status == "confirmed" and slots[0].patient_name == "홍길동"
+    assert slots[0].appointment_id == appt["id"]
+    assert slots[1].status == "available" and slots[1].patient_name is None
+
+
+def test_build_calendar_cancelled_and_no_show_overlay() -> None:
+    """취소·노쇼 예약도 상태별 overlay(6.4 전이 대비 — 6.3 은 booked 만 생성)."""
+    cancelled = _appt(_u(0, 0), _u(0, 30), "cancelled", "김취소")
+    no_show = _appt(_u(0, 30), _u(1, 0), "no_show", "이노쇼")
+    cal = sched_service._build_calendar(
+        _DATE, [(_DOCTOR_ID, "의사A", [(time(9, 0), time(10, 0))], [], [cancelled, no_show])], _PAST
+    )
+    slots = cal.doctors[0].slots
+    assert slots[0].status == "cancelled" and slots[1].status == "no_show"
+
+
+def test_build_calendar_active_wins_over_cancelled() -> None:
+    """같은 슬롯에 취소+활성(booked) 겹치면 confirmed 우선(재예약 시각)."""
+    cancelled = _appt(_u(0, 0), _u(0, 30), "cancelled", "김취소")
+    booked = _appt(_u(0, 0), _u(0, 30), "booked", "박확정")
+    cal = sched_service._build_calendar(
+        _DATE, [(_DOCTOR_ID, "의사A", [(time(9, 0), time(9, 30))], [], [cancelled, booked])], _PAST
+    )
+    assert cal.doctors[0].slots[0].status == "confirmed"
+    assert cal.doctors[0].slots[0].patient_name == "박확정"
+
+
+def test_build_calendar_multiple_doctors_and_timeoff() -> None:
+    """다중 의사 열 + 휴진 overlay(예약 없는 슬롯은 base 상태)."""
+    d2 = uuid.uuid4()
+    cal = sched_service._build_calendar(
+        _DATE,
+        [
+            (_DOCTOR_ID, "의사A", [(time(9, 0), time(9, 30))], [], []),
+            (d2, "의사B", [(time(9, 0), time(9, 30))], [(_u(0, 0), _u(0, 30))], []),
+        ],
+        _PAST,
+    )
+    assert [c.doctor_name for c in cal.doctors] == ["의사A", "의사B"]
+    assert cal.doctors[0].slots[0].status == "available"
+    assert cal.doctors[1].slots[0].status == "time_off"
+
+
+# ── 예약 생성·캘린더 엔드포인트 게이트 ────────────────────────────────────────
+
+_VALID_APPT = {
+    "department_id": str(_DEPT_ID),
+    "doctor_id": str(_DOCTOR_ID),
+    "patient_id": str(uuid.uuid4()),
+    "scheduled_start": "2030-06-03T01:00:00Z",
+    "note": "초진",
+    "sms_opt_in": True,
+}
+
+_APPT_ROW: dict[str, Any] = {
+    "id": uuid.uuid4(),
+    "patient_id": uuid.uuid4(),
+    "doctor_id": _DOCTOR_ID,
+    "department_id": _DEPT_ID,
+    "room_id": None,
+    "scheduled_start": datetime(2030, 6, 3, 1, 0, tzinfo=UTC),
+    "scheduled_end": datetime(2030, 6, 3, 1, 30, tzinfo=UTC),
+    "status": "booked",
+    "note": "초진",
+    "sms_opt_in": True,
+    "created_by": uuid.uuid4(),
+    "created_at": datetime(2030, 6, 3, 0, 0, tzinfo=UTC),
+    "updated_at": datetime(2030, 6, 3, 0, 0, tzinfo=UTC),
+}
+
+
+def _appt_client(monkeypatch: pytest.MonkeyPatch, *, allowed: bool = True) -> TestClient:
+    app = FastAPI()
+    init_error_handlers(app)
+    app.include_router(scheduling.router, prefix="/v1")
+    app.dependency_overrides[get_current_user] = lambda: _FAKE_ADMIN
+
+    async def _perm(sub: uuid.UUID, code: str) -> bool:
+        assert code == "appointment.create"  # POST 게이트 = appointment.create
+        return allowed
+
+    monkeypatch.setattr(db, "fetch_has_permission", _perm)
+
+    async def _insert(sub: uuid.UUID, **kwargs: Any) -> dict[str, Any]:
+        return _APPT_ROW
+
+    monkeypatch.setattr(db, "insert_appointment", _insert)
+    return TestClient(app)
+
+
+def test_create_appointment_forbidden_without_create(monkeypatch: pytest.MonkeyPatch) -> None:
+    res = _appt_client(monkeypatch, allowed=False).post(
+        "/v1/scheduling/appointments", json=_VALID_APPT
+    )
+    assert res.status_code == 403
+    assert res.json()["error"]["code"] == "forbidden"
+
+
+def test_create_appointment_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    res = _appt_client(monkeypatch).post("/v1/scheduling/appointments", json=_VALID_APPT)
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["status"] == "booked" and body["sms_opt_in"] is True
+    assert body["scheduled_end"] == "2030-06-03T01:30:00Z"  # start + 30분(서버 계산)
+
+
+def test_create_appointment_double_booking_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _raise(sub: uuid.UUID, **kwargs: Any) -> dict[str, Any]:
+        raise ConflictError("겹침", code="double_booking")
+
+    client = _appt_client(monkeypatch)
+    monkeypatch.setattr(db, "insert_appointment", _raise)
+    res = client.post("/v1/scheduling/appointments", json=_VALID_APPT)
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "double_booking"
+
+
+def test_create_appointment_missing_patient_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {k: v for k, v in _VALID_APPT.items() if k != "patient_id"}
+    res = _appt_client(monkeypatch).post("/v1/scheduling/appointments", json=payload)
+    assert res.status_code == 422
+
+
+def test_create_appointment_past_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """코드리뷰 patch: 과거 scheduled_start → 422 appointment_in_past(서버 시간 하한)."""
+    payload = {**_VALID_APPT, "scheduled_start": "2020-01-01T00:00:00Z"}
+    res = _appt_client(monkeypatch).post("/v1/scheduling/appointments", json=payload)
+    assert res.status_code == 422
+    assert res.json()["error"]["code"] == "appointment_in_past"
+
+
+def test_calendar_forbidden_without_appointment_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    res = _slots_client(monkeypatch, allowed=False).get(
+        "/v1/scheduling/calendar", params={"department_id": str(_DEPT_ID), "date": "2030-06-03"}
+    )
+    assert res.status_code == 403
+
+
+def test_calendar_empty_for_dept_without_doctors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """진료과 의사 0 → 빈 캘린더·200(fetch_bookable_doctors=[] 모킹)."""
+    res = _slots_client(monkeypatch).get(
+        "/v1/scheduling/calendar", params={"department_id": str(_DEPT_ID), "date": "2030-06-03"}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["doctors"] == [] and body["slot_minutes"] == 30

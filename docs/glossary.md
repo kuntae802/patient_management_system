@@ -369,3 +369,23 @@
 | `SlotGrid`·`slots.ts`·`/reception/schedule` | 웹(`components/scheduling/`·`lib/scheduling/`) | 슬롯 그리드(4상태·음영 비의존·읽기전용·선택=6.3) / apiFetch / 라우트 `/reception/schedule`("예약 관리" nav 기존·역할 노출). 진료과→의사→날짜→슬롯 |
 
 > **동적 슬롯 경계(Story 6.2 확정):** `appointments` = encounters 형 트랜잭션 레코드(status 만·`is_active` 없음). 더블부킹·슬롯 차감 불변식 = **DB(EXCLUDE)·service_role 읽기**. 슬롯 계산 = `근무 − 휴진 − booked예약`(FastAPI 순수 함수·KST). 컬럼 비-PII/비-건강민감 → **감사 마스킹 집합 무변경**(0010/0014/0015 동일·메모 컬럼 추가 시 6.3 재검토). **예약 쓰기(생성/변경/취소)·전이 트리거·캘린더·booking-peek·더블부킹 409 = 6.3/6.4 · 환자 앱 슬롯·부서별 집계 = 6.5 · SMS = 6.6 · 노쇼 카운트 = 6.7 · 휴진 재배정 = 6.8 · 진료실 자원충돌·슬롯 길이 가변·점심 명시 상태 = 이월.**
+
+## 예약 생성 · 캘린더 (Story 6.3, `0032_appointment_booking.sql`)
+
+> ⚠️ **마이그 번호 0032**: Epic 6 블록 0030~ 의 세 번째(6.1=0030·6.2=0031). 0031(예약 본체·EXCLUDE) 위에 booking-peek 가 쓰는 컬럼 2종 + 생성 권한만 ALTER/추가. **예약 변경/취소/노쇼 전이·전이 트리거·`reservation_id`→내원 링크 = 6.4**(6.3 = 생성=초기상태 booked 만).
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `appointments.note` | 컬럼(text, 0032) | 예약 메모 — **저민감 운영 텍스트**(`cancel_reason`·`doctor_time_offs.reason` 정합·임상/PII 자유텍스트 금지). ⚠️ **감사 마스킹 불요**: 단수 `note` 는 `_SENSITIVE_KEY`/`SENSITIVE_KEY` 의 `notes`(복수) 미매칭 → 운영 텍스트라 의도된 무마스킹(6.2 가 예고한 "메모 마스킹 검토"의 결론; SOAP 자유 임상서사와 구분) |
+| `appointments.sms_opt_in` | 컬럼(bool, 0032·기본 false) | 예약 확정 SMS 발송 동의(booking-peek 체크). **6.3 은 저장만** — 실 발송·notification_logs = 6.6 |
+| `appointment.create` | 권한(0032 신규) | booking-peek 예약 저장 게이트(원무 — 환자는 6.5·매트릭스). `appointment.read`(조회)와 별개 최소권한. **admin 부트 grant 재실행**(회귀 회피)·reception seed grant. **appointment 403 baseline = nurse**(create·read 둘 다 미보유) |
+| `double_booking`(409) | 도메인 에러코드 | 더블부킹 EXCLUDE(0031, 23P01) → 서비스 catch(`_double_booking_error`·0030 `schedule_overlap` 패턴)·`_map_pg_sqlstate` 무변경. 캘린더 booking-peek 인라인 경고 칩(FR-013) |
+| `POST /v1/scheduling/appointments` | 엔드포인트 | 예약 생성(booked). 게이트 `appointment.create`. service_role 직접 INSERT(`insert_walk_in_encounter` 패턴·`_require_appointment_create` TOCTOU·환자/의사/진료과 active 선검사·EXCLUDE→409·FK→422). `scheduled_end`=start+30분(서버 계산) |
+| `GET /v1/scheduling/calendar?department_id&date` | 엔드포인트 | 예약 캘린더(시간레일×의사 열·일 보기) = 가용 슬롯 + 예약 overlay(확정/완료/노쇼/취소+환자명). 게이트 `appointment.read`. staff(환자명 OK·대기 현황판 4.3 선례) |
+| `Appointment(Create/Response)`·`CalendarSlot`·`DoctorColumn`·`CalendarResponse` | 스키마(Pydantic)·웹 타입 | 예약 요청/응답·캘린더 셀(`CalendarSlotStatus`=available/confirmed/completed/no_show/cancelled/time_off/past)·의사 열·일 캘린더. web `lib/scheduling/appointments.ts` |
+| `create_appointment`·`_build_calendar`(순수)·`get_day_calendar` | 서비스(`services/scheduling.py`) | 생성(scheduled_end 계산) / 캘린더 합성(`_build_slots`[6.2] base + 예약 overlay·우선순위 confirmed>완료>노쇼>취소) / DB 래퍼(의사별 슬롯+예약 배치 조회) |
+| `insert_appointment`·`_require_appointment_create`·`fetch_appointments_for_date`·`_APPOINTMENT_COLUMNS` | db 래퍼(`core/db.py`) | service_role 직접 INSERT·TOCTOU·active 선검사·EXCLUDE/FK catch / 캘린더 overlay 조회(환자명 조인·booked·cancelled·no_show·completed 전부) |
+| `AppointmentCalendar`·`BookingPeek`·`appointments.ts`·`CALENDAR_STATUS_META` | 웹(`components/scheduling/`·`lib/scheduling/`) | 캘린더(시간레일×의사 열·점심 band·legend·음영 비의존 slot-block) / booking-peek(Base UI Dialog 우측 슬라이드오버·환자검색 3.5 재사용·409 인라인 칩·이중제출 락) / 라우트 `/reception/schedule`(SlotAvailability→AppointmentCalendar 교체) |
+| reception → `appointment.create` | seed grant(`seed.sql`) | 예약 생성 권한(원무 대리 예약). 데모 예약 시드 없음(환자 미시드 — UI/테스트로 생성) |
+
+> **예약 생성 경계(Story 6.3 확정):** 생성=service_role 직접 INSERT(booked)·더블부킹=DB EXCLUDE→409 표면화. `note`=운영 텍스트(마스킹 불요). 캘린더=순수 합성(슬롯+예약 overlay). **변경/취소/노쇼 전이·전이 트리거 `enforce_appointment_transition`·`reservation_id`→내원 링크·대기 흐름 반영·도착 접수 = 6.4 / 환자 앱 예약 = 6.5 / SMS 실 발송 = 6.6 / 노쇼 카운트 = 6.7.**

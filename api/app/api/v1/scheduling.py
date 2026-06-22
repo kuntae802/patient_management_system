@@ -20,6 +20,9 @@ from fastapi import APIRouter, Depends, status
 from app.core.security import CurrentUser, require_permission
 from app.schemas.masters import ActiveUpdate
 from app.schemas.scheduling import (
+    AppointmentCreate,
+    AppointmentResponse,
+    CalendarResponse,
     DoctorScheduleCreate,
     DoctorScheduleResponse,
     DoctorScheduleUpdate,
@@ -37,6 +40,8 @@ router = APIRouter(prefix="/scheduling", tags=["scheduling"])
 require_master_manage = require_permission("master.manage")
 # 슬롯·예약 조회(원무·관리자 — 의사·환자는 6.4/6.5 grant). 비-PII 가용성이나 관례대로 게이트.
 require_appointment_read = require_permission("appointment.read")
+# 예약 생성(booking-peek 저장 — 원무). appointment.read 와 별개 최소권한(조회만 vs 생성).
+require_appointment_create = require_permission("appointment.create")
 
 
 # ── 근무표(doctor_schedules) ──────────────────────────────────────────────────
@@ -145,3 +150,29 @@ async def list_bookable_doctors(
     """예약 슬롯 조회용 재직 의사 목록(진료과 필터 옵션). 게이트 appointment.read. 기존
     /doctors 는 master.manage(admin) 전용이라 원무·예약 흐름엔 본 엔드포인트를 쓴다."""
     return await scheduling_service.list_bookable_doctors(user.sub, department_id)
+
+
+# ── 예약 생성 · 캘린더 (Story 6.3) ─────────────────────────────────────────────
+
+
+@router.post(
+    "/appointments", response_model=AppointmentResponse, status_code=status.HTTP_201_CREATED
+)
+async def create_appointment(
+    payload: AppointmentCreate,
+    user: CurrentUser = Depends(require_appointment_create),
+) -> AppointmentResponse:
+    """예약 생성(booking-peek). 게이트 appointment.create. 더블부킹 → 409 double_booking·미존재
+    환자 404·비활성 환자/의사·비-의사 → 422·미존재 진료실 등 FK → 422."""
+    return await scheduling_service.create_appointment(user.sub, payload)
+
+
+@router.get("/calendar", response_model=CalendarResponse)
+async def get_day_calendar(
+    department_id: UUID,
+    date: date,
+    user: CurrentUser = Depends(require_appointment_read),
+) -> CalendarResponse:
+    """진료과·날짜(KST)의 예약 캘린더(시간레일 × 의사 열·일 보기) = 가용 슬롯 + 예약 overlay
+    (확정/완료/노쇼/취소+환자명). 게이트 appointment.read. date 파싱 실패 → 422."""
+    return await scheduling_service.get_day_calendar(user.sub, department_id, date)

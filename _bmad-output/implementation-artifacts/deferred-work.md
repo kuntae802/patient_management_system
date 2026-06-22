@@ -274,3 +274,12 @@
 ## Deferred from: code review of 5-2-처방-오더-발행-중복-경고 (2026-06-22)
 
 - **오더 발행 시 마스터·내원 상태 미검증** [api/app/core/db.py `insert_prescription`] — 처방 발행은 `drug_id` FK 존재만 검사(23503→422)하고 약품 `is_active`/effective 윈도우, 내원 `status`(완료/취소), 내원 `is_active`(soft-delete)를 재검증하지 않는다. 웹 `MasterSearchPicker` 는 currently-valid drug 만 노출하고 허브는 `in_progress` 에서만 렌더(UI 1차선)하나, 직접 API·stale 탭은 우회 가능. 기존 sibling posture(`attach_diagnosis`·`insert_medical_record` 동형) + "FK active/effective DB 미강제"(5.1 defer③·walk-in is_active TOCTOU 묶음) + "오더-by-내원상태 게이트 이월"(4.6 §결정4) 자세 계승 → 5.2 가 drug 에 대해 새로 노출하는 동일 갭. 해소: 발행 직전 동일 txn 에서 drug active/effective·내원 status/is_active 재검증(`insert_walk_in_encounter` 의 patient/dept active 가드 미러) → 422/409. 마스터 불변식 일관 정책 스토리에서 일괄 처리 권장.
+## Deferred from: code review of 6-3-예약-캘린더-더블부킹-차단 (2026-06-22)
+
+- **서버 슬롯-윈도우 검증 부재** [api/app/core/db.py `insert_appointment`·services/scheduling.py] — `create_appointment`/`insert_appointment` 는 `scheduled_start` 가 의사의 활성 근무블록 내·30분 슬롯 정렬·휴진 아님·available(미예약) 인지 검증하지 않는다(환자/의사/진료과 active + EXCLUDE 더블부킹만). 결과: 근무외/비정렬/과거 시각 예약이 API 로 생성 가능하고, 캘린더 `_build_doctor_column` 은 근무 슬롯에만 overlay 하므로 그런 예약은 **invisible**(EXCLUDE 만 슬롯 점유). 6.3 UI 는 available 슬롯만 클릭 가능해 실제 흐름은 안전 → 직접 API/6.4 추가 write 경로 대비 방어심층 갭. 해소: 6.4(원무 대리 생성·변경)가 슬롯-bookable 서버 검증 추가(compute_available_slots 재사용으로 scheduled_start 가 available 슬롯인지 확인). 과거 시각 거부는 6.3 코드리뷰 patch 로 부분 청산.
+
+- **점심 band 라벨 휴리스틱 부정확** [web/src/components/scheduling/appointment-calendar.tsx CalendarGrid] — 공유 시간축의 gap>slot_minutes 를 일률 "점심시간 · 예약 불가"로 라벨한다. 단일 의사 데모(12:30–14:00 점심)는 정확하나, 다중 의사 상이 점심/오후만 근무/중간 휴진 시 비-점심 gap 도 "점심시간"으로 오라벨. 점심 명시 컬럼·정밀 모델 = 스토리 §스코프 이월. 해소: 점심을 doctor_schedules 의 명시 break 로 모델링하거나 band 라벨을 중립("근무 외")으로.
+
+- **다중 슬롯 예약 overlay "render once" 가드 부재** [api/app/services/scheduling.py `_build_doctor_column`] — 한 예약을 겹치는 모든 base 슬롯에 반복 overlay. 6.3 은 전부 `start+30분` slot-aligned 라 1:1(무해)이나, 6.4 가변 길이/전이 예약 시 한 예약이 여러 confirmed 셀로 중복 렌더. 해소: 6.4 가 슬롯-소유(start-equality) 또는 multi-slot 연속 표기 추가.
+
+- **환자 교차-의사 더블부킹 미차단** [supabase/migrations/0031 EXCLUDE·db.py insert_appointment] — 더블부킹 EXCLUDE 는 `doctor_id`+시간만(같은 환자가 동시간 2명 의사에게 예약 가능). 단일 의사 외래 흐름 범위 밖·환자-레벨 충돌 미명세. 필요 시 환자-시간 부분 제약 또는 앱-레벨 검사.

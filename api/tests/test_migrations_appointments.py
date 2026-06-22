@@ -284,3 +284,59 @@ def test_audit_trigger_records_appointment_change(psql):
     )
     nums = [ln.strip() for ln in out.splitlines() if ln.strip().isdigit()]
     assert nums and int(nums[-1]) >= 1, f"감사 create 이벤트 미기록: {out!r}"
+
+
+# ── 0032: booking 컬럼·권한 (Story 6.3) ───────────────────────────────────────
+
+
+def test_appointment_booking_columns(psql):
+    """note·sms_opt_in 컬럼 존재 + sms_opt_in 기본 false(0032)."""
+    cols = psql.scalar(
+        "select string_agg(column_name, ',' order by column_name) "
+        "from information_schema.columns "
+        "where table_schema='public' and table_name='appointments' "
+        "  and column_name in ('note','sms_opt_in');"
+    )
+    assert set(cols.split(",")) == {"note", "sms_opt_in"}, cols
+    default = psql.scalar(
+        "select column_default from information_schema.columns "
+        "where table_name='appointments' and column_name='sms_opt_in';"
+    )
+    assert "false" in default, default
+
+
+def test_appointment_create_permission_exists(psql):
+    cnt = psql.scalar("select count(*) from public.permissions where code='appointment.create';")
+    assert cnt == "1", "appointment.create 권한 미시드(0032)"
+
+
+def test_admin_has_appointment_create(psql):
+    """admin 부트 grant 재실행 — test_admin_role_has_all_permissions 회귀 회피."""
+    cnt = psql.scalar(
+        "select count(*) from public.role_permissions rp "
+        "join public.roles r on r.id=rp.role_id "
+        "join public.permissions p on p.id=rp.permission_id "
+        "where r.code='admin' and p.code='appointment.create';"
+    )
+    assert cnt == "1", "admin 이 appointment.create 미보유(부트 grant 누락)"
+
+
+def test_reception_has_appointment_create_seed(psql):
+    cnt = psql.scalar(
+        "select count(*) from public.role_permissions rp "
+        "join public.roles r on r.id=rp.role_id "
+        "join public.permissions p on p.id=rp.permission_id "
+        "where r.code='reception' and p.code='appointment.create';"
+    )
+    assert cnt == "1", "reception 이 appointment.create 미보유(seed grant 누락)"
+
+
+def test_nurse_lacks_appointment_create_baseline(psql):
+    """nurse = appointment 403 baseline(create·read 둘 다 미보유)."""
+    cnt = psql.scalar(
+        "select count(*) from public.role_permissions rp "
+        "join public.roles r on r.id=rp.role_id "
+        "join public.permissions p on p.id=rp.permission_id "
+        "where r.code='nurse' and p.code in ('appointment.create','appointment.read');"
+    )
+    assert cnt == "0", "nurse 가 appointment 권한 보유(403 baseline 소실)"

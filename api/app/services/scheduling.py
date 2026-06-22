@@ -13,7 +13,14 @@ from uuid import UUID
 import asyncpg
 
 from app.core import db
+from app.core.errors import AppError
 from app.schemas.scheduling import (
+    AppointmentCreate,
+    AppointmentResponse,
+    CalendarResponse,
+    CalendarSlot,
+    CalendarSlotStatus,
+    DoctorColumn,
     DoctorScheduleCreate,
     DoctorScheduleResponse,
     DoctorScheduleUpdate,
@@ -207,3 +214,138 @@ async def compute_available_slots(
     return SlotGridResponse(
         doctor_id=doctor_id, date=target_date, slot_minutes=SLOT_MINUTES, slots=slots
     )
+
+
+# ── 예약 생성 · 캘린더 (Story 6.3) ─────────────────────────────────────────────
+
+
+async def create_appointment(sub: UUID, payload: AppointmentCreate) -> AppointmentResponse:
+    """예약 생성(booked). scheduled_end = start + SLOT_MINUTES(서버 계산). 더블부킹 → 409.
+
+    과거 시각 거부(서버 시간 하한 — UI 는 available 슬롯만 제공하나 직접 API/6.4 경로 방어).
+    슬롯-윈도우(근무블록 내·정렬·available) 전체 검증은 6.4 이월(deferred-work)."""
+    start = payload.scheduled_start
+    if start.tzinfo is None:  # 방어: naive 입력은 UTC 로 간주(스키마는 timestamptz 기대)
+        start = start.replace(tzinfo=UTC)
+    if start <= datetime.now(UTC):
+        raise AppError(
+            "과거 시각으로는 예약할 수 없습니다.",
+            code="appointment_in_past",
+            status_code=422,
+        )
+    scheduled_end = start + timedelta(minutes=SLOT_MINUTES)
+    row = await db.insert_appointment(
+        sub,
+        patient_id=payload.patient_id,
+        doctor_id=payload.doctor_id,
+        department_id=payload.department_id,
+        room_id=None,  # 진료실 동적 배정은 이월(6.1/4.4 posture)
+        scheduled_start=start,
+        scheduled_end=scheduled_end,
+        note=payload.note,
+        sms_opt_in=payload.sms_opt_in,
+        created_by=sub,
+    )
+    return AppointmentResponse.model_validate(dict(row))
+
+
+# 예약 status → 캘린더 슬롯 status. 한 슬롯에 여러 예약(취소 후 재예약 등) 시 우선순위로 활성 우선.
+_APPT_CAL_STATUS: dict[str, CalendarSlotStatus] = {
+    "booked": "confirmed",
+    "completed": "completed",
+    "no_show": "no_show",
+    "cancelled": "cancelled",
+}
+_CAL_PRIORITY: dict[CalendarSlotStatus, int] = {
+    "confirmed": 4,
+    "completed": 3,
+    "no_show": 2,
+    "cancelled": 1,
+}
+
+
+def _build_doctor_column(
+    doctor_id: UUID,
+    doctor_name: str,
+    target_date: date,
+    blocks: list[tuple[time, time]],
+    time_offs: list[_Range],
+    appointments: list[dict],
+    now: datetime,
+    slot_minutes: int = SLOT_MINUTES,
+) -> DoctorColumn:
+    """의사 1명의 캘린더 열 — 근무 슬롯(가용/휴진/지남) 위에 예약 overlay(확정/완료/노쇼/취소).
+
+    base = `_build_slots`(booked=[] → available/time_off/past). 각 슬롯에 겹치는 예약 중
+    우선순위 최상위(활성 booked > 완료 > 노쇼 > 취소)를 overlay. 예약 없으면 base 상태 유지."""
+    base = _build_slots(target_date, blocks, time_offs, [], now, slot_minutes)
+    cal_slots: list[CalendarSlot] = []
+    for s in base:
+        best: dict | None = None
+        best_pri = 0
+        for appt in appointments:
+            if appt["scheduled_start"] < s.end and appt["scheduled_end"] > s.start:
+                cal_status = _APPT_CAL_STATUS.get(appt["status"], "confirmed")
+                pri = _CAL_PRIORITY.get(cal_status, 0)
+                if pri > best_pri:
+                    best_pri = pri
+                    best = appt
+        if best is not None:
+            cal_slots.append(
+                CalendarSlot(
+                    start=s.start,
+                    end=s.end,
+                    status=_APPT_CAL_STATUS.get(best["status"], "confirmed"),
+                    patient_name=best["patient_name"],
+                    appointment_id=best["id"],
+                )
+            )
+        else:
+            # base 상태(available/time_off/past)는 CalendarSlotStatus 의 부분집합 → 직접 사용.
+            cal_slots.append(CalendarSlot(start=s.start, end=s.end, status=s.status))
+    return DoctorColumn(doctor_id=doctor_id, doctor_name=doctor_name, slots=cal_slots)
+
+
+def _build_calendar(
+    target_date: date,
+    columns_input: list[tuple[UUID, str, list[tuple[time, time]], list[_Range], list[dict]]],
+    now: datetime,
+    slot_minutes: int = SLOT_MINUTES,
+) -> CalendarResponse:
+    """순수 캘린더 합성(DB 무관 — 단위 테스트). 의사별 열 = `_build_doctor_column`."""
+    doctors = [
+        _build_doctor_column(d_id, d_name, target_date, blocks, offs, appts, now, slot_minutes)
+        for (d_id, d_name, blocks, offs, appts) in columns_input
+    ]
+    return CalendarResponse(date=target_date, slot_minutes=slot_minutes, doctors=doctors)
+
+
+async def get_day_calendar(sub: UUID, department_id: UUID, target_date: date) -> CalendarResponse:
+    """진료과·날짜(KST)의 예약 캘린더 = 재직 의사 열 × 시간 슬롯(가용+예약 overlay). 게이트
+    appointment.read. 의사별 근무·휴진은 6.2 헬퍼 재사용, 예약은 1회 배치 조회 후 의사별 그룹핑."""
+    pg_dow = target_date.isoweekday() % 7
+    day_start = datetime.combine(target_date, time.min, tzinfo=_KST).astimezone(UTC)
+    day_end = day_start + timedelta(days=1)
+
+    doctors = await db.fetch_bookable_doctors(sub, department_id)
+    now = datetime.now(UTC)
+    if not doctors:
+        return CalendarResponse(date=target_date, slot_minutes=SLOT_MINUTES, doctors=[])
+
+    appt_rows = await db.fetch_appointments_for_date(
+        sub, [d["id"] for d in doctors], day_start, day_end
+    )
+    appts_by_doctor: dict[UUID, list[dict]] = {}
+    for row in appt_rows:
+        appts_by_doctor.setdefault(row["doctor_id"], []).append(dict(row))
+
+    columns_input: list[tuple[UUID, str, list[tuple[time, time]], list[_Range], list[dict]]] = []
+    for d in doctors:
+        sched_rows = await db.fetch_doctor_schedules_for_weekday(sub, d["id"], pg_dow)
+        blocks = [(r["start_time"], r["end_time"]) for r in sched_rows]
+        off_rows = await db.fetch_doctor_time_offs_in_range(sub, d["id"], day_start, day_end)
+        time_offs: list[_Range] = [(r["start_at"], r["end_at"]) for r in off_rows]
+        columns_input.append(
+            (d["id"], d["name"], blocks, time_offs, appts_by_doctor.get(d["id"], []))
+        )
+    return _build_calendar(target_date, columns_input, now)

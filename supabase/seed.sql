@@ -214,6 +214,18 @@ join public.permissions p on p.code = 'appointment.read'
 where r.code = 'reception'
 on conflict (role_id, permission_id) do nothing;
 
+-- ── (DEV/데모) 원무(reception) 역할 → 예약 생성 권한 grant (Story 6.3) ──────────────────────────
+-- booking-peek 예약 저장(appointment.create)은 원무 직무 본질(전화·방문 대리 예약). appointment.create
+-- 는 0032 신규 — 여기선 역할 매핑만. ★ 프로덕션 런타임 grant 는 1.7 매트릭스 UI 소유 — 이 시드는 로컬
+-- db reset 전용(운영 db push 미반영). 멱등.
+-- ⚠️ appointment 403 검증 baseline = nurse(appointment.create·read 둘 다 미보유; 환자 grant 는 6.5).
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code = 'appointment.create'
+where r.code = 'reception'
+on conflict (role_id, permission_id) do nothing;
+
 -- ════════════════════════════════════════════════════════════════════════════
 -- 마스터 시드 (Story 2.5) — 진료과 · 진료실 · KCD 진단 · EDI 수가 · 약품
 -- ════════════════════════════════════════════════════════════════════════════

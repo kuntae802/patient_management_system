@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from collections.abc import Iterator
 
 import httpx
 import pytest
@@ -424,4 +425,117 @@ def test_bookable_doctors_for_reception(
 def test_bookable_doctors_forbidden_for_nurse(client: TestClient, nurse_token: str) -> None:
     """AC4: appointment.read 미보유(nurse) → 예약 피커 403."""
     res = client.get(_BOOKABLE_URL, headers=_bearer(nurse_token))
+    assert res.status_code == 403
+
+
+# ── 예약 생성 · 캘린더 (Story 6.3) — 실 POST + 더블부킹 409 + 캘린더 overlay ──────────────────
+# ⚠️ 두 worktree 가 단일 supabase 스택 공유 → 동시 db reset 시 0032 소실 가능(reset 직후 실행 권장).
+_APPOINTMENTS_URL = "/v1/scheduling/appointments"
+_CALENDAR_URL = "/v1/scheduling/calendar"
+_BOOK_DATE = "2030-06-03"  # 월요일(데모 의사 근무 09:00–12:30·14:00–17:30 KST)
+_BOOK_START = "2030-06-03T01:00:00Z"  # 10:00 KST(오전 블록 내)
+
+
+@pytest.fixture
+def booking_patient_id(psql: Psql) -> Iterator[str]:
+    """예약 테스트용 환자(인라인 암호화 생성 — 6.2 test_migrations 패턴). 종료 시 예약+환자 정리."""
+    pid = "00000000-0000-4000-8000-00000000b001"
+    psql.run(
+        "insert into public.patients (id, name, birth_date, sex, resident_no_enc, "
+        "resident_no_hash, resident_no_masked, insurance_type) values "
+        f"('{pid}', '예약테스트', '1990-01-01', 'male', "
+        "public.encrypt_sensitive('9001011234567'), public.blind_index('9001011234567'), "
+        "'900101-1******', 'health_insurance') on conflict (id) do nothing;"
+    )
+    yield pid
+    psql.run(f"delete from public.appointments where patient_id='{pid}';")
+    psql.run(f"delete from public.patients where id='{pid}';")
+
+
+def _appt_payload(patient_id: str, doctor_id: str, dept_id: str) -> dict[str, object]:
+    return {
+        "department_id": dept_id,
+        "doctor_id": doctor_id,
+        "patient_id": patient_id,
+        "scheduled_start": _BOOK_START,
+        "note": "초진",
+        "sms_opt_in": True,
+    }
+
+
+def test_create_appointment_and_double_booking(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+) -> None:
+    """AC2+AC3: 예약 생성(201·booked·SMS) → 동일 슬롯 재예약 → 409 double_booking."""
+    payload = _appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id)
+    res = client.post(_APPOINTMENTS_URL, headers=_bearer(reception_token), json=payload)
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["status"] == "booked" and body["sms_opt_in"] is True
+    assert body["note"] == "초진"
+    assert body["scheduled_end"] == "2030-06-03T01:30:00Z"  # +30분(서버 계산)
+
+    dup = client.post(_APPOINTMENTS_URL, headers=_bearer(reception_token), json=payload)
+    assert dup.status_code == 409, dup.text
+    assert dup.json()["error"]["code"] == "double_booking"
+
+
+def test_create_appointment_forbidden_for_nurse(
+    client: TestClient,
+    nurse_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+) -> None:
+    """AC4: appointment.create 미보유(nurse) → 예약 생성 403."""
+    payload = _appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id)
+    res = client.post(_APPOINTMENTS_URL, headers=_bearer(nurse_token), json=payload)
+    assert res.status_code == 403 and res.json()["error"]["code"] == "forbidden"
+
+
+def test_create_appointment_missing_patient_404(
+    client: TestClient, reception_token: str, demo_doctor_id: str, demo_dept_id: str
+) -> None:
+    payload = _appt_payload(str(uuid.uuid4()), demo_doctor_id, demo_dept_id)
+    res = client.post(_APPOINTMENTS_URL, headers=_bearer(reception_token), json=payload)
+    assert res.status_code == 404 and res.json()["error"]["code"] == "not_found"
+
+
+def test_calendar_shows_confirmed_booking(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+) -> None:
+    """AC1: 예약 생성 후 캘린더에서 해당 슬롯이 confirmed + 환자명으로 overlay."""
+    payload = _appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id)
+    created = client.post(_APPOINTMENTS_URL, headers=_bearer(reception_token), json=payload)
+    assert created.status_code == 201, created.text
+
+    res = client.get(
+        _CALENDAR_URL,
+        headers=_bearer(reception_token),
+        params={"department_id": demo_dept_id, "date": _BOOK_DATE},
+    )
+    assert res.status_code == 200, res.text
+    cols = [c for c in res.json()["doctors"] if c["doctor_id"].lower() == demo_doctor_id]
+    assert cols, "캘린더에 데모 의사 열 없음"
+    confirmed = [s for s in cols[0]["slots"] if s["status"] == "confirmed"]
+    assert confirmed and confirmed[0]["patient_name"] == "예약테스트", confirmed
+
+
+def test_calendar_forbidden_for_nurse(
+    client: TestClient, nurse_token: str, demo_dept_id: str
+) -> None:
+    """AC4: appointment.read 미보유(nurse) → 캘린더 403."""
+    res = client.get(
+        _CALENDAR_URL,
+        headers=_bearer(nurse_token),
+        params={"department_id": demo_dept_id, "date": _BOOK_DATE},
+    )
     assert res.status_code == 403
