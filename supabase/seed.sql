@@ -245,6 +245,23 @@ join public.permissions p on p.code in ('vital.record')
 where r.code = 'nurse'
 on conflict (role_id, permission_id) do nothing;
 
+-- ── (DEV/데모) 간호사(nurse) 역할 → 일상 간호기록 권한 grant (Story 5.7) ──────────────────────
+-- 일상 간호기록(`nursing.record`)은 간호 직무 본질(0002:76 nurse='처치·활력징후·간호기록') → 역할로 노출.
+-- ⚠️ nursing.record 는 **0018 신규 권한**(admin 은 0018 부트 재grant 로 보유 — 0017 vital.record 와 다른 점,
+--    0002 미존재 권한이라 신규 도입) → 여기선 nurse 역할 매핑만. ★ 프로덕션 런타임 grant 는 1.7 매트릭스 UI
+--    소유 — 이 시드는 로컬 db reset 전용. 멱등.
+-- ⚠️ 처치 수행(`treatment.perform`)은 nurse 가 이미 보유(seed.sql:178·Story 5.1 — order.read/examination.perform
+--    과 함께 grant) → 추가 grant 없음. 본 스토리 nurse seed 변경 = nursing.record 1건뿐.
+-- ⚠️ 403 baseline: ① 처치 수행 = reception(권한 0) + doctor(treatment.order 보유·treatment.perform 미보유 =
+--    order-yes/perform-no, 처치 오더 baseline 역전) · ② 일상 간호기록 = reception + doctor(nursing.record 미보유).
+--    nurse 의 encounter/patient baseline(4.4/4.5)은 비중첩이라 무영향(nurse encounter.read 0 유지).
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code in ('nursing.record')
+where r.code = 'nurse'
+on conflict (role_id, permission_id) do nothing;
+
 -- ── (DEV/데모) 원무(reception) 역할 → 예약 슬롯 조회 권한 grant (Story 6.2) ──────────────────────
 -- 가용 슬롯 조회·예약 피커(appointment.read)는 원무 직무 본질(전화·방문 예약 흐름 6.4 가동). appointment.read
 -- 는 0031 신규 — 여기선 역할 매핑만. ★ 프로덕션 런타임 grant 는 1.7 매트릭스 UI 소유 — 이 시드는 로컬
