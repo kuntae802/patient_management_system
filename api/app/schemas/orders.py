@@ -119,7 +119,8 @@ class ExaminationResponse(BaseModel):
     fee_code·fee_name·fee_category·amount_krw·coverage_type 는 행위 마스터 조인 합성(읽기시점·5.5
     coverage_type pay-chip). ordered_by_name·performed_by_name 은 users 조인(추적 라인, 5.5).
     status='ordered'(지시). 수행/판독(performed/completed)·equipment_id 는 5.7/5.8/5.9 가 세팅.
-    행 자체엔 자유텍스트 없음(FK·짧은 구조화 텍스트 — 감사 마스킹 불요).
+    findings·reading_conclusion = 판독 소견·결론(5.9·완료 시 채워짐, 그 전엔 null·자유텍스트 →
+    감사 스냅샷 마스킹 대상). 응답 본문 노출은 order.read/examination.complete 게이트 안에서만.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -143,6 +144,8 @@ class ExaminationResponse(BaseModel):
     performed_at: datetime | None = None
     completed_by: UUID | None = None
     completed_at: datetime | None = None
+    findings: str | None = None
+    reading_conclusion: str | None = None
     is_active: bool
     created_at: datetime
     updated_at: datetime

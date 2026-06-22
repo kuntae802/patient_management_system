@@ -2668,7 +2668,7 @@ _EXAMINATION_COLUMNS = (
     "fs.coverage_type, "
     "ex.status, ex.ordered_by, ub.name as ordered_by_name, ex.ordered_at, ex.equipment_id, "
     "ex.performed_by, up.name as performed_by_name, ex.performed_at, "
-    "ex.completed_by, ex.completed_at, "
+    "ex.completed_by, ex.completed_at, ex.findings, ex.reading_conclusion, "
     "ex.is_active, ex.created_at, ex.updated_at"
 )
 _EXAMINATION_FROM = (
@@ -3941,6 +3941,91 @@ async def call_perform_examination(
             )
         # 전이 RPC(SECURITY DEFINER·재수행 차단). SQLSTATE → _run_authed 매핑(여기 try/except 불요).
         await conn.fetchrow("select * from public.perform_examination($1)", examination_id)
+        full = await conn.fetchrow(
+            f"select {_EXAMINATION_COLUMNS} {_EXAMINATION_FROM} where ex.id = $1",
+            examination_id,
+        )
+        assert full is not None
+        return dict(full)
+
+    return await _run_authed(sub, _op)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 영상 판독·검사 오더 완료(Story 5.9 / FR-102) — examinations 판독 측(imaging·진료의 겸임)
+# ══════════════════════════════════════════════════════════════════════════════
+# 판독·완료 엔진(complete_examination RPC·전이 트리거·examination.complete 권한)은 0015 완비.
+# 본 섹션 = 판독 워크리스트 조회 + 완료 wrapper(소견·결론 same-status UPDATE → 완료 전이).
+
+
+async def fetch_reading_worklist(sub: UUID, on_date: date) -> list[dict[str, object]]:
+    """판독 워크리스트(FR-102) — 오늘(KST) 활성 내원의 미판독 영상검사(imaging·performed).
+
+    게이트=라우터(examination.complete). service_role. fetch_radiology_worklist 미러 — 상태 축만
+    ordered→performed, performed_by(up) 조인·performed_at 추가. 비-PII. FIFO(performed_at).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[dict[str, object]]:
+        rows = await conn.fetch(
+            "select ex.id as examination_id, ex.encounter_id, p.chart_no, "
+            "p.name as patient_name, d.name as department_name, fs.name as fee_name, "
+            "ex.status, ub.name as ordered_by_name, ex.ordered_at, "
+            "up.name as performed_by_name, ex.performed_at, "
+            "(select count(*) from public.examination_images ei "
+            " where ei.examination_id = ex.id and ei.is_active = true) as image_count "
+            "from public.examinations ex "
+            "join public.encounters e on e.id = ex.encounter_id "
+            "join public.patients p on p.id = e.patient_id "
+            "join public.departments d on d.id = e.department_id "
+            "join public.fee_schedules fs on fs.id = ex.fee_schedule_id "
+            "left join public.users ub on ub.id = ex.ordered_by "
+            "left join public.users up on up.id = ex.performed_by "
+            "where ex.exam_type = 'imaging' and ex.status = 'performed' and ex.is_active = true "
+            "and e.is_active = true and e.status in ('registered', 'in_progress') "
+            "and (e.created_at at time zone 'Asia/Seoul')::date = $1 "
+            "order by ex.performed_at asc",
+            on_date,
+        )
+        return [dict(r) for r in rows]
+
+    return await _run_authed(sub, _op)
+
+
+async def call_complete_examination(
+    sub: UUID, *, examination_id: UUID, findings: str, reading_conclusion: str | None
+) -> dict[str, object]:
+    """판독 완료(FR-102·FR-093) — complete_examination RPC(performed→completed). 소견·결론 기록.
+
+    선검사: 존재(404)·imaging(422 not_imaging)·performed(아니면 409 invalid_transition = 미수행/
+    재완료 차단·RPC PT409 백스톱). 소견·결론 same-status UPDATE(status='performed' 유지·트리거 통과)
+    후 complete_examination RPC(completed_by/at·PT404/PT409 자동). UPDATE↔RPC = 동일 txn 원자
+    (전이 거부 시 소견 롤백). 반환 = _EXAMINATION_COLUMNS dict(findings 포함).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        meta = await conn.fetchrow(
+            "select exam_type, status from public.examinations where id = $1 and is_active = true",
+            examination_id,
+        )
+        if meta is None:
+            raise NotFoundError(
+                "검사 오더를 찾을 수 없습니다.", detail={"examination_id": str(examination_id)}
+            )
+        if meta["exam_type"] != "imaging":
+            raise AppError("영상검사 오더가 아닙니다.", code="not_imaging", status_code=422)
+        if meta["status"] != "performed":
+            # 미수행/이미 판독 = 전이 불가(FR-093). 친절 선검사·RPC PT409 백스톱.
+            raise ConflictError(code="invalid_transition")
+        # same-status UPDATE(status='performed' 유지) → 전이 트리거 통과(0015:159) → 소견·결론 기록.
+        await conn.execute(
+            "update public.examinations set findings = $1, reading_conclusion = $2, "
+            "updated_at = now() where id = $3",
+            findings,
+            reading_conclusion,
+            examination_id,
+        )
+        # 전이 RPC(SECURITY DEFINER·재완료 차단). SQLSTATE → _run_authed 매핑(여기 try/except 불요).
+        await conn.fetchrow("select * from public.complete_examination($1)", examination_id)
         full = await conn.fetchrow(
             f"select {_EXAMINATION_COLUMNS} {_EXAMINATION_FROM} where ex.id = $1",
             examination_id,

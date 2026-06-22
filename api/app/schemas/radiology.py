@@ -6,9 +6,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
 
 class RadiologyWorklistItem(BaseModel):
@@ -66,3 +67,40 @@ class PerformExaminationBody(BaseModel):
     """촬영 수행 요청(FR-101) — 배정 장비(선택). 영상≥1·상태 전이는 서버/DB 가 강제."""
 
     equipment_id: UUID | None = None
+
+
+class ReadingWorklistItem(BaseModel):
+    """판독 워크리스트 1행(FR-102) — 오늘 활성 내원의 미판독 영상검사(imaging·performed).
+
+    게이트 examination.complete(판독의 겸임). 비-PII(resident_no 제외). RadiologyWorklistItem 미러 +
+    수행자명·수행 시각(촬영 추적 라인). image_count=판독 근거 영상 수.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    examination_id: UUID
+    encounter_id: UUID
+    chart_no: str
+    patient_name: str
+    department_name: str
+    fee_name: str
+    status: str
+    ordered_by_name: str | None = None
+    ordered_at: datetime
+    performed_by_name: str | None = None
+    performed_at: datetime | None = None
+    image_count: int
+
+
+class CompleteExaminationBody(BaseModel):
+    """판독 완료 요청(FR-102) — 소견(필수·non-blank) + 결론(선택). 전이는 서버/DB 가 강제.
+
+    findings = strip 후 빈/공백-only → 서비스가 422 findings_required(5.8 image_required 형제 코드·
+    클라 disable 1차선·DB CHECK 최종선). max_length=DoS 가드. reading_conclusion = 선택(서비스가
+    strip 후 빈 문자열 → NULL 정규화). 길이 상한 외 구조 검증은 Pydantic, 공백 의미 판정은 서비스.
+    """
+
+    findings: Annotated[str, StringConstraints(strip_whitespace=True, max_length=4000)]
+    reading_conclusion: (
+        Annotated[str, StringConstraints(strip_whitespace=True, max_length=2000)] | None
+    ) = None

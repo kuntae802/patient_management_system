@@ -20,10 +20,12 @@ from fastapi import APIRouter, Depends, UploadFile, status
 from app.core.security import CurrentUser, require_permission
 from app.schemas.orders import ExaminationResponse
 from app.schemas.radiology import (
+    CompleteExaminationBody,
     EquipmentResponse,
     ExaminationImageResponse,
     PerformExaminationBody,
     RadiologyWorklistItem,
+    ReadingWorklistItem,
 )
 from app.services import radiology as radiology_service
 
@@ -31,9 +33,11 @@ from app.services import radiology as radiology_service
 router = APIRouter(tags=["radiology"])
 
 # 권한 의존성은 모듈 로드 시 1회 생성(orders.py 선례).
-# perform = examination.perform(방사선/간호) · read = order.read(의사·간호·방사선). 둘 다 0015.
+# perform = examination.perform(방사선/간호) · read = order.read(의사·간호·방사선) · complete =
+# examination.complete(의사 판독의 겸임). 모두 0015.
 require_examination_perform = require_permission("examination.perform")
 require_order_read = require_permission("order.read")
+require_examination_complete = require_permission("examination.complete")
 
 
 @router.get("/radiology/worklist", response_model=list[RadiologyWorklistItem])
@@ -102,3 +106,31 @@ async def perform_examination(
     잘못된 장비 422. equipment_id(선택) 배정. 응답 = 갱신된 검사 오더.
     """
     return await radiology_service.perform_examination(user.sub, examination_id, payload)
+
+
+@router.get("/radiology/reading-worklist", response_model=list[ReadingWorklistItem])
+async def list_reading_worklist(
+    user: CurrentUser = Depends(require_examination_complete),
+) -> list[ReadingWorklistItem]:
+    """판독 워크리스트(FR-102) — 오늘(KST) 촬영 수행됐으나 미판독 영상검사(imaging·performed).
+
+    게이트 examination.complete(의사 판독의 겸임). /radiology/* 네임스페이스. FIFO(수행 오래된 순).
+    """
+    return await radiology_service.list_reading_worklist(user.sub)
+
+
+@router.post(
+    "/examinations/{examination_id}/complete",
+    response_model=ExaminationResponse,
+)
+async def complete_examination(
+    examination_id: UUID,
+    payload: CompleteExaminationBody,
+    user: CurrentUser = Depends(require_examination_complete),
+) -> ExaminationResponse:
+    """판독 완료(FR-102·FR-093) — performed→completed. 게이트 examination.complete(판독의 겸임).
+
+    소견 기록 → 오더 완료. 빈 소견 422 findings_required, 미수행/재완료 409 invalid_transition,
+    lab 422 not_imaging, 미존재 404. 응답 = 완료된 검사 오더(소견·완료자 포함).
+    """
+    return await radiology_service.complete_examination(user.sub, examination_id, payload)

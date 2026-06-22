@@ -450,11 +450,277 @@ def test_perform_reception_403(
     assert res.status_code == 403
 
 
-def test_perform_doctor_403(
-    client, admin_token, doctor_token, dept_id, imaging_fee_id
-):
+def test_perform_doctor_403(client, admin_token, doctor_token, dept_id, imaging_fee_id):
     """doctor 는 examination.perform 미보유 → 촬영 수행 403(order/complete 권한과 분리)."""
     eid = _walk_in(client, admin_token, dept_id)
     exam_id = _create_exam(client, doctor_token, eid, imaging_fee_id)
     res = client.post(_perform_url(exam_id), json={}, headers=_bearer(doctor_token))
     assert res.status_code == 403
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 영상 판독 · 검사 오더 완료(Story 5.9 / FR-102) — performed→completed, 의사 판독의 겸임
+# ══════════════════════════════════════════════════════════════════════════════
+# 검증:
+#   · AC1: 판독 워크리스트 — doctor 200(imaging·performed·performed_by_name·image_count·비-PII).
+#         radiologist(complete 무) 403·reception 403.
+#   · AC3·AC4: 판독 완료 — doctor 200(completed·completed_by·소견/결론 반영·워크리스트 제거).
+#         빈 소견 422 findings_required·미수행 409·재완료 409·lab 422 not_imaging·미존재 404·
+#         radiologist 403·reception 403.
+#   · AC6: 감사 — 판독 완료 후 examinations update 의 findings 가 감사 응답에서 마스킹.
+
+_READING_WORKLIST_URL = "/v1/radiology/reading-worklist"
+_AUDIT_URL = "/v1/admin/audit-logs"
+_MASK_DISPLAY = "●●●● (마스킹됨)"  # services/audit.py _MASK_DISPLAY 거울
+
+
+@pytest.fixture(scope="module")
+def doctor_id(psql: Psql) -> str:
+    """doctor auth uid — completed_by(판독의) 단언 기준."""
+    return psql.scalar(
+        "select u.id::text from public.users u "
+        "join public.roles r on r.id = u.role_id where r.code = 'doctor' limit 1"
+    ).lower()
+
+
+def _complete_url(exam_id: str) -> str:
+    return f"/v1/examinations/{exam_id}/complete"
+
+
+def _performed_exam(
+    client: TestClient,
+    admin_token: str,
+    doctor_token: str,
+    radiologist_token: str,
+    dept_id: str,
+    fee_id: str,
+) -> str:
+    """검사 오더 → 영상 업로드 → 촬영 수행(performed) → 판독 대기 검사 id. (storage 필요)"""
+    eid = _walk_in(client, admin_token, dept_id)
+    exam_id = _create_exam(client, doctor_token, eid, fee_id)
+    assert _upload_image(client, radiologist_token, exam_id).status_code == 201
+    perf = client.post(_perform_url(exam_id), json={}, headers=_bearer(radiologist_token))
+    assert perf.status_code == 200, perf.text
+    return exam_id
+
+
+# ── AC1: 판독 워크리스트(performed 미판독) ─────────────────────────────────────
+
+
+def test_reading_worklist_doctor_shows_performed(
+    client, admin_token, doctor_token, radiologist_token, dept_id, imaging_fee_id, storage_ready
+):
+    """doctor → 200 + 방금 수행된 imaging 오더가 판독 워크리스트에 노출(수행자명·image_count)."""
+    exam_id = _performed_exam(
+        client, admin_token, doctor_token, radiologist_token, dept_id, imaging_fee_id
+    )
+    res = client.get(_READING_WORKLIST_URL, headers=_bearer(doctor_token))
+    assert res.status_code == 200, res.text
+    mine = [r for r in res.json() if r["examination_id"] == exam_id]
+    assert len(mine) == 1
+    row = mine[0]
+    assert row["status"] == "performed"
+    assert row["image_count"] == 1
+    assert row["performed_by_name"]  # 수행자(방사선사) 추적 라인
+    assert row["fee_name"]
+    assert "resident_no" not in row  # 비-PII 투영
+
+
+def test_reading_worklist_radiologist_403(client, radiologist_token):
+    """radiologist 는 examination.complete 미보유 → 판독 워크리스트 진입 403."""
+    res = client.get(_READING_WORKLIST_URL, headers=_bearer(radiologist_token))
+    assert res.status_code == 403
+
+
+def test_reading_worklist_reception_403(client, reception_token):
+    res = client.get(_READING_WORKLIST_URL, headers=_bearer(reception_token))
+    assert res.status_code == 403
+
+
+# ── AC3·AC4·AC5: 판독 완료 ──────────────────────────────────────────────────
+
+
+def test_complete_golden_path(
+    client,
+    admin_token,
+    doctor_token,
+    radiologist_token,
+    doctor_id,
+    dept_id,
+    imaging_fee_id,
+    storage_ready,
+):
+    """소견+결론 기록 → 200·status=completed·completed_by=doctor·소견/결론 반영·워크리스트 제거."""
+    exam_id = _performed_exam(
+        client, admin_token, doctor_token, radiologist_token, dept_id, imaging_fee_id
+    )
+    res = client.post(
+        _complete_url(exam_id),
+        json={"findings": "양측 폐야 침윤 소견 없음.", "reading_conclusion": "정상 흉부."},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "completed"
+    assert body["completed_by"] == doctor_id
+    assert body["completed_at"] is not None
+    assert body["findings"] == "양측 폐야 침윤 소견 없음."
+    assert body["reading_conclusion"] == "정상 흉부."
+    # AC5: 완료(completed) → 판독 워크리스트(performed)에서 제거
+    wl = client.get(_READING_WORKLIST_URL, headers=_bearer(doctor_token)).json()
+    assert all(r["examination_id"] != exam_id for r in wl)
+
+
+def test_complete_optional_conclusion_null(
+    client, admin_token, doctor_token, radiologist_token, dept_id, imaging_fee_id, storage_ready
+):
+    """결론 생략(또는 공백) → reading_conclusion NULL·완료 성공(소견만 필수)."""
+    exam_id = _performed_exam(
+        client, admin_token, doctor_token, radiologist_token, dept_id, imaging_fee_id
+    )
+    res = client.post(
+        _complete_url(exam_id),
+        json={"findings": "이상 소견 없음.", "reading_conclusion": "   "},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["reading_conclusion"] is None
+
+
+def test_complete_blank_findings_422(
+    client, admin_token, doctor_token, radiologist_token, dept_id, imaging_fee_id, storage_ready
+):
+    """소견 공백-only → 422 findings_required(소견 없는 판독 완료 차단)."""
+    exam_id = _performed_exam(
+        client, admin_token, doctor_token, radiologist_token, dept_id, imaging_fee_id
+    )
+    res = client.post(
+        _complete_url(exam_id), json={"findings": "   "}, headers=_bearer(doctor_token)
+    )
+    assert res.status_code == 422
+    assert res.json()["error"]["code"] == "findings_required"
+
+
+def test_complete_not_performed_409(client, admin_token, doctor_token, dept_id, imaging_fee_id):
+    """미수행(ordered) 검사 판독 시도 → 409 invalid_transition(수행 전 완료 차단·storage 불요)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    exam_id = _create_exam(client, doctor_token, eid, imaging_fee_id)  # status='ordered'
+    res = client.post(
+        _complete_url(exam_id), json={"findings": "성급한 판독"}, headers=_bearer(doctor_token)
+    )
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "invalid_transition"
+
+
+def test_complete_recomplete_409(
+    client, admin_token, doctor_token, radiologist_token, dept_id, imaging_fee_id, storage_ready
+):
+    """재완료(이미 completed) → 409 invalid_transition(종결 상태·FR-093)."""
+    exam_id = _performed_exam(
+        client, admin_token, doctor_token, radiologist_token, dept_id, imaging_fee_id
+    )
+    first = client.post(
+        _complete_url(exam_id), json={"findings": "정상."}, headers=_bearer(doctor_token)
+    )
+    assert first.status_code == 200, first.text
+    again = client.post(
+        _complete_url(exam_id), json={"findings": "재판독 시도."}, headers=_bearer(doctor_token)
+    )
+    assert again.status_code == 409
+    assert again.json()["error"]["code"] == "invalid_transition"
+
+
+def test_complete_lab_422_not_imaging(client, admin_token, doctor_token, dept_id, imaging_fee_id):
+    """lab 오더 판독 시도 → 422 not_imaging(영상검사 전용·storage 불요)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    lab_exam = _create_exam(client, doctor_token, eid, imaging_fee_id, exam_type="lab")
+    res = client.post(
+        _complete_url(lab_exam), json={"findings": "판독"}, headers=_bearer(doctor_token)
+    )
+    assert res.status_code == 422
+    assert res.json()["error"]["code"] == "not_imaging"
+
+
+def test_complete_nonexistent_404(client, doctor_token):
+    res = client.post(
+        _complete_url(str(uuid.uuid4())), json={"findings": "판독"}, headers=_bearer(doctor_token)
+    )
+    assert res.status_code == 404
+
+
+def test_complete_radiologist_403(
+    client, admin_token, doctor_token, radiologist_token, dept_id, imaging_fee_id, storage_ready
+):
+    """radiologist(examination.complete 무) → 판독 완료 403(perform 과 complete 권한 분리)."""
+    exam_id = _performed_exam(
+        client, admin_token, doctor_token, radiologist_token, dept_id, imaging_fee_id
+    )
+    res = client.post(
+        _complete_url(exam_id), json={"findings": "판독"}, headers=_bearer(radiologist_token)
+    )
+    assert res.status_code == 403
+
+
+def test_complete_reception_403(
+    client,
+    admin_token,
+    doctor_token,
+    radiologist_token,
+    reception_token,
+    dept_id,
+    imaging_fee_id,
+    storage_ready,
+):
+    """reception(임상 권한 0) → 판독 완료 403."""
+    exam_id = _performed_exam(
+        client, admin_token, doctor_token, radiologist_token, dept_id, imaging_fee_id
+    )
+    res = client.post(
+        _complete_url(exam_id), json={"findings": "판독"}, headers=_bearer(reception_token)
+    )
+    assert res.status_code == 403
+
+
+# ── AC6: 판독 소견 감사 마스킹 ─────────────────────────────────────────────────
+
+
+def test_complete_findings_masked_in_audit(
+    client,
+    admin_token,
+    doctor_token,
+    radiologist_token,
+    dept_id,
+    imaging_fee_id,
+    storage_ready,
+):
+    """판독 완료 후 examinations update 감사의 findings 가 응답에서 마스킹(평문 누출 0)."""
+    secret = "환자 식별 가능 비밀 소견 ZZZ123"
+    exam_id = _performed_exam(
+        client, admin_token, doctor_token, radiologist_token, dept_id, imaging_fee_id
+    )
+    done = client.post(
+        _complete_url(exam_id),
+        json={"findings": secret, "reading_conclusion": "결론 비밀 YYY"},
+        headers=_bearer(doctor_token),
+    )
+    assert done.status_code == 200, done.text
+    res = client.get(
+        _AUDIT_URL,
+        headers=_bearer(admin_token),
+        params={"target_table": "examinations", "target_id": exam_id, "action": "update"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    entries = [e for e in body["data"] if e.get("after_data")]
+    # findings 를 담은 스냅샷이 ≥1(소견 same-status UPDATE) — 모두 마스킹.
+    masked = [e for e in entries if "findings" in e["after_data"]]
+    assert masked, "findings 컬럼을 담은 examinations update 감사가 없음"
+    for e in masked:
+        assert e["after_data"]["findings"] == _MASK_DISPLAY
+        if e["after_data"].get("reading_conclusion") is not None:
+            assert e["after_data"]["reading_conclusion"] == _MASK_DISPLAY
+    # 평문 소견·결론이 응답 어디에도 없어야(마스킹 권위).
+    import json as _json
+
+    assert secret not in _json.dumps(body, ensure_ascii=False)
+    assert "YYY" not in _json.dumps(body, ensure_ascii=False)

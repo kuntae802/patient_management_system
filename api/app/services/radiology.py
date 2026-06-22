@@ -17,10 +17,12 @@ from app.core import db, storage
 from app.core.errors import AppError
 from app.schemas.orders import ExaminationResponse
 from app.schemas.radiology import (
+    CompleteExaminationBody,
     EquipmentResponse,
     ExaminationImageResponse,
     PerformExaminationBody,
     RadiologyWorklistItem,
+    ReadingWorklistItem,
 )
 
 _KST = ZoneInfo("Asia/Seoul")
@@ -77,9 +79,7 @@ async def upload_examination_image(
             "영상 용량이 너무 큽니다(최대 50MiB).", code="file_too_large", status_code=422
         )
     object_path = f"{examination_id}/{uuid4().hex}{ext}"  # 🔒 PII 없음(불투명 id + uuid)
-    await storage.upload_object(
-        storage.EXAMINATION_IMAGES_BUCKET, object_path, data, content_type
-    )
+    await storage.upload_object(storage.EXAMINATION_IMAGES_BUCKET, object_path, data, content_type)
     # 업로드는 db 트랜잭션 밖 → INSERT 실패(검증 404/422/409·FK 등) 시 롤백이 객체를 못 지운다.
     # orphan 방지: 실패 시 업로드 객체를 보상 삭제(best-effort)하고 원 오류를 전파.
     try:
@@ -115,6 +115,34 @@ async def perform_examination(
     """
     row = await db.call_perform_examination(
         sub, examination_id=examination_id, equipment_id=payload.equipment_id
+    )
+    return ExaminationResponse.model_validate(row)
+
+
+async def list_reading_worklist(sub: UUID) -> list[ReadingWorklistItem]:
+    """판독 워크리스트(FR-102) — 오늘(KST) 미판독 영상검사. 게이트 examination.complete."""
+    today = datetime.now(_KST).date()
+    rows = await db.fetch_reading_worklist(sub, today)
+    return [ReadingWorklistItem.model_validate(r) for r in rows]
+
+
+async def complete_examination(
+    sub: UUID, examination_id: UUID, payload: CompleteExaminationBody
+) -> ExaminationResponse:
+    """판독 완료(FR-102·FR-093) — performed→completed. 게이트 examination.complete.
+
+    소견(필수)·결론(선택). 빈 소견 → 422 findings_required, 미수행/재완료 → 409 invalid_transition,
+    lab → 422 not_imaging, 미존재 404. 결론 strip 후 빈→NULL. 응답 = 완료된 검사 오더.
+    """
+    findings = payload.findings  # Pydantic strip 완료 — 공백-only 면 빈 문자열.
+    if not findings:
+        raise AppError("판독 소견을 입력해 주세요.", code="findings_required", status_code=422)
+    conclusion = (payload.reading_conclusion or "").strip() or None
+    row = await db.call_complete_examination(
+        sub,
+        examination_id=examination_id,
+        findings=findings,
+        reading_conclusion=conclusion,
     )
     return ExaminationResponse.model_validate(row)
 
