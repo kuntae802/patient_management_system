@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-23T11:30:00+0000
+last_updated: 2026-06-23T12:00:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -105,7 +105,7 @@ development_status:
   epic-5-retrospective: optional
 
   # ── Epic 6: 예약 · 근무 스케줄 ──
-  epic-6: in-progress
+  epic-6: done
   6-1-근무표-휴진-예외-관리-db-관리자: done
   6-2-동적-가용-슬롯-계산: done
   6-3-예약-캘린더-더블부킹-차단: done
@@ -114,7 +114,7 @@ development_status:
   6-6-sms-리마인더-시뮬-로그: done
   6-7-노쇼-카운트-임계치-제한: done
   6-8-휴진-시-영향-예약-재배정: done
-  epic-6-retrospective: optional
+  epic-6-retrospective: done
 
   # ── Epic 7: 수납 · 정산 · 표준 문서 ──
   epic-7: backlog
