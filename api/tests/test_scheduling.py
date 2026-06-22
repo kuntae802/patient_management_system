@@ -392,15 +392,15 @@ def test_build_calendar_confirmed_overlay() -> None:
     assert slots[1].status == "available" and slots[1].patient_name is None
 
 
-def test_build_calendar_cancelled_and_no_show_overlay() -> None:
-    """취소·노쇼 예약도 상태별 overlay(6.4 전이 대비 — 6.3 은 booked 만 생성)."""
+def test_build_calendar_cancelled_and_no_show_freed() -> None:
+    """6.4 AC2: 취소·노쇼는 슬롯을 점유하지 않음 → 가용(available) 복귀(재예약 가능)."""
     cancelled = _appt(_u(0, 0), _u(0, 30), "cancelled", "김취소")
     no_show = _appt(_u(0, 30), _u(1, 0), "no_show", "이노쇼")
     cal = sched_service._build_calendar(
         _DATE, [(_DOCTOR_ID, "의사A", [(time(9, 0), time(10, 0))], [], [cancelled, no_show])], _PAST
     )
     slots = cal.doctors[0].slots
-    assert slots[0].status == "cancelled" and slots[1].status == "no_show"
+    assert slots[0].status == "available" and slots[1].status == "available"
 
 
 def test_build_calendar_active_wins_over_cancelled() -> None:
@@ -474,6 +474,18 @@ def _appt_client(monkeypatch: pytest.MonkeyPatch, *, allowed: bool = True) -> Te
         return _APPT_ROW
 
     monkeypatch.setattr(db, "insert_appointment", _insert)
+
+    # create_appointment 의 _assert_slot_bookable(compute_available_slots) 가 db 읽기를 타므로 모킹:
+    # 월(2030-06-03) 09:00–12:30 근무·휴진/예약 없음 → _VALID_APPT 10:00(01:00Z) 슬롯 available.
+    async def _sched(sub: uuid.UUID, doctor_id: uuid.UUID, weekday: int) -> list[Any]:
+        return [{"start_time": time(9, 0), "end_time": time(12, 30)}]
+
+    async def _empty_rows(*args: Any, **kwargs: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(db, "fetch_doctor_schedules_for_weekday", _sched)
+    monkeypatch.setattr(db, "fetch_doctor_time_offs_in_range", _empty_rows)
+    monkeypatch.setattr(db, "fetch_booked_appointments_in_range", _empty_rows)
     return TestClient(app)
 
 
@@ -533,3 +545,94 @@ def test_calendar_empty_for_dept_without_doctors(monkeypatch: pytest.MonkeyPatch
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["doctors"] == [] and body["slot_minutes"] == 30
+
+
+# ── 예약 전이·변경·도착 접수 게이트·슬롯-윈도우 (Story 6.4) ─────────────────────
+
+
+def test_create_appointment_slot_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """슬롯-윈도우 검증(6.4): 근무블록 없는 슬롯 → 422 slot_unavailable."""
+    client = _appt_client(monkeypatch)
+
+    async def _no_sched(sub: uuid.UUID, doctor_id: uuid.UUID, weekday: int) -> list[Any]:
+        return []  # 근무 없음 → available 슬롯 0 → _VALID_APPT 슬롯 불가
+
+    monkeypatch.setattr(db, "fetch_doctor_schedules_for_weekday", _no_sched)
+    res = client.post("/v1/scheduling/appointments", json=_VALID_APPT)
+    assert res.status_code == 422
+    assert res.json()["error"]["code"] == "slot_unavailable"
+
+
+def _update_client(monkeypatch: pytest.MonkeyPatch, *, allowed: bool = True) -> TestClient:
+    app = FastAPI()
+    init_error_handlers(app)
+    app.include_router(scheduling.router, prefix="/v1")
+    app.dependency_overrides[get_current_user] = lambda: _FAKE_ADMIN
+
+    async def _perm(sub: uuid.UUID, code: str) -> bool:
+        assert code == "appointment.update"  # 전이 게이트 = appointment.update
+        return allowed
+
+    monkeypatch.setattr(db, "fetch_has_permission", _perm)
+
+    async def _cancel(sub: uuid.UUID, aid: uuid.UUID, **k: Any) -> dict[str, Any]:
+        return {**_APPT_ROW, "status": "cancelled"}
+
+    async def _noshow(sub: uuid.UUID, aid: uuid.UUID, **k: Any) -> dict[str, Any]:
+        return {**_APPT_ROW, "status": "no_show"}
+
+    monkeypatch.setattr(db, "cancel_appointment", _cancel)
+    monkeypatch.setattr(db, "mark_appointment_no_show", _noshow)
+    return TestClient(app)
+
+
+_APT_ID = str(uuid.uuid4())
+
+
+def test_cancel_forbidden_without_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    res = _update_client(monkeypatch, allowed=False).post(
+        f"/v1/scheduling/appointments/{_APT_ID}/cancel", json={"reason": "환자 요청"}
+    )
+    assert res.status_code == 403 and res.json()["error"]["code"] == "forbidden"
+
+
+def test_cancel_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    res = _update_client(monkeypatch).post(
+        f"/v1/scheduling/appointments/{_APT_ID}/cancel", json={"reason": "환자 요청"}
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "cancelled"
+
+
+def test_cancel_invalid_transition_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _update_client(monkeypatch)
+
+    async def _raise(sub: uuid.UUID, aid: uuid.UUID, **k: Any) -> dict[str, Any]:
+        raise ConflictError("종결 재전이", code="invalid_transition")
+
+    monkeypatch.setattr(db, "cancel_appointment", _raise)
+    res = client.post(f"/v1/scheduling/appointments/{_APT_ID}/cancel", json={})
+    assert res.status_code == 409 and res.json()["error"]["code"] == "invalid_transition"
+
+
+def test_no_show_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    res = _update_client(monkeypatch).post(
+        f"/v1/scheduling/appointments/{_APT_ID}/no-show", json={}
+    )
+    assert res.status_code == 200 and res.json()["status"] == "no_show"
+
+
+def test_check_in_forbidden_without_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    """check-in 게이트 = appointment.update(미보유 → 403·db 미호출)."""
+    res = _update_client(monkeypatch, allowed=False).post(
+        f"/v1/scheduling/appointments/{_APT_ID}/check-in"
+    )
+    assert res.status_code == 403
+
+
+def test_reschedule_forbidden_without_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    res = _update_client(monkeypatch, allowed=False).post(
+        f"/v1/scheduling/appointments/{_APT_ID}/reschedule",
+        json={"doctor_id": str(_DOCTOR_ID), "scheduled_start": "2030-06-03T01:00:00Z"},
+    )
+    assert res.status_code == 403

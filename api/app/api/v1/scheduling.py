@@ -18,9 +18,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, status
 
 from app.core.security import CurrentUser, require_permission
+from app.schemas.encounters import EncounterResponse
 from app.schemas.masters import ActiveUpdate
 from app.schemas.scheduling import (
+    AppointmentCancel,
     AppointmentCreate,
+    AppointmentReschedule,
     AppointmentResponse,
     CalendarResponse,
     DoctorScheduleCreate,
@@ -42,6 +45,8 @@ require_master_manage = require_permission("master.manage")
 require_appointment_read = require_permission("appointment.read")
 # 예약 생성(booking-peek 저장 — 원무). appointment.read 와 별개 최소권한(조회만 vs 생성).
 require_appointment_create = require_permission("appointment.create")
+# 예약 변경·취소·노쇼·도착접수(기존 예약 상태 변경 — 원무). create 와 별개 최소권한.
+require_appointment_update = require_permission("appointment.update")
 
 
 # ── 근무표(doctor_schedules) ──────────────────────────────────────────────────
@@ -176,3 +181,50 @@ async def get_day_calendar(
     """진료과·날짜(KST)의 예약 캘린더(시간레일 × 의사 열·일 보기) = 가용 슬롯 + 예약 overlay
     (확정/완료/노쇼/취소+환자명). 게이트 appointment.read. date 파싱 실패 → 422."""
     return await scheduling_service.get_day_calendar(user.sub, department_id, date)
+
+
+# ── 예약 전이·변경·도착 접수 (Story 6.4·액션 엔드포인트·status PATCH 아님) ──────────────────
+
+
+@router.post("/appointments/{appointment_id}/cancel", response_model=AppointmentResponse)
+async def cancel_appointment(
+    appointment_id: UUID,
+    payload: AppointmentCancel,
+    user: CurrentUser = Depends(require_appointment_update),
+) -> AppointmentResponse:
+    """예약 취소(booked→cancelled). 게이트 appointment.update. 미존재 404·잘못된 전이 409."""
+    return await scheduling_service.cancel_appointment(user.sub, appointment_id, payload)
+
+
+@router.post("/appointments/{appointment_id}/no-show", response_model=AppointmentResponse)
+async def mark_appointment_no_show(
+    appointment_id: UUID,
+    payload: AppointmentCancel,
+    user: CurrentUser = Depends(require_appointment_update),
+) -> AppointmentResponse:
+    """예약 노쇼(booked→no_show). 게이트 appointment.update. 6.7 노쇼 카운트 근거."""
+    return await scheduling_service.mark_appointment_no_show(user.sub, appointment_id, payload)
+
+
+@router.post("/appointments/{appointment_id}/reschedule", response_model=AppointmentResponse)
+async def reschedule_appointment(
+    appointment_id: UUID,
+    payload: AppointmentReschedule,
+    user: CurrentUser = Depends(require_appointment_update),
+) -> AppointmentResponse:
+    """예약 변경(새 의사·시각). 게이트 appointment.update. 슬롯 불가 422·더블부킹 409·전이 409."""
+    return await scheduling_service.reschedule_appointment(user.sub, appointment_id, payload)
+
+
+@router.post(
+    "/appointments/{appointment_id}/check-in",
+    response_model=EncounterResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def check_in_reservation(
+    appointment_id: UUID,
+    user: CurrentUser = Depends(require_appointment_update),
+) -> EncounterResponse:
+    """예약 환자 도착 접수 → reserved registered 내원 생성(대기 현황판 진입) + 예약 completed.
+    게이트 appointment.update(+ 내원 생성 encounter.register TOCTOU). 미존재 404·잘못된 전이 409."""
+    return await scheduling_service.check_in_reservation(user.sub, appointment_id)

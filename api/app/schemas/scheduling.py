@@ -140,7 +140,7 @@ class AppointmentCreate(BaseModel):
 
 
 class AppointmentResponse(BaseModel):
-    """예약 응답(생성 공용)."""
+    """예약 응답(생성·전이 공용). 전이 타임스탬프(0033)는 해당 전이 시에만 채워짐."""
 
     id: UUID
     patient_id: UUID
@@ -152,7 +152,24 @@ class AppointmentResponse(BaseModel):
     status: str
     note: str | None = None
     sms_opt_in: bool
+    cancel_reason: str | None = None
+    cancelled_at: datetime | None = None
+    no_show_at: datetime | None = None
+    completed_at: datetime | None = None
     created_at: datetime
+
+
+class AppointmentCancel(BaseModel):
+    """예약 취소·노쇼 요청 — 저민감 운영 사유(임상/PII 금지)."""
+
+    reason: _Stripped | None = Field(default=None, max_length=200)
+
+
+class AppointmentReschedule(BaseModel):
+    """예약 변경 요청 — 새 의사·시각(scheduled_end 는 서버가 +SLOT_MINUTES)."""
+
+    doctor_id: UUID
+    scheduled_start: datetime
 
 
 # 캘린더 슬롯 상태 = 가용(available/time_off/past) + 예약 overlay(confirmed/완료/노쇼/취소).

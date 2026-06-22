@@ -2592,7 +2592,8 @@ async def fetch_prescriptions(sub: UUID, encounter_id: UUID) -> list[dict[str, o
 
 _APPOINTMENT_COLUMNS = (
     "id, patient_id, doctor_id, department_id, room_id, scheduled_start, scheduled_end, "
-    "status, note, sms_opt_in, created_by, created_at, updated_at"
+    "status, note, sms_opt_in, cancel_reason, cancelled_at, no_show_at, completed_at, "
+    "created_by, created_at, updated_at"
 )
 
 
@@ -2695,5 +2696,176 @@ async def fetch_appointments_for_date(
             range_start,
             range_end,
         )
+
+    return await _run_authed(sub, _op)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 예약 전이·변경·도착 접수 (Story 6.4 — 0033) — service_role 직접 UPDATE(전이 트리거 백스톱)
+# 전이 매트릭스 = enforce_appointment_transition(0033·booked→cancelled/no_show/completed·PT409).
+# 각 함수는 소스상태 precondition 선검사(트리거 same-status 통과 사각 차단 — 재취소·재완료 방지).
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+async def _require_appointment_update(conn: asyncpg.Connection) -> None:
+    """쓰기 직전 동일 트랜잭션에서 appointment.update 재평가(TOCTOU 차단). 미보유 → 403."""
+    if not bool(await conn.fetchval("select public.has_permission('appointment.update')")):
+        raise ForbiddenError(detail={"required_permission": "appointment.update"})
+
+
+async def _fetch_appointment_for_update(
+    conn: asyncpg.Connection, appointment_id: UUID
+) -> asyncpg.Record:
+    """전이 대상 예약 for-update 선조회(미존재 404)."""
+    row = await conn.fetchrow(
+        f"select {_APPOINTMENT_COLUMNS} from public.appointments where id = $1 for update",
+        appointment_id,
+    )
+    if row is None:
+        raise NotFoundError(
+            "예약을 찾을 수 없습니다.", detail={"appointment_id": str(appointment_id)}
+        )
+    return row
+
+
+def _appointment_transition_error() -> ConflictError:
+    """소스상태 precondition 위반 → 409 invalid_transition(트리거 PT409 동일 코드·매핑 정합)."""
+    return ConflictError("해당 상태의 예약은 그 전이를 할 수 없습니다.", code="invalid_transition")
+
+
+async def cancel_appointment(
+    sub: UUID, appointment_id: UUID, *, reason: str | None
+) -> asyncpg.Record:
+    """예약 취소(booked→cancelled·cancelled_at). 소스 booked 아니면 409(재취소 차단)."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_appointment_update(conn)
+        row = await _fetch_appointment_for_update(conn, appointment_id)
+        if row["status"] != "booked":
+            raise _appointment_transition_error()
+        updated = await conn.fetchrow(
+            f"update public.appointments set status = 'cancelled', cancelled_at = now(), "
+            f"cancel_reason = $2, updated_at = now() where id = $1 "
+            f"returning {_APPOINTMENT_COLUMNS}",
+            appointment_id,
+            reason,
+        )
+        assert updated is not None
+        return updated
+
+    return await _run_authed(sub, _op)
+
+
+async def mark_appointment_no_show(
+    sub: UUID, appointment_id: UUID, *, reason: str | None
+) -> asyncpg.Record:
+    """예약 노쇼(booked→no_show·no_show_at). 소스 booked 아니면 409. 6.7 노쇼 카운트 근거."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_appointment_update(conn)
+        row = await _fetch_appointment_for_update(conn, appointment_id)
+        if row["status"] != "booked":
+            raise _appointment_transition_error()
+        updated = await conn.fetchrow(
+            f"update public.appointments set status = 'no_show', no_show_at = now(), "
+            f"cancel_reason = $2, updated_at = now() where id = $1 "
+            f"returning {_APPOINTMENT_COLUMNS}",
+            appointment_id,
+            reason,
+        )
+        assert updated is not None
+        return updated
+
+    return await _run_authed(sub, _op)
+
+
+async def reschedule_appointment(
+    sub: UUID,
+    appointment_id: UUID,
+    *,
+    doctor_id: UUID,
+    scheduled_start: datetime,
+    scheduled_end: datetime,
+) -> asyncpg.Record:
+    """예약 변경(시각·의사 재배치·status 불변 booked → 트리거 same-status 통과). 소스 booked 아니면
+    409·비-의사/비활성 → 422·더블부킹 EXCLUDE(23P01) → 409. 슬롯-윈도우 검증은 서비스."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_appointment_update(conn)
+        row = await _fetch_appointment_for_update(conn, appointment_id)
+        if row["status"] != "booked":
+            raise _appointment_transition_error()
+        await _assert_doctor_assignable(conn, doctor_id)
+        try:
+            updated = await conn.fetchrow(
+                f"update public.appointments set doctor_id = $2, scheduled_start = $3, "
+                f"scheduled_end = $4, updated_at = now() where id = $1 "
+                f"returning {_APPOINTMENT_COLUMNS}",
+                appointment_id,
+                doctor_id,
+                scheduled_start,
+                scheduled_end,
+            )
+        except asyncpg.ExclusionViolationError as exc:
+            raise _double_booking_error() from exc
+        assert updated is not None
+        return updated
+
+    return await _run_authed(sub, _op)
+
+
+async def check_in_reservation(sub: UUID, appointment_id: UUID) -> asyncpg.Record:
+    """예약 환자 도착 접수 — 단일 txn: reserved registered 내원 생성 + 예약→completed.
+
+    예약 booked 선검사(아니면 409). 내원 INSERT 는 walk-in 패턴 미러(visit_type='reserved'·
+    status='registered'·patient/department=예약값) → 대기 현황판(4.3) 진입. appointment.update +
+    encounter.register 양쪽 TOCTOU(원무 보유). 반환 = 생성된 내원(EncounterResponse)."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_appointment_update(conn)
+        await _require_encounter_register(conn)
+        appt = await _fetch_appointment_for_update(conn, appointment_id)
+        if appt["status"] != "booked":
+            raise _appointment_transition_error()
+        # 환자/진료과 활성 재검사(insert_walk_in_encounter 미러 — 예약 후 soft-delete/폐과 시 대기판
+        # 진입 차단). 예약 시 유효했어도 도착 시점 비활성이면 422(접수 거부·예약 취소 유도).
+        patient_active = await conn.fetchval(
+            "select is_active from public.patients where id = $1", appt["patient_id"]
+        )
+        if not patient_active:
+            raise AppError(
+                "비활성 환자는 접수할 수 없습니다.",
+                code="patient_inactive",
+                status_code=422,
+                detail={"patient_id": str(appt["patient_id"])},
+            )
+        dept_active = await conn.fetchval(
+            "select is_active from public.departments where id = $1", appt["department_id"]
+        )
+        if not dept_active:
+            raise AppError(
+                "비활성 진료과로는 접수할 수 없습니다.",
+                code="department_inactive",
+                status_code=422,
+                detail={"department_id": str(appt["department_id"])},
+            )
+        enc = await conn.fetchrow(
+            f"insert into public.encounters "
+            f"(patient_id, department_id, visit_type, status, registered_at, "
+            f"created_by, reservation_id) "
+            f"values ($1, $2, 'reserved', 'registered', now(), $3, $4) "
+            f"returning {_ENCOUNTER_COLUMNS}",
+            appt["patient_id"],
+            appt["department_id"],
+            sub,
+            appointment_id,
+        )
+        assert enc is not None
+        await conn.execute(
+            "update public.appointments set status = 'completed', completed_at = now(), "
+            "updated_at = now() where id = $1",
+            appointment_id,
+        )
+        return enc
 
     return await _run_authed(sub, _op)
