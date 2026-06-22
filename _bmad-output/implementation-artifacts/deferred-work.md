@@ -292,3 +292,7 @@
 ## Deferred from: code review of 6-4-원무-대리-예약-생성-변경-취소 (2026-06-22)
 
 - **reschedule 가 다른 진료과 의사로 변경 시 `appointment.department_id` 미동기화** [api/app/core/db.py `reschedule_appointment`] — UPDATE 는 doctor_id/scheduled_start/scheduled_end 만 변경하고 department_id 는 그대로 두며, `_assert_doctor_assignable` 은 role+active 만 검증(부서 멤버십 미검증). 다른 진료과 의사로 reschedule 하면 appointment.department_id 가 새 의사의 부서와 불일치 → 부서-스코프 캘린더(`fetch_bookable_doctors(department_id)` 가 부서별 의사 열)에서 고아(어느 부서에도 안 보임). **현 web UI 는 같은 의사만 변경**(`doctor_id: doctorId` 고정)이라 미도달 — API 직접 경로만 노출. 해소: 교차-의사 reschedule UI 착수 시 (a) 새 의사의 부서 == appointment.department_id 검증(422) 또는 (b) department_id 동반 갱신 가드 추가.
+
+## Deferred from: code review of 5-4-처치-오더 (2026-06-22)
+
+- **fee_schedule active/effective 서버 검증 부재** [api/app/core/db.py `insert_treatment_order`] — 처치 오더 생성은 `fee_schedule_id` FK 존재만 검사(23503→422)하고 EDI 처치 행위의 `is_active`/effective 윈도우를 재검증하지 않는다(`insert_examination`/`insert_prescription` 동일 posture). 웹 `MasterSearchPicker` 가 `today` 로 currently-valid 행위만 노출(UI 1차선)하나 직접 API·피커 로드 후 만료 race 는 우회. **이 갭은 이미 추적됨** — "신규 FK 의 active/effective 마스터 불변식 DB 미강제"(5.1 defer③ 항목)가 `drug_id`/`fee_schedule_id` 등 전 FK 와 `5.2/5.3/5.4 _require_*` 를 명시. 별도 해소 불요(마스터 불변식 일관 정책 스토리에서 drug·fee_schedule 일괄). 5.4 는 처치에 대해 동일 갭을 잇는다(신규 위험 0).
