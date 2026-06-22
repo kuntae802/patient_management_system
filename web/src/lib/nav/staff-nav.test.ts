@@ -48,6 +48,15 @@ describe("filterNav", () => {
     expect(labels(items)).toContain("간호기록");
   });
 
+  it("doctor 직무 항목 노출 — 판독(Story 5.9)은 doctor 전용", () => {
+    const doctorItems = labels(filterNav(STAFF_NAV, "doctor", () => false));
+    expect(doctorItems).toContain("진료 대기");
+    expect(doctorItems).toContain("판독"); // 영상 판독의 겸임 — 역할 노출(권한 게이트 없음)
+    // 판독은 doctor 전용 — 방사선사·간호 미노출(교차 오염 0)
+    expect(labels(filterNav(STAFF_NAV, "radiologist", () => true))).not.toContain("판독");
+    expect(labels(filterNav(STAFF_NAV, "nurse", () => true))).not.toContain("판독");
+  });
+
   it("role null → 빈 배열", () => {
     expect(filterNav(STAFF_NAV, null, () => true)).toEqual([]);
   });
