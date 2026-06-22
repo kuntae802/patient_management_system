@@ -231,6 +231,20 @@ join public.permissions p on p.code in ('treatment.order')
 where r.code = 'doctor'
 on conflict (role_id, permission_id) do nothing;
 
+-- ── (DEV/데모) 간호사(nurse) 역할 → 활력징후 기록 권한 grant (Story 5.6) ──────────────────────
+-- 활력징후 기록(`vital.record`)은 간호 직무 본질 → 역할로 노출(rbac-ui-exposure-model). ⚠️ vital.record 는
+-- **0002 기존 권한**(0002:97 — 0017 신규 아님) — admin 은 0002 cross-join 으로 이미 보유하므로 **admin 부트
+-- grant 재실행 불요**(5.2/5.3/5.4 의 "기존권한 소비" 동형, test_admin_role_has_all_permissions 회귀 0).
+-- 여기선 nurse 역할 매핑만. ★ 프로덕션 런타임 grant 는 1.7 매트릭스 UI 소유 — 이 시드는 로컬 db reset 전용. 멱등.
+-- ⚠️ 활력 기록 403 baseline = reception(임상 기록 권한 0) + doctor(encounter.read 보유·vital.record 미보유 =
+--    read-yes/record-no). nurse 의 encounter/patient baseline(4.4/4.5)은 비중첩이라 무영향(nurse encounter.read 0 유지).
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code in ('vital.record')
+where r.code = 'nurse'
+on conflict (role_id, permission_id) do nothing;
+
 -- ── (DEV/데모) 원무(reception) 역할 → 예약 슬롯 조회 권한 grant (Story 6.2) ──────────────────────
 -- 가용 슬롯 조회·예약 피커(appointment.read)는 원무 직무 본질(전화·방문 예약 흐름 6.4 가동). appointment.read
 -- 는 0031 신규 — 여기선 역할 매핑만. ★ 프로덕션 런타임 grant 는 1.7 매트릭스 UI 소유 — 이 시드는 로컬
