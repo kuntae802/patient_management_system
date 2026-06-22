@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
@@ -94,3 +94,46 @@ class PrescriptionResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     details: list[PrescriptionDetailResponse]
+
+
+class ExaminationCreate(BaseModel):
+    """검사·영상 오더 생성 요청(Story 5.3, FR-060·FR-061). 단건 — 처방의 헤더/상세 1:N 아님.
+
+    exam_type 이 워크리스트 라우팅 분류 축(lab 진단검사 → 간호 / imaging 영상검사 → 방사선, FR-061).
+    검사 종류(행위)는 fee_schedule_id(EDI 행위 마스터 FK)로만 — free-text 차단(FR-060). 잘못된
+    exam_type 은 Literal 이 422 선차단(DB CHECK 거울).
+    """
+
+    exam_type: Literal["lab", "imaging"]
+    fee_schedule_id: UUID
+
+
+class ExaminationResponse(BaseModel):
+    """검사·영상 오더 응답(0015 examinations + fee_schedules 마스터 조인). snake_case 유지.
+
+    fee_code·fee_name·fee_category·amount_krw 는 행위 마스터 조인 합성(읽기시점). status='ordered'
+    (지시). 수행/판독(performed/completed)·equipment_id 는 5.7/5.8/5.9 가 세팅(본 스토리는 NULL).
+    행 자체엔 자유텍스트 없음(FK·짧은 구조화 텍스트 — 감사 마스킹 불요).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    encounter_id: UUID
+    exam_type: str
+    fee_schedule_id: UUID
+    fee_code: str
+    fee_name: str
+    fee_category: str | None = None
+    amount_krw: int
+    status: str
+    ordered_by: UUID
+    ordered_at: datetime
+    equipment_id: UUID | None = None
+    performed_by: UUID | None = None
+    performed_at: datetime | None = None
+    completed_by: UUID | None = None
+    completed_at: datetime | None = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime

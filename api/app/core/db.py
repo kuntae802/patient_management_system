@@ -2584,6 +2584,102 @@ async def fetch_prescriptions(sub: UUID, encounter_id: UUID) -> list[dict[str, o
     return await _run_authed(sub, _op)
 
 
+# ── 검사·영상 오더 생성·조회 (Story 5.3 — 0015 examinations 소비, service_role 직접 INSERT) ──────
+# examinations = 단건 평면 행(처방의 헤더/상세 1:N 아님). 오더 생성 = service_role 직접 INSERT
+# (전이 RPC 아님 — 자유 CRUD, insert_prescription 미러). exam_type(lab/imaging) = 워크리스트 라우팅
+# 분류 축(FR-061). 0015 전이 트리거가 INSERT status='ordered' 강제(5.3 은 전이 미발생 — perform/
+# complete = 5.7/5.8/5.9). 응답 = fee_schedules 조인(fee_code·fee_name·category·amount_krw).
+# 권한은 쓰기 직전 동일 txn 재평가. 감사 = 0015 트리거 자동. exam_type/fee_schedule_id = FK·
+# 짧은 텍스트 → _SENSITIVE_KEY 무변경.
+_EXAMINATION_COLUMNS = (
+    "ex.id, ex.encounter_id, ex.exam_type, ex.fee_schedule_id, "
+    "fs.code as fee_code, fs.name as fee_name, fs.category as fee_category, fs.amount_krw, "
+    "ex.status, ex.ordered_by, ex.ordered_at, ex.equipment_id, "
+    "ex.performed_by, ex.performed_at, ex.completed_by, ex.completed_at, "
+    "ex.is_active, ex.created_at, ex.updated_at"
+)
+_EXAMINATION_FROM = (
+    "from public.examinations ex join public.fee_schedules fs on fs.id = ex.fee_schedule_id"
+)
+
+
+async def _require_examination_order(conn: asyncpg.Connection) -> None:
+    """쓰기 직전 동일 txn 에서 examination.order 재평가(평가↔쓰기 TOCTOU). 미보유 → 403."""
+    if not bool(await conn.fetchval("select public.has_permission('examination.order')")):
+        raise ForbiddenError(detail={"required_permission": "examination.order"})
+
+
+async def insert_examination(
+    sub: UUID,
+    *,
+    encounter_id: UUID,
+    exam_type: str,
+    fee_schedule_id: UUID,
+    ordered_by: UUID,
+) -> dict[str, object]:
+    """검사·영상 오더 생성 — examinations 단건 INSERT(자동 감사). ordered_by=지시 의사.
+
+    내원 존재 선검사(미존재 404). exam_type(lab/imaging)·fee_schedule_id(EDI 행위 마스터 FK)만
+    입력 — status 는 DB 기본값 'ordered'(0015 전이 트리거 강제). 잘못된 fee_schedule_id(23503) →
+    422 백스톱(insert_prescription 선례). 권한은 INSERT 직전 재평가(TOCTOU). 반환 = fee 조인 dict.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        await _require_examination_order(conn)
+        exists = await conn.fetchval(
+            "select true from public.encounters where id = $1", encounter_id
+        )
+        if exists is None:
+            raise NotFoundError(
+                "내원을 찾을 수 없습니다.", detail={"encounter_id": str(encounter_id)}
+            )
+        try:
+            row = await conn.fetchrow(
+                "insert into public.examinations "
+                "(encounter_id, exam_type, fee_schedule_id, ordered_by) "
+                "values ($1, $2, $3, $4) returning id",
+                encounter_id,
+                exam_type,
+                fee_schedule_id,
+                ordered_by,
+            )
+        except asyncpg.ForeignKeyViolationError as exc:
+            # 잘못된 fee_schedule_id(또는 동시삭제 레이스) 23503 → 입력 오류 422(미매핑 시 503).
+            raise AppError(
+                "참조 대상이 올바르지 않습니다(검사 행위).",
+                code="invalid_reference",
+                status_code=422,
+            ) from exc
+        assert row is not None  # RETURNING 은 항상 1행
+        full = await conn.fetchrow(
+            f"select {_EXAMINATION_COLUMNS} {_EXAMINATION_FROM} where ex.id = $1",
+            row["id"],
+        )
+        assert full is not None
+        return dict(full)
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_examinations(sub: UUID, encounter_id: UUID) -> list[dict[str, object]]:
+    """한 내원의 검사·영상 오더 목록(최신순, fee_schedules 조인, 활성만). 게이트=라우터(order.read).
+
+    service_role 경로라 RLS 우회 — 조회 권위는 라우터 require_permission(읽기 TOCTOU 저위험,
+    fetch_prescriptions 동형). 반환 = [fee 조인 dict] (서비스가 매핑).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[dict[str, object]]:
+        rows = await conn.fetch(
+            f"select {_EXAMINATION_COLUMNS} {_EXAMINATION_FROM} "
+            f"where ex.encounter_id = $1 and ex.is_active = true "
+            f"order by ex.created_at desc, ex.id desc",
+            encounter_id,
+        )
+        return [dict(r) for r in rows]
+
+    return await _run_authed(sub, _op)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 예약 생성 · 캘린더 (Story 6.3 — 0032) — service_role 직접 INSERT(walk-in 패턴)
 # 더블부킹 EXCLUDE(0031, 23P01) → 409 double_booking(서비스 catch, schedule_overlap 동형).

@@ -11,7 +11,12 @@ from __future__ import annotations
 from uuid import UUID
 
 from app.core import db
-from app.schemas.orders import PrescriptionCreate, PrescriptionResponse
+from app.schemas.orders import (
+    ExaminationCreate,
+    ExaminationResponse,
+    PrescriptionCreate,
+    PrescriptionResponse,
+)
 
 
 def _to_prescription(row: dict[str, object]) -> PrescriptionResponse:
@@ -40,3 +45,31 @@ async def list_prescriptions(sub: UUID, encounter_id: UUID) -> list[Prescription
     """한 내원의 발행 처방전 목록(헤더 최신순 + 상세 1:N). 게이트=라우터(order.read)."""
     rows = await db.fetch_prescriptions(sub, encounter_id)
     return [_to_prescription(r) for r in rows]
+
+
+def _to_examination(row: dict[str, object]) -> ExaminationResponse:
+    """db 의 fee 조인 dict → ExaminationResponse(단건 평면 — 중첩 없음)."""
+    return ExaminationResponse.model_validate(row)
+
+
+async def create_examination(
+    sub: UUID, encounter_id: UUID, payload: ExaminationCreate
+) -> ExaminationResponse:
+    """검사·영상 오더 생성(FR-060·FR-061) — examinations 단건 INSERT. ordered_by=지시 의사(sub).
+
+    exam_type(lab/imaging)이 워크리스트 라우팅 분류 축. 미존재 내원 → 404, 잘못된 검사 행위 → 422,
+    권한 미보유 → 403(전부 db 가 동일 트랜잭션 검증·raise)."""
+    row = await db.insert_examination(
+        sub,
+        encounter_id=encounter_id,
+        exam_type=payload.exam_type,
+        fee_schedule_id=payload.fee_schedule_id,
+        ordered_by=sub,
+    )
+    return _to_examination(row)
+
+
+async def list_examinations(sub: UUID, encounter_id: UUID) -> list[ExaminationResponse]:
+    """한 내원의 검사·영상 오더 목록(최신순, fee 조인). 게이트=라우터(order.read)."""
+    rows = await db.fetch_examinations(sub, encounter_id)
+    return [_to_examination(r) for r in rows]

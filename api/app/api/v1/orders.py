@@ -16,14 +16,21 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, status
 
 from app.core.security import CurrentUser, require_permission
-from app.schemas.orders import PrescriptionCreate, PrescriptionResponse
+from app.schemas.orders import (
+    ExaminationCreate,
+    ExaminationResponse,
+    PrescriptionCreate,
+    PrescriptionResponse,
+)
 from app.services import orders as orders_service
 
 router = APIRouter(prefix="/encounters", tags=["orders"])
 
 # 권한 의존성은 모듈 로드 시 1회 생성(요청마다 팩토리 호출 회피, encounters.py 선례).
 # 발행=prescription.create(0002 기존·의사 직무)·조회=order.read(0015·의사 5.1 기보유, 원무 제외).
+# 검사·영상 오더=examination.order(0002 기존·의사 5.3 시드 grant).
 require_prescription_create = require_permission("prescription.create")
+require_examination_order = require_permission("examination.order")
 require_order_read = require_permission("order.read")
 
 
@@ -58,3 +65,35 @@ async def list_prescriptions(
     ★ 읽기 게이트 = order.read(의사·간호·방사선만 — 원무 미열람, 최소권한). 작은 sub-collection →
     직접 배열(medical-records GET 선례, {data,meta} 봉투 아님)."""
     return await orders_service.list_prescriptions(user.sub, encounter_id)
+
+
+@router.post(
+    "/{encounter_id}/examinations",
+    response_model=ExaminationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_examination(
+    encounter_id: UUID,
+    payload: ExaminationCreate,
+    user: CurrentUser = Depends(require_examination_order),
+) -> ExaminationResponse:
+    """검사·영상 오더 생성(FR-060·FR-061). 게이트 examination.order. ordered_by=지시 의사(sub).
+
+    exam_type(lab/imaging)이 워크리스트 라우팅 분류 축(영상→방사선·검체→간호). 검사 행위=
+    fee_schedule_id 마스터 FK(free-text 차단). status='ordered'(지시) DB 강제. 미존재 내원 → 404,
+    잘못된 검사 행위 → 422, 권한 미보유 → 403. ⚠️ 수행/판독·장비 배정·워크리스트 = 5.7/5.8/5.9."""
+    return await orders_service.create_examination(user.sub, encounter_id, payload)
+
+
+@router.get(
+    "/{encounter_id}/examinations",
+    response_model=list[ExaminationResponse],
+)
+async def list_examinations(
+    encounter_id: UUID,
+    user: CurrentUser = Depends(require_order_read),
+) -> list[ExaminationResponse]:
+    """한 내원의 검사·영상 오더 목록(최신순 + fee 조인, FR-060). 게이트 order.read.
+
+    직접 배열(prescriptions GET 선례, {data,meta} 봉투 아님)."""
+    return await orders_service.list_examinations(user.sub, encounter_id)

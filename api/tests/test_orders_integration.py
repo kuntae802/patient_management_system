@@ -416,3 +416,186 @@ def test_list_prescriptions_nurse_can_read(client, admin_token, nurse_token, dep
     eid = _walk_in(client, admin_token, dept_id)
     res = client.get(_prescriptions_url(eid), headers=_bearer(nurse_token))
     assert res.status_code == 200, res.text
+
+
+# ══ Story 5.3: 검사·영상 오더 ══════════════════════════════════════════════════
+# examinations = 단건 평면(처방 헤더/상세 1:N 아님). exam_type(lab/imaging) = 라우팅 분류 축
+# (FR-061), fee_schedule 마스터 FK = free-text 차단. 5.2 처방 발행 미러(service_role·신규권한 0).
+
+
+@pytest.fixture(scope="module")
+def fee_schedule_ids(psql: Psql) -> dict[str, str]:
+    """시드 EDI 행위 id — lab(CBC C3800)·imaging(흉부촬영 HA201). 검사·영상 오더 대상."""
+    return {
+        "lab": psql.scalar(
+            "select id::text from public.fee_schedules where code = 'C3800' limit 1"
+        ),
+        "imaging": psql.scalar(
+            "select id::text from public.fee_schedules where code = 'HA201' limit 1"
+        ),
+    }
+
+
+def _examinations_url(eid: str) -> str:
+    return f"{_ENCOUNTERS_URL}/{eid}/examinations"
+
+
+# ── AC1·AC2: 검사·영상 오더 생성(지시 상태 · exam_type 라우팅 분류) ──────────────
+
+
+def test_create_examination_lab_golden_path(
+    client, admin_token, doctor_token, doctor_id, dept_id, fee_schedule_ids
+):
+    """doctor → 201 + status='ordered' + ordered_by=doctor + exam_type='lab' + fee 조인."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _examinations_url(eid),
+        json={"exam_type": "lab", "fee_schedule_id": fee_schedule_ids["lab"]},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["encounter_id"] == eid
+    assert body["status"] == "ordered"
+    assert body["ordered_by"] == doctor_id
+    assert body["exam_type"] == "lab"
+    assert body["fee_schedule_id"] == fee_schedule_ids["lab"]
+    assert body["fee_code"] == "C3800"  # fee_schedules 마스터 조인
+    assert body["fee_name"]  # 한글 행위명(비어있지 않음)
+    assert body["amount_krw"] == 3500
+    assert body["equipment_id"] is None  # 장비 배정 = 5.8
+    assert body["performed_by"] is None  # 수행 = 5.7/5.8
+
+
+def test_create_examination_imaging_golden_path(
+    client, admin_token, doctor_token, dept_id, fee_schedule_ids
+):
+    """영상검사 오더 → 201 + exam_type='imaging'(방사선 워크리스트 라우팅 분류 축, FR-061)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _examinations_url(eid),
+        json={"exam_type": "imaging", "fee_schedule_id": fee_schedule_ids["imaging"]},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["exam_type"] == "imaging"
+
+
+def test_create_examination_invalid_fee_422(client, admin_token, doctor_token, dept_id):
+    """잘못된 fee_schedule_id(마스터 미존재) → 422(FK 23503 백스톱 — free-text 차단 서버 최종선)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _examinations_url(eid),
+        json={"exam_type": "lab", "fee_schedule_id": str(uuid.uuid4())},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "invalid_reference", res.text
+
+
+def test_create_examination_invalid_exam_type_422(
+    client, admin_token, doctor_token, dept_id, fee_schedule_ids
+):
+    """잘못된 exam_type(lab/imaging 외) → 422(Pydantic Literal · DB CHECK 거울)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _examinations_url(eid),
+        json={"exam_type": "mri", "fee_schedule_id": fee_schedule_ids["imaging"]},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_create_examination_nonexistent_encounter_404(client, doctor_token, fee_schedule_ids):
+    """미존재 내원에 오더 → 404(FK 위반 전 명시 선검사)."""
+    res = client.post(
+        _examinations_url(str(uuid.uuid4())),
+        json={"exam_type": "lab", "fee_schedule_id": fee_schedule_ids["lab"]},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 404, res.text
+
+
+def test_list_examinations_newest_first(
+    client, admin_token, doctor_token, dept_id, fee_schedule_ids
+):
+    """한 내원에 lab + imaging 오더 → 목록 최신순(imaging 먼저) + fee 조인."""
+    eid = _walk_in(client, admin_token, dept_id)
+    for exam_type, key in (("lab", "lab"), ("imaging", "imaging")):
+        r = client.post(
+            _examinations_url(eid),
+            json={"exam_type": exam_type, "fee_schedule_id": fee_schedule_ids[key]},
+            headers=_bearer(doctor_token),
+        )
+        assert r.status_code == 201, r.text
+    res = client.get(_examinations_url(eid), headers=_bearer(doctor_token))
+    assert res.status_code == 200, res.text
+    rows = res.json()
+    assert len(rows) == 2
+    assert {r["exam_type"] for r in rows} == {"lab", "imaging"}  # 양 유형 모두 반환
+    # 최신순(created_at desc) — ordered_at==created_at(동일 INSERT now())이라 내림차순 보장.
+    # 랜덤 UUID id desc 타이브레이크는 삽입순서와 무상관 → 위치 단언 대신 시각 내림차순 검증.
+    assert rows[0]["ordered_at"] >= rows[1]["ordered_at"]
+    assert all(r["fee_code"] for r in rows)  # fee_schedules 조인
+
+
+def test_create_examination_audited(
+    client, admin_token, doctor_token, dept_id, fee_schedule_ids, psql
+):
+    """오더 → audit_logs action='create' 행(examinations, 0015 트리거)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _examinations_url(eid),
+        json={"exam_type": "lab", "fee_schedule_id": fee_schedule_ids["lab"]},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 201, res.text
+    exid = res.json()["id"]
+    audits = psql.scalar(
+        "select count(*) from public.audit_logs "
+        f"where target_table='examinations' and target_id='{exid}' and action='create';"
+    )
+    assert int(audits) >= 1
+
+
+# ── AC4: 권한 게이트(오더=examination.order · 조회=order.read) ────────────────────
+
+
+def test_create_examination_forbidden_reception_403(
+    client, admin_token, reception_token, dept_id, fee_schedule_ids
+):
+    """reception(오더 권한 0) → 오더 403(게이트가 본문 처리 전 차단)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _examinations_url(eid),
+        json={"exam_type": "lab", "fee_schedule_id": fee_schedule_ids["lab"]},
+        headers=_bearer(reception_token),
+    )
+    assert res.status_code == 403, res.text
+
+
+def test_create_examination_forbidden_nurse_403(
+    client, admin_token, nurse_token, dept_id, fee_schedule_ids
+):
+    """nurse(order.read 보유·examination.order 미보유) → 오더 403(read-yes/order-no)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _examinations_url(eid),
+        json={"exam_type": "lab", "fee_schedule_id": fee_schedule_ids["lab"]},
+        headers=_bearer(nurse_token),
+    )
+    assert res.status_code == 403, res.text
+
+
+def test_list_examinations_forbidden_reception_403(client, admin_token, reception_token, dept_id):
+    """reception(order.read 미보유) → 조회 403."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.get(_examinations_url(eid), headers=_bearer(reception_token))
+    assert res.status_code == 403, res.text
+
+
+def test_list_examinations_nurse_can_read(client, admin_token, nurse_token, dept_id):
+    """nurse(order.read 보유) → 조회 200(read-yes)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.get(_examinations_url(eid), headers=_bearer(nurse_token))
+    assert res.status_code == 200, res.text
