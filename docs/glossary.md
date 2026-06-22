@@ -328,6 +328,18 @@
 
 > **처방 발행 경계(Story 5.2 확정):** **신규 마이그/신규 권한/admin 부트 grant/감사 마스킹 변경 = 전부 0** — `prescription.create`(0002 기존·admin 보유)·`order.read`(doctor 5.1 기보유) 소비만 → 4.6/4.7/5.1 의 "신규권한→admin 재grant" 함정 비해당, `test_admin_role_has_all_permissions` 회귀 0. **403 baseline = reception(오더 0) + nurse(order.read 有/prescription.create 無 = read-yes/create-no)**. nurse 이관 0건(비중첩 권한). **처방 취소/정정/dispense=Epic 7(7.7)·알레르기 교차검증 하드블록=5.5·신원확인 다이얼로그=Epic 7·오더-by-내원상태 게이트·앱 낙관적 잠금=이월**.
 
+### 검사·영상 오더 API (Story 5.3)
+
+| 식별자 | 종류 | 의미·계약 |
+|---|---|---|
+| `POST /encounters/{id}/examinations` | 경로(api·`orders`·`tags=orders`) | 검사·영상 오더 생성(FR-060·061) — **단건**(처방 헤더/상세 1:N 아님). 게이트 `examination.order`(의사). `exam_type`(`lab`/`imaging`)=워크리스트 라우팅 분류 축·검사 행위=`fee_schedule_id` 마스터 FK(free-text 차단). status='ordered'(지시) DB 강제. 미존재 내원 404·잘못된 행위 422 `invalid_reference`·잘못된 exam_type 422(Pydantic Literal) |
+| `GET /encounters/{id}/examinations` | 경로(api·`orders`) | 한 내원 검사·영상 오더 목록(최신순 + `fee_schedules` 조인 `fee_code`·`fee_name`·`fee_category`·`amount_krw`). 게이트 `order.read`(원무 제외) → reception 403·nurse 200. 직접 배열 |
+| `insert_examination` / `fetch_examinations` / `_require_examination_order` | 함수(`core/db`) | service_role 직접 INSERT(`insert_prescription` 미러·단건 평면·Decimal 불요)·TOCTOU 재평가·내원 선검사 404·FK 23503 → 422. 응답 = `fee_schedules` 조인 dict(`_EXAMINATION_COLUMNS`/`_EXAMINATION_FROM`) |
+| `ExaminationCreate` / `ExaminationResponse` | 스키마(`schemas/orders.py` 확장) | `exam_type: Literal["lab","imaging"]`·`fee_schedule_id`. 응답=fee 조인 + `status`/`ordered_by`/`equipment_id`·`performed_*`·`completed_*`(후자는 5.7/5.8/5.9 세팅·생성 시 NULL). `create_examination`/`list_examinations`(`services/orders.py`) |
+| `examination-panel.tsx` · `lib/encounters/examinations.ts` | 웹(신규) | 진료 허브 우 오더 pane 검사·영상 섹션(처방 패널과 **공존 스택**·encounter-hub). `exam_type` 세그먼트 토글(진단검사/영상검사) + MasterSearchPicker `kind=fee_schedule` 단일 어더 → **즉시 오더**(diagnosis-block 선례). 목록=유형 칩·행위명·`formatKrw`. pay-chip 급여여부·수가 프리뷰 통합=5.5 |
+
+> **검사·영상 오더 경계(Story 5.3 확정):** **신규 마이그/신규 권한/admin 부트 grant/SQLSTATE/감사 마스킹 변경 = 전부 0** — `examination.order`(0002 기존·admin 보유)·`order.read`(doctor 5.1 기보유) 소비만 + doctor `examination.order` 시드 grant 1건(5.2 `prescription.create` 동형·admin 재grant 불요·회귀 0). **403 baseline = reception(오더 0) + nurse(order.read 有/examination.order 無 = read-yes/order-no)**. **라우팅(FR-061) = `exam_type` 분류 축**(워크리스트 UI·수행 perform·검체 채취·외부 의뢰 결과=5.7/5.8/다운스트림·판독 소견 컬럼·complete=5.9·장비 배정 equipment_id·영상 Storage=5.8·전체 탭 패널·누락0 디텍터·수가 프리뷰=5.5·수가 자동발생=5.10·오더 취소/내원상태 게이트=이월).
+
 ## 근무표 · 휴진 (Story 6.1, `0030_doctor_schedules.sql`)
 
 > ⚠️ **마이그 번호 0030**: Epic 6 = 병렬 worktree → 마이그 블록 0030~(main 0014/Epic5 0015~0029 와 충돌 회피). 에픽/아키 묶음 계획 `0011_scheduling.sql`(3테이블)을 **스토리별 분리**(4.6/4.7 선례) → 6.1 = 근무표·휴진 2테이블만, **예약(appointments)·예약 생성·`encounters.reservation_id` FK·더블부킹은 booking 스토리(6.2/6.3)** 소유.

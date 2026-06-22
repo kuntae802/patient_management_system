@@ -283,3 +283,8 @@
 - **다중 슬롯 예약 overlay "render once" 가드 부재** [api/app/services/scheduling.py `_build_doctor_column`] — 한 예약을 겹치는 모든 base 슬롯에 반복 overlay. 6.3 은 전부 `start+30분` slot-aligned 라 1:1(무해)이나, 6.4 가변 길이/전이 예약 시 한 예약이 여러 confirmed 셀로 중복 렌더. 해소: 6.4 가 슬롯-소유(start-equality) 또는 multi-slot 연속 표기 추가.
 
 - **환자 교차-의사 더블부킹 미차단** [supabase/migrations/0031 EXCLUDE·db.py insert_appointment] — 더블부킹 EXCLUDE 는 `doctor_id`+시간만(같은 환자가 동시간 2명 의사에게 예약 가능). 단일 의사 외래 흐름 범위 밖·환자-레벨 충돌 미명세. 필요 시 환자-시간 부분 제약 또는 앱-레벨 검사.
+
+## Deferred from: code review of 5-3-검사-영상-오더 (2026-06-22)
+
+- **오더-by-내원상태 게이트 부재** [api/app/core/db.py `insert_examination`] — `insert_examination` 은 내원 존재만 선검사(404)하고 `status`(완료/취소)·`is_active`(soft-delete)를 보지 않아 종결/취소 내원에 API 직접 호출 시 검사·영상 오더가 생성된다. 진료 허브 UI 는 `in_progress` 에서만 패널을 렌더(1차선)하나 직접 API·stale 탭은 우회. 5.2 처방(`insert_prescription`)·4.6 §결정4 와 동일 "오더-by-내원상태 게이트=이월" posture 의 검사·영상 연장. 해소: 오더 직전 동일 txn 에서 내원 status/is_active 재검증(→409/422). 마스터·내원 불변식 일관 정책 스토리에서 처방과 함께 일괄 처리 권장.
+- **fee_schedule active/effective 서버 검증 부재** [api/app/core/db.py `insert_examination`] — 오더 생성은 `fee_schedule_id` FK 존재만 검사(23503→422)하고 EDI 행위의 `is_active`/effective 윈도우(`effective_from`/`effective_to`)를 재검증하지 않는다. 웹 `MasterSearchPicker(kind=fee_schedule)` 는 `today` 로 currently-valid 행위만 노출(UI 1차선)하나 직접 API·피커 로드 후 만료까지의 race 는 폐지/미발효 EDI 코드로 오더 생성 가능 → 수가 청구(5.10) 시점 무효. 5.2 "[Defer] 오더 발행 시 마스터 미검증(drug is_active/effective)" 선례의 fee_schedule 연장(동일 sibling posture). 해소: 오더 직전 동일 txn 에서 fee_schedule active/effective 재검증(→422). 마스터 불변식 일관 정책 스토리에서 drug·fee_schedule 일괄 처리 권장.
