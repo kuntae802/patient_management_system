@@ -241,6 +241,17 @@ join public.permissions p on p.code = 'appointment.create'
 where r.code = 'reception'
 on conflict (role_id, permission_id) do nothing;
 
+-- ── (DEV/데모) 원무(reception) 역할 → 예약 변경·취소 권한 grant (Story 6.4) ──────────────────────
+-- 변경·취소·노쇼·도착접수(appointment.update)는 원무 직무 본질(전화·방문 대리 예약 생명주기). appointment.update
+-- 는 0033 신규 — 여기선 역할 매핑만. ★ 프로덕션 런타임 grant 는 1.7 매트릭스 UI 소유 — 로컬 db reset 전용. 멱등.
+-- ⚠️ appointment 403 baseline = nurse(appointment.* 전무). 도착접수의 내원 생성은 encounter.register(reception 보유, 4.2).
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code = 'appointment.update'
+where r.code = 'reception'
+on conflict (role_id, permission_id) do nothing;
+
 -- ════════════════════════════════════════════════════════════════════════════
 -- 마스터 시드 (Story 2.5) — 진료과 · 진료실 · KCD 진단 · EDI 수가 · 약품
 -- ════════════════════════════════════════════════════════════════════════════

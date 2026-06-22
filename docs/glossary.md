@@ -401,3 +401,25 @@
 | reception → `appointment.create` | seed grant(`seed.sql`) | 예약 생성 권한(원무 대리 예약). 데모 예약 시드 없음(환자 미시드 — UI/테스트로 생성) |
 
 > **예약 생성 경계(Story 6.3 확정):** 생성=service_role 직접 INSERT(booked)·더블부킹=DB EXCLUDE→409 표면화. `note`=운영 텍스트(마스킹 불요). 캘린더=순수 합성(슬롯+예약 overlay). **변경/취소/노쇼 전이·전이 트리거 `enforce_appointment_transition`·`reservation_id`→내원 링크·대기 흐름 반영·도착 접수 = 6.4 / 환자 앱 예약 = 6.5 / SMS 실 발송 = 6.6 / 노쇼 카운트 = 6.7.**
+
+## 예약 변경 · 취소 · 도착 접수 (Story 6.4, `0033_appointment_lifecycle.sql`)
+
+> ⚠️ **마이그 번호 0033**: Epic 6 블록 0030~ 의 네 번째(6.1=0030·6.2=0031·6.3=0032). 0031/0032(예약 본체·생성) 위에 **전이 상태머신**(트리거)·생명주기 타임스탬프·`appointment.update` 권한만 추가. **예약↔내원 모델 = Option A 확정**: `appointment.status` 가 예약 생명주기 단일 진실(내원은 도착 시점에만 생성).
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| **예약↔내원 모델(Option A)** | 설계 결정 | `appointment.status`(booked→cancelled/no_show/completed)가 예약 생명주기 단일 진실. 내원은 **도착 접수 시점에만** 생성(`visit_type='reserved'`·`status='registered'`·`reservation_id`→예약). encounters 의 `scheduled` 초기상태·`register_encounter`(scheduled→registered)는 **reserved 경로 미사용**(예약 생성이 scheduled 내원을 만들지 않음 — 향후 정리 이월). 6.7 노쇼 카운트 = `appointment.no_show` 집계 |
+| `enforce_appointment_transition` | 트리거(0033·BEFORE UPDATE) | 예약 전이 매트릭스 강제(`enforce_encounter_transition` 0010 미러). `booked → cancelled\|no_show\|completed` 만 허용·종결=이탈 전이 없음·same-status(시각 변경=reschedule 등) 통과. ⚠️ **BEFORE UPDATE 만**(INSERT 초기상태 가드 없음 — 6.3 `test_double_booking_adjacent_and_cancelled_allowed` 가 cancelled 직접 INSERT → 가드 추가 시 회귀; 초기상태는 0031 status CHECK + default 'booked' 담당). 위반 `PT409` → `_map_pg_sqlstate` → 409 `invalid_transition`(매핑 무변경) |
+| `appointments.cancelled_at`·`no_show_at`·`completed_at` | 컬럼(timestamptz, 0033·nullable) | 전이 시각(encounters 미러·6.7 노쇼 카운트·감사 근거). 해당 전이 시에만 채워짐 |
+| `appointments.cancel_reason` | 컬럼(text, 0033) | 취소·노쇼 저민감 운영 사유(`encounters.cancel_reason`·`note` 정합·임상/PII 금지). ⚠️ **감사 마스킹 불요**(단수 키 — `_SENSITIVE_KEY` 미매칭) |
+| `appointment.update` | 권한(0033 신규) | 기존 예약 변경(cancel/no_show/reschedule/complete) 게이트(원무 — 환자는 매트릭스). create/read 와 별개 최소권한. **admin 부트 grant 재실행**·reception seed. **403 baseline = nurse**(appointment.* 전무). 도착접수의 내원 생성은 `encounter.register`(reception 보유, 4.2) |
+| `POST …/appointments/{id}/cancel`·`/no-show` | 엔드포인트(액션·status PATCH 아님) | 취소(booked→cancelled)·노쇼(booked→no_show). 게이트 `appointment.update`. 미존재 404·잘못된 전이 409 `invalid_transition`. service_role 직접 UPDATE(`_require_appointment_update` TOCTOU·소스상태 precondition 선검사=재취소/재완료 차단·트리거 백스톱) |
+| `POST …/appointments/{id}/reschedule` | 엔드포인트(액션) | 변경(새 의사·시각·status 불변 booked → 트리거 same-status 통과). 슬롯-윈도우 422 `slot_unavailable`·더블부킹 409 `double_booking`·잘못된 전이 409. `scheduled_end`=start+30분(서버) |
+| `POST …/appointments/{id}/check-in` | 엔드포인트(액션·201) | 예약 환자 **도착 접수** — 단일 txn: reserved registered 내원 생성(`reservation_id` 연결·대기 현황판 4.3 진입) + 예약→completed. 게이트 `appointment.update`(+ 내원 생성 `encounter.register` TOCTOU). 반환=`EncounterResponse`. `insert_walk_in_encounter` 패턴 미러(visit_type='reserved') |
+| `_assert_slot_bookable`(서비스) | 슬롯-윈도우 검증(6.3 이월 청산) | 생성·변경 시 `scheduled_start` 가 **실재 근무 슬롯**인지(available 또는 booked·`compute_available_slots` 재사용)만 검증 → 휴진·지난·근무외·비정렬 = 422 `slot_unavailable`. ⚠️ **이미 예약됨(booked)은 안 막음** — 더블부킹은 DB EXCLUDE 가 409 `double_booking` 처리(슬롯-윈도우가 booked 를 422 로 가로채면 더블부킹 409 경로 소실·6.3 AC3 보존). create 의 과거-거부(`appointment_in_past`)는 유지(빠른 구체 사유) |
+| `cancel_appointment`·`mark_appointment_no_show`·`reschedule_appointment`·`check_in_reservation` | db 래퍼(`core/db.py`) | service_role UPDATE·`_require_appointment_update`·`_fetch_appointment_for_update`(for-update·404)·소스상태 precondition(409)·EXCLUDE/FK catch. check-in 은 reserved 내원 INSERT + 예약 completed |
+| 캘린더 overlay 정련(6.4 AC2) | 동작 변경(`_build_doctor_column`) | **cancelled·no_show 는 슬롯 점유 안 함** → base(available/past) 복귀·재예약 가능("취소·노쇼된 슬롯 다시 가용"). booked→confirmed·completed 만 overlay(우선순위 confirmed>completed). 6.3 의 cancelled/no_show overlay 를 본 스토리가 정련 |
+| `BookingDetail`·`appointments.ts`(전이 함수) | 웹(`components/scheduling/`·`lib/scheduling/`) | 확정 슬롯 클릭 → 상세 슬라이드오버(Base UI Dialog 우측·booking-peek 미러): 취소·노쇼(사유 입력)·도착접수(대기 등록 안내)·변경(같은 의사 가용 슬롯 재선택). 이중제출 useRef 락·409/422 인라인. `cancelAppointment`/`noShowAppointment`/`rescheduleAppointment`/`checkInReservation` |
+| reception → `appointment.update` | seed grant(`seed.sql`) | 예약 변경·취소·노쇼·도착접수 권한(원무 대리). 데모 전이 시드 없음(통합 테스트가 환자 인라인 생성 후 커버) |
+
+> **예약 생명주기 경계(Story 6.4 확정·Option A):** 상태머신 = DB 트리거(`enforce_appointment_transition`·BEFORE UPDATE). 전이 = 액션 엔드포인트(service_role UPDATE·소스상태 precondition·트리거 백스톱). 도착 접수 = reserved registered 내원 직접 생성(대기 흐름). 슬롯-윈도우 검증(생성·변경·6.3 이월 청산)·취소/노쇼 슬롯 가용 복귀(캘린더 overlay 정련). 컬럼 비-PII → **감사 마스킹 집합 무변경**. **환자 앱 예약 = 6.5 / SMS 실 발송 = 6.6 / 노쇼 카운트·임계 제한 = 6.7 / 휴진 재배정 = 6.8 / encounters scheduled·register_encounter 정리 = 이월(무해).**

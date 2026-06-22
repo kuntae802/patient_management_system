@@ -15,6 +15,7 @@ import { formatSlotTime, todayKstISO } from "@/lib/scheduling/slots";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 
+import { BookingDetail } from "./booking-detail";
 import { BookingPeek } from "./booking-peek";
 
 const FIELD =
@@ -23,13 +24,20 @@ const LABEL = "block text-[12px] font-medium text-foreground";
 
 type DeptOption = { id: string; name: string };
 type PeekTarget = { doctorId: string; doctorName: string; start: string };
+type DetailTarget = {
+  appointmentId: string;
+  doctorId: string;
+  doctorName: string;
+  start: string;
+  patientName: string | null;
+};
 
+// 캘린더가 실제로 생성하는 슬롯 상태만 범례에 노출. cancelled·no_show 는 슬롯을 점유하지 않으므로
+// (6.4 AC2 — 가용 복귀) 캘린더에 나타나지 않는다 → 범례에서 제외(CalendarSlotStatus 타입은 유지).
 const LEGEND_ORDER: CalendarSlotStatus[] = [
   "available",
   "confirmed",
   "completed",
-  "no_show",
-  "cancelled",
   "time_off",
   "past",
 ];
@@ -44,6 +52,7 @@ export function AppointmentCalendar() {
   const [calendar, setCalendar] = useState<CalendarResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [peek, setPeek] = useState<PeekTarget | null>(null);
+  const [detail, setDetail] = useState<DetailTarget | null>(null);
 
   // 진료과(활성만) — Supabase 직접조회.
   useEffect(() => {
@@ -136,6 +145,7 @@ export function AppointmentCalendar() {
           onPickSlot={(doctorId, doctorName, start) =>
             setPeek({ doctorId, doctorName, start })
           }
+          onOpenDetail={(target) => setDetail(target)}
         />
       ) : !error ? (
         <p className="text-[13px] text-muted-foreground" aria-live="polite">
@@ -157,6 +167,25 @@ export function AppointmentCalendar() {
           scheduledStart={peek.start}
           onCreated={() => {
             setPeek(null);
+            void loadCalendar();
+          }}
+        />
+      )}
+
+      {detail && (
+        <BookingDetail
+          key={detail.appointmentId}
+          open
+          onOpenChange={(o) => {
+            if (!o) setDetail(null);
+          }}
+          appointmentId={detail.appointmentId}
+          doctorId={detail.doctorId}
+          doctorName={detail.doctorName}
+          departmentName={deptName}
+          scheduledStart={detail.start}
+          patientName={detail.patientName}
+          onChanged={() => {
             void loadCalendar();
           }}
         />
@@ -187,9 +216,11 @@ function CalendarLegend() {
 function CalendarGrid({
   calendar,
   onPickSlot,
+  onOpenDetail,
 }: {
   calendar: CalendarResponse;
   onPickSlot: (doctorId: string, doctorName: string, start: string) => void;
+  onOpenDetail: (target: DetailTarget) => void;
 }) {
   if (calendar.doctors.length === 0) {
     return (
@@ -263,6 +294,16 @@ function CalendarGrid({
                       key={col.doctor_id}
                       slot={slot}
                       onPick={() => onPickSlot(col.doctor_id, col.doctor_name, slot.start)}
+                      onOpenDetail={() =>
+                        slot.appointment_id &&
+                        onOpenDetail({
+                          appointmentId: slot.appointment_id,
+                          doctorId: col.doctor_id,
+                          doctorName: col.doctor_name,
+                          start: slot.start,
+                          patientName: slot.patient_name,
+                        })
+                      }
                     />
                   );
                 })}
@@ -275,10 +316,21 @@ function CalendarGrid({
   );
 }
 
-function SlotCell({ slot, onPick }: { slot: CalendarSlot; onPick: () => void }) {
+function SlotCell({
+  slot,
+  onPick,
+  onOpenDetail,
+}: {
+  slot: CalendarSlot;
+  onPick: () => void;
+  onOpenDetail: () => void;
+}) {
   const meta = CALENDAR_STATUS_META[slot.status];
+  // 확정(booked) 슬롯은 상세·액션(취소/노쇼/접수/변경) 진입 가능. available 은 예약 생성.
+  const detailable = slot.status === "confirmed" && slot.appointment_id !== null;
   const className = cn(
     "flex min-h-9 flex-col justify-center gap-0.5 rounded-md border px-2 py-1 text-left",
+    detailable && "cursor-pointer hover:brightness-95",
     meta.tileClass,
   );
   const body = (
@@ -294,6 +346,18 @@ function SlotCell({ slot, onPick }: { slot: CalendarSlot; onPick: () => void }) 
   if (meta.selectable) {
     return (
       <button type="button" data-status={slot.status} className={className} onClick={onPick}>
+        {body}
+      </button>
+    );
+  }
+  if (detailable) {
+    return (
+      <button
+        type="button"
+        data-status={slot.status}
+        className={className}
+        onClick={onOpenDetail}
+      >
         {body}
       </button>
     );

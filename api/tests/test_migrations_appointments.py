@@ -340,3 +340,105 @@ def test_nurse_lacks_appointment_create_baseline(psql):
         "where r.code='nurse' and p.code in ('appointment.create','appointment.read');"
     )
     assert cnt == "0", "nurse 가 appointment 권한 보유(403 baseline 소실)"
+
+
+# ── 0033: 전이 상태머신·생명주기 컬럼·appointment.update (Story 6.4) ────────────
+
+
+def test_lifecycle_columns(psql):
+    """전이 타임스탬프·cancel_reason 컬럼 존재(0033)."""
+    cols = psql.scalar(
+        "select string_agg(column_name, ',' order by column_name) "
+        "from information_schema.columns where table_schema='public' and table_name='appointments' "
+        "  and column_name in ('cancelled_at','no_show_at','completed_at','cancel_reason');"
+    )
+    assert set(cols.split(",")) == {
+        "cancelled_at",
+        "no_show_at",
+        "completed_at",
+        "cancel_reason",
+    }, cols
+
+
+def test_transition_trigger_exists(psql):
+    cnt = psql.scalar(
+        "select count(*) from pg_trigger where tgname='trg_appointments_transition' "
+        "and not tgisinternal;"
+    )
+    assert cnt == "1", "trg_appointments_transition 트리거 없음(0033)"
+
+
+def test_booked_to_cancelled_and_no_show_allowed(psql):
+    """booked→cancelled·booked→no_show 전이 허용(별 예약)."""
+    out = psql.scalar(
+        "begin;"
+        + _MK_PATIENT
+        + _appt("2030-06-03 10:00+09", "2030-06-03 10:30+09")  # id 자동
+        + "update public.appointments set status='cancelled', cancelled_at=now() "
+        "  where patient_id="
+        + _PATIENT
+        + " and status='booked';"
+        + _appt("2030-06-03 11:00+09", "2030-06-03 11:30+09")
+        + "update public.appointments set status='no_show', no_show_at=now() "
+        "  where patient_id="
+        + _PATIENT
+        + " and status='booked';"
+        + "select count(*) from public.appointments where patient_id="
+        + _PATIENT
+        + " and status in ('cancelled','no_show');"
+        "rollback;"
+    )
+    nums = [ln.strip() for ln in out.splitlines() if ln.strip().isdigit()]
+    assert nums and int(nums[-1]) == 2, out
+
+
+def test_terminal_retransition_rejected(psql):
+    """종결(cancelled) 재전이(→no_show) → PT409(enforce_appointment_transition)."""
+    err = psql.expect_error(
+        "begin;"
+        + _MK_PATIENT
+        + _appt("2030-06-03 10:00+09", "2030-06-03 10:30+09")
+        + "update public.appointments set status='cancelled' where patient_id="
+        + _PATIENT
+        + ";"
+        + "update public.appointments set status='no_show' where patient_id="
+        + _PATIENT
+        + ";"
+        "rollback;"
+    )
+    assert "invalid appointment transition" in err.lower() or "pt409" in err.lower(), err
+
+
+def test_reschedule_keeps_booked_allowed(psql):
+    """변경(시각만 UPDATE·status booked 불변) → 트리거 same-status 통과."""
+    out = psql.scalar(
+        "begin;"
+        + _MK_PATIENT
+        + _appt("2030-06-03 10:00+09", "2030-06-03 10:30+09")
+        + "update public.appointments set scheduled_start='2030-06-03 11:00+09', "
+        "  scheduled_end='2030-06-03 11:30+09' where patient_id="
+        + _PATIENT
+        + ";"
+        + "select count(*) from public.appointments where patient_id="
+        + _PATIENT
+        + " and status='booked' and scheduled_start='2030-06-03 11:00+09';"
+        "rollback;"
+    )
+    nums = [ln.strip() for ln in out.splitlines() if ln.strip().isdigit()]
+    assert nums and int(nums[-1]) == 1, out
+
+
+def test_appointment_update_permission_grants(psql):
+    """appointment.update 권한 + admin 부트 grant + reception seed grant + nurse 미보유."""
+    assert (
+        psql.scalar("select count(*) from public.permissions where code='appointment.update';")
+        == "1"
+    )
+    for role, expected in (("admin", "1"), ("reception", "1"), ("nurse", "0")):
+        cnt = psql.scalar(
+            "select count(*) from public.role_permissions rp "
+            "join public.roles r on r.id=rp.role_id "
+            "join public.permissions p on p.id=rp.permission_id "
+            f"where r.code='{role}' and p.code='appointment.update';"
+        )
+        assert cnt == expected, f"{role} appointment.update={cnt}(기대 {expected})"

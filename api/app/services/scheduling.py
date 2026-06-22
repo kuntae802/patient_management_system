@@ -14,8 +14,11 @@ import asyncpg
 
 from app.core import db
 from app.core.errors import AppError
+from app.schemas.encounters import EncounterResponse
 from app.schemas.scheduling import (
+    AppointmentCancel,
     AppointmentCreate,
+    AppointmentReschedule,
     AppointmentResponse,
     CalendarResponse,
     CalendarSlot,
@@ -219,20 +222,44 @@ async def compute_available_slots(
 # ── 예약 생성 · 캘린더 (Story 6.3) ─────────────────────────────────────────────
 
 
+def _normalize_utc(value: datetime) -> datetime:
+    """naive → UTC 간주(스키마는 timestamptz 기대). aware 는 그대로."""
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+
+
+async def _assert_slot_bookable(sub: UUID, doctor_id: UUID, scheduled_start: datetime) -> None:
+    """슬롯-윈도우 검증(6.3 이월 청산) — scheduled_start 가 의사의 **available 슬롯**인지(과거 아님·
+    근무블록 내·30분 정렬·휴진 아님) `compute_available_slots` 재사용으로 확인. 아니면 422
+    slot_unavailable. available-vs-booked 최종선은 EXCLUDE(생성·변경 시 catch→409)."""
+    # 슬롯이 **실재 근무 슬롯**인지만 검증(available 또는 booked) — 휴진·지난·근무외·비정렬은 거부.
+    # 이미 예약됨(booked)은 여기서 안 막음: 더블부킹은 DB EXCLUDE 가 409 double_booking 처리
+    # (슬롯-윈도우가 booked 를 422 로 가로채면 더블부킹 409 경로가 사라짐 — 6.3 AC3 보존).
+    target_date = scheduled_start.astimezone(_KST).date()
+    grid = await compute_available_slots(sub, doctor_id, target_date)
+    if not any(
+        s.status in ("available", "booked") and s.start == scheduled_start for s in grid.slots
+    ):
+        raise AppError(
+            "선택한 시간은 예약할 수 없는 슬롯입니다(근무 외·휴진·지난 시각).",
+            code="slot_unavailable",
+            status_code=422,
+            detail={"doctor_id": str(doctor_id), "scheduled_start": scheduled_start.isoformat()},
+        )
+
+
 async def create_appointment(sub: UUID, payload: AppointmentCreate) -> AppointmentResponse:
     """예약 생성(booked). scheduled_end = start + SLOT_MINUTES(서버 계산). 더블부킹 → 409.
 
-    과거 시각 거부(서버 시간 하한 — UI 는 available 슬롯만 제공하나 직접 API/6.4 경로 방어).
-    슬롯-윈도우(근무블록 내·정렬·available) 전체 검증은 6.4 이월(deferred-work)."""
-    start = payload.scheduled_start
-    if start.tzinfo is None:  # 방어: naive 입력은 UTC 로 간주(스키마는 timestamptz 기대)
-        start = start.replace(tzinfo=UTC)
+    과거 시각 → 422 appointment_in_past(빠른 구체 사유). 슬롯-윈도우 → 422 slot_unavailable
+    (6.3 이월 청산·근무블록/정렬/휴진/available)."""
+    start = _normalize_utc(payload.scheduled_start)
     if start <= datetime.now(UTC):
         raise AppError(
             "과거 시각으로는 예약할 수 없습니다.",
             code="appointment_in_past",
             status_code=422,
         )
+    await _assert_slot_bookable(sub, payload.doctor_id, start)
     scheduled_end = start + timedelta(minutes=SLOT_MINUTES)
     row = await db.insert_appointment(
         sub,
@@ -249,18 +276,62 @@ async def create_appointment(sub: UUID, payload: AppointmentCreate) -> Appointme
     return AppointmentResponse.model_validate(dict(row))
 
 
-# 예약 status → 캘린더 슬롯 status. 한 슬롯에 여러 예약(취소 후 재예약 등) 시 우선순위로 활성 우선.
+# ── 예약 전이·변경·도착 접수 (Story 6.4) ──────────────────────────────────────
+
+
+async def cancel_appointment(
+    sub: UUID, appointment_id: UUID, payload: AppointmentCancel
+) -> AppointmentResponse:
+    """예약 취소(booked→cancelled). 소스 booked 아니면 409 invalid_transition."""
+    row = await db.cancel_appointment(sub, appointment_id, reason=payload.reason)
+    return AppointmentResponse.model_validate(dict(row))
+
+
+async def mark_appointment_no_show(
+    sub: UUID, appointment_id: UUID, payload: AppointmentCancel
+) -> AppointmentResponse:
+    """예약 노쇼(booked→no_show). 6.7 노쇼 카운트 근거."""
+    row = await db.mark_appointment_no_show(sub, appointment_id, reason=payload.reason)
+    return AppointmentResponse.model_validate(dict(row))
+
+
+async def reschedule_appointment(
+    sub: UUID, appointment_id: UUID, payload: AppointmentReschedule
+) -> AppointmentResponse:
+    """예약 변경(시각·의사 재배치). 새 슬롯 슬롯-윈도우 검증 → db UPDATE(더블부킹→409)."""
+    start = _normalize_utc(payload.scheduled_start)
+    if start <= datetime.now(UTC):
+        raise AppError(
+            "과거 시각으로는 예약할 수 없습니다.", code="appointment_in_past", status_code=422
+        )
+    await _assert_slot_bookable(sub, payload.doctor_id, start)
+    scheduled_end = start + timedelta(minutes=SLOT_MINUTES)
+    row = await db.reschedule_appointment(
+        sub,
+        appointment_id,
+        doctor_id=payload.doctor_id,
+        scheduled_start=start,
+        scheduled_end=scheduled_end,
+    )
+    return AppointmentResponse.model_validate(dict(row))
+
+
+async def check_in_reservation(sub: UUID, appointment_id: UUID) -> EncounterResponse:
+    """예약 환자 도착 접수 → reserved registered 내원 생성(대기 현황판 진입) + 예약 completed."""
+    row = await db.check_in_reservation(sub, appointment_id)
+    return EncounterResponse.model_validate(dict(row))
+
+
+# 슬롯을 **점유하는** 예약 status → 캘린더 슬롯 status. ⚠️ cancelled·no_show 는 제외(6.4 AC2:
+# "취소·노쇼된 슬롯은 다시 가용으로") — 점유 안 함 → base(available/past) 복귀·재예약 가능.
+# 한 슬롯에 여러 점유 예약(취소 후 재예약 등) 시 우선순위로 활성(confirmed) 우선.
 _APPT_CAL_STATUS: dict[str, CalendarSlotStatus] = {
     "booked": "confirmed",
     "completed": "completed",
-    "no_show": "no_show",
-    "cancelled": "cancelled",
 }
 _CAL_PRIORITY: dict[CalendarSlotStatus, int] = {
     "confirmed": 4,
     "completed": 3,
-    "no_show": 2,
-    "cancelled": 1,
 }
 
 
@@ -274,19 +345,22 @@ def _build_doctor_column(
     now: datetime,
     slot_minutes: int = SLOT_MINUTES,
 ) -> DoctorColumn:
-    """의사 1명의 캘린더 열 — 근무 슬롯(가용/휴진/지남) 위에 예약 overlay(확정/완료/노쇼/취소).
+    """의사 1명의 캘린더 열 — 근무 슬롯(가용/휴진/지남) 위에 **점유 예약** overlay(확정/완료).
 
-    base = `_build_slots`(booked=[] → available/time_off/past). 각 슬롯에 겹치는 예약 중
-    우선순위 최상위(활성 booked > 완료 > 노쇼 > 취소)를 overlay. 예약 없으면 base 상태 유지."""
+    base = `_build_slots`(booked=[] → available/time_off/past). 점유 예약(booked→confirmed·
+    completed)만 overlay(confirmed > completed). cancelled·no_show 는 점유 안 함 → 가용 복귀(AC2).
+    예약 없으면 base 상태 유지."""
     base = _build_slots(target_date, blocks, time_offs, [], now, slot_minutes)
     cal_slots: list[CalendarSlot] = []
     for s in base:
         best: dict | None = None
         best_pri = 0
         for appt in appointments:
+            cal_status = _APPT_CAL_STATUS.get(appt["status"])  # cancelled/no_show → None(미점유)
+            if cal_status is None:
+                continue
             if appt["scheduled_start"] < s.end and appt["scheduled_end"] > s.start:
-                cal_status = _APPT_CAL_STATUS.get(appt["status"], "confirmed")
-                pri = _CAL_PRIORITY.get(cal_status, 0)
+                pri = _CAL_PRIORITY[cal_status]
                 if pri > best_pri:
                     best_pri = pri
                     best = appt
@@ -295,7 +369,7 @@ def _build_doctor_column(
                 CalendarSlot(
                     start=s.start,
                     end=s.end,
-                    status=_APPT_CAL_STATUS.get(best["status"], "confirmed"),
+                    status=_APPT_CAL_STATUS[best["status"]],
                     patient_name=best["patient_name"],
                     appointment_id=best["id"],
                 )

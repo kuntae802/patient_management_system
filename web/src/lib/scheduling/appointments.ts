@@ -54,7 +54,20 @@ export type AppointmentResponse = {
   status: string;
   note: string | null;
   sms_opt_in: boolean;
+  cancel_reason: string | null;
+  cancelled_at: string | null;
+  no_show_at: string | null;
+  completed_at: string | null;
   created_at: string;
+};
+
+/** 도착 접수 응답(내원 — EncounterResponse 부분 거울). 대기 현황판 진입 확인용. */
+export type CheckInResult = {
+  id: string;
+  encounter_no: string;
+  patient_id: string;
+  visit_type: string;
+  status: string;
 };
 
 /** 예약 생성(booking-peek 저장). 게이트 appointment.create. 더블부킹 → 409 double_booking(ApiError). */
@@ -62,6 +75,40 @@ export function createAppointment(payload: AppointmentCreate): Promise<Appointme
   return apiFetch<AppointmentResponse>("/v1/scheduling/appointments", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+/** 예약 취소(booked→cancelled). 게이트 appointment.update. 잘못된 전이 → 409(ApiError). */
+export function cancelAppointment(id: string, reason?: string): Promise<AppointmentResponse> {
+  return apiFetch<AppointmentResponse>(`/v1/scheduling/appointments/${id}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ reason: reason ?? null }),
+  });
+}
+
+/** 예약 노쇼(booked→no_show). 게이트 appointment.update. */
+export function noShowAppointment(id: string, reason?: string): Promise<AppointmentResponse> {
+  return apiFetch<AppointmentResponse>(`/v1/scheduling/appointments/${id}/no-show`, {
+    method: "POST",
+    body: JSON.stringify({ reason: reason ?? null }),
+  });
+}
+
+/** 예약 변경(새 의사·시각). 게이트 appointment.update. 슬롯 불가 422·더블부킹 409(ApiError). */
+export function rescheduleAppointment(
+  id: string,
+  payload: { doctor_id: string; scheduled_start: string },
+): Promise<AppointmentResponse> {
+  return apiFetch<AppointmentResponse>(`/v1/scheduling/appointments/${id}/reschedule`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** 예약 환자 도착 접수 → reserved registered 내원 생성(대기 진입) + 예약 completed. 게이트 appointment.update. */
+export function checkInReservation(id: string): Promise<CheckInResult> {
+  return apiFetch<CheckInResult>(`/v1/scheduling/appointments/${id}/check-in`, {
+    method: "POST",
   });
 }
 

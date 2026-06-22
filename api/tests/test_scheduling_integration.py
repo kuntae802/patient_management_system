@@ -448,6 +448,8 @@ def booking_patient_id(psql: Psql) -> Iterator[str]:
         "'900101-1******', 'health_insurance') on conflict (id) do nothing;"
     )
     yield pid
+    # 정리 순서: 내원(도착접수가 reservation_id→appointment 로 생성) → 예약 → 환자(FK 역순).
+    psql.run(f"delete from public.encounters where patient_id='{pid}';")
     psql.run(f"delete from public.appointments where patient_id='{pid}';")
     psql.run(f"delete from public.patients where id='{pid}';")
 
@@ -539,3 +541,216 @@ def test_calendar_forbidden_for_nurse(
         params={"department_id": demo_dept_id, "date": _BOOK_DATE},
     )
     assert res.status_code == 403
+
+
+# ── 예약 변경·취소·노쇼·도착 접수 (Story 6.4) ─────────────────────────────────────────────────
+_RESCHEDULE_START = "2030-06-03T02:00:00Z"  # 11:00 KST(같은 월요일 오전 블록·다른 슬롯)
+
+
+def _slot_status(
+    client: TestClient, token: str, doctor_id: str, dept_id: str, start_iso: str
+) -> str:
+    """캘린더에서 의사·시각의 슬롯 상태 조회(가용 복귀 검증용)."""
+    res = client.get(
+        _CALENDAR_URL, headers=_bearer(token), params={"department_id": dept_id, "date": _BOOK_DATE}
+    )
+    cols = [c for c in res.json()["doctors"] if c["doctor_id"].lower() == doctor_id]
+    if not cols:
+        return "missing"
+    slot = next((s for s in cols[0]["slots"] if s["start"] == start_iso), None)
+    return slot["status"] if slot else "missing"
+
+
+def test_cancel_appointment_frees_slot(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+) -> None:
+    """AC1+AC2: 예약 생성→취소(booked→cancelled)→해당 슬롯 가용(available) 복귀."""
+    created = client.post(
+        _APPOINTMENTS_URL,
+        headers=_bearer(reception_token),
+        json=_appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id),
+    )
+    assert created.status_code == 201, created.text
+    appt_id = created.json()["id"]
+    assert (
+        _slot_status(client, reception_token, demo_doctor_id, demo_dept_id, _BOOK_START)
+        == "confirmed"
+    )
+
+    cancel = client.post(
+        f"{_APPOINTMENTS_URL}/{appt_id}/cancel",
+        headers=_bearer(reception_token),
+        json={"reason": "환자 요청"},
+    )
+    assert cancel.status_code == 200, cancel.text
+    assert cancel.json()["status"] == "cancelled"
+    # 취소 → 슬롯 가용 복귀(EXCLUDE·슬롯 계산이 booked 만 차감).
+    assert (
+        _slot_status(client, reception_token, demo_doctor_id, demo_dept_id, _BOOK_START)
+        == "available"
+    )
+
+
+def test_no_show_and_terminal_retransition(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+) -> None:
+    """AC1: booked→no_show; 종결 재전이(no_show→cancel)→409 invalid_transition."""
+    created = client.post(
+        _APPOINTMENTS_URL,
+        headers=_bearer(reception_token),
+        json=_appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id),
+    )
+    appt_id = created.json()["id"]
+    ns = client.post(
+        f"{_APPOINTMENTS_URL}/{appt_id}/no-show", headers=_bearer(reception_token), json={}
+    )
+    assert ns.status_code == 200 and ns.json()["status"] == "no_show"
+    # 종결 재전이 차단
+    again = client.post(
+        f"{_APPOINTMENTS_URL}/{appt_id}/cancel", headers=_bearer(reception_token), json={}
+    )
+    assert again.status_code == 409 and again.json()["error"]["code"] == "invalid_transition"
+
+
+def test_reschedule_appointment(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+) -> None:
+    """AC1+AC2: 변경→새 슬롯 확정·구 슬롯 가용 복귀."""
+    created = client.post(
+        _APPOINTMENTS_URL,
+        headers=_bearer(reception_token),
+        json=_appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id),
+    )
+    appt_id = created.json()["id"]
+    res = client.post(
+        f"{_APPOINTMENTS_URL}/{appt_id}/reschedule",
+        headers=_bearer(reception_token),
+        json={"doctor_id": demo_doctor_id, "scheduled_start": _RESCHEDULE_START},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["scheduled_start"] == _RESCHEDULE_START
+    assert (
+        _slot_status(client, reception_token, demo_doctor_id, demo_dept_id, _BOOK_START)
+        == "available"
+    )
+    assert (
+        _slot_status(client, reception_token, demo_doctor_id, demo_dept_id, _RESCHEDULE_START)
+        == "confirmed"
+    )
+
+
+def test_check_in_creates_reserved_encounter(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+) -> None:
+    """AC3: 도착 접수 → reserved registered 내원 생성(대기 진입) + 예약 completed."""
+    created = client.post(
+        _APPOINTMENTS_URL,
+        headers=_bearer(reception_token),
+        json=_appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id),
+    )
+    appt_id = created.json()["id"]
+    checkin = client.post(
+        f"{_APPOINTMENTS_URL}/{appt_id}/check-in", headers=_bearer(reception_token)
+    )
+    assert checkin.status_code == 201, checkin.text
+    enc = checkin.json()
+    assert enc["visit_type"] == "reserved" and enc["status"] == "registered"
+    assert enc["patient_id"] == booking_patient_id
+    # 예약은 completed 로 종결(슬롯에서 confirmed 가 아니라 completed overlay).
+    assert (
+        _slot_status(client, reception_token, demo_doctor_id, demo_dept_id, _BOOK_START)
+        == "completed"
+    )
+
+
+def test_transition_forbidden_for_nurse(
+    client: TestClient,
+    nurse_token: str,
+    booking_patient_id: str,
+    reception_token: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+) -> None:
+    """AC4: appointment.update 미보유(nurse) → 취소 403."""
+    created = client.post(
+        _APPOINTMENTS_URL,
+        headers=_bearer(reception_token),
+        json=_appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id),
+    )
+    appt_id = created.json()["id"]
+    res = client.post(
+        f"{_APPOINTMENTS_URL}/{appt_id}/cancel", headers=_bearer(nurse_token), json={}
+    )
+    assert res.status_code == 403
+
+
+def test_reschedule_and_checkin_on_cancelled_rejected(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+) -> None:
+    """AC1: 비-booked(취소됨) 예약의 reschedule·check-in → 409 invalid_transition(소스상태)."""
+    created = client.post(
+        _APPOINTMENTS_URL,
+        headers=_bearer(reception_token),
+        json=_appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id),
+    )
+    appt_id = created.json()["id"]
+    cancel = client.post(
+        f"{_APPOINTMENTS_URL}/{appt_id}/cancel", headers=_bearer(reception_token), json={}
+    )
+    assert cancel.status_code == 200 and cancel.json()["status"] == "cancelled"
+    # 취소된 예약 → reschedule 거부
+    resched = client.post(
+        f"{_APPOINTMENTS_URL}/{appt_id}/reschedule",
+        headers=_bearer(reception_token),
+        json={"doctor_id": demo_doctor_id, "scheduled_start": _RESCHEDULE_START},
+    )
+    assert resched.status_code == 409 and resched.json()["error"]["code"] == "invalid_transition"
+    # 취소된 예약 → check-in 거부(내원 미생성)
+    checkin = client.post(
+        f"{_APPOINTMENTS_URL}/{appt_id}/check-in", headers=_bearer(reception_token)
+    )
+    assert checkin.status_code == 409 and checkin.json()["error"]["code"] == "invalid_transition"
+
+
+def test_cancel_returns_lifecycle_timestamps(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+) -> None:
+    """취소 응답이 cancelled_at·cancel_reason 을 실제로 반환(_APPOINTMENT_COLUMNS 회귀 가드)."""
+    created = client.post(
+        _APPOINTMENTS_URL,
+        headers=_bearer(reception_token),
+        json=_appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id),
+    )
+    appt_id = created.json()["id"]
+    cancel = client.post(
+        f"{_APPOINTMENTS_URL}/{appt_id}/cancel",
+        headers=_bearer(reception_token),
+        json={"reason": "환자 요청"},
+    )
+    body = cancel.json()
+    assert body["cancelled_at"] is not None, "cancelled_at 이 응답에 누락(_APPOINTMENT_COLUMNS)"
+    assert body["cancel_reason"] == "환자 요청"
