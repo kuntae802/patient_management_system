@@ -6,7 +6,17 @@ masters · admin · dashboard)는 후속 스토리가 등록한다.
 
 from fastapi import APIRouter
 
-from app.api.v1 import admin, auth, encounters, masters, nursing, orders, patients, scheduling
+from app.api.v1 import (
+    admin,
+    auth,
+    encounters,
+    masters,
+    nursing,
+    orders,
+    patients,
+    radiology,
+    scheduling,
+)
 
 api_router = APIRouter()
 
@@ -30,6 +40,10 @@ api_router.include_router(orders.router)
 
 # 간호(활력징후 기록·조회, Story 5.6). 경로: /…/encounters/{id}/vitals · /…/nursing/vitals-worklist
 api_router.include_router(nursing.router)
+
+# 방사선 촬영·영상 업로드·장비(Story 5.8). 경로: /…/radiology/worklist · /…/equipment ·
+#   /…/examinations/{id}/images · /…/examinations/{id}/perform
+api_router.include_router(radiology.router)
 
 # 근무표·휴진 관리(Story 6.1). 외부 경로: /patient_management_system/api/v1/scheduling/*
 api_router.include_router(scheduling.router)

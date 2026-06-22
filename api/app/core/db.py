@@ -3686,3 +3686,206 @@ async def fetch_notification_logs(sub: UUID, *, limit: int) -> list[asyncpg.Reco
         )
 
     return await _run_authed(sub, _op)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 방사선 촬영·영상 업로드·장비(Story 5.8 / FR-100·FR-101·FR-103) — examinations 수행 측(imaging)
+# ══════════════════════════════════════════════════════════════════════════════
+# 촬영 수행 엔진(perform_examination RPC·전이 트리거·권한)은 0015 완비.
+# 본 섹션 = 워크리스트·장비 조회·영상(examination_images) 연결/조회·수행 wrapper(영상≥1·장비 배정).
+
+_EXAMINATION_IMAGE_COLUMNS = (
+    "ei.id, ei.examination_id, ei.content_type, ei.file_size, "
+    "ei.uploaded_by, uu.name as uploaded_by_name, ei.uploaded_at, ei.storage_path"
+)
+_EXAMINATION_IMAGE_FROM = (
+    "from public.examination_images ei left join public.users uu on uu.id = ei.uploaded_by"
+)
+
+
+async def fetch_radiology_worklist(sub: UUID, on_date: date) -> list[dict[str, object]]:
+    """촬영 워크리스트(FR-100) — 오늘(KST) 활성 내원의 미수행 영상검사 오더(imaging·ordered).
+
+    게이트=라우터(examination.perform). service_role(RLS 우회). patients·departments·fee_schedules
+    조인 = 비-PII 투영(fetch_nursing_worklist 자세). image_count=업로드 누적(상관 서브쿼리). 지시
+    오래된 순(FIFO·ordered_at asc).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[dict[str, object]]:
+        rows = await conn.fetch(
+            "select ex.id as examination_id, ex.encounter_id, p.chart_no, "
+            "p.name as patient_name, d.name as department_name, fs.name as fee_name, "
+            "ex.status, ub.name as ordered_by_name, ex.ordered_at, "
+            "(select count(*) from public.examination_images ei "
+            " where ei.examination_id = ex.id and ei.is_active = true) as image_count "
+            "from public.examinations ex "
+            "join public.encounters e on e.id = ex.encounter_id "
+            "join public.patients p on p.id = e.patient_id "
+            "join public.departments d on d.id = e.department_id "
+            "join public.fee_schedules fs on fs.id = ex.fee_schedule_id "
+            "left join public.users ub on ub.id = ex.ordered_by "
+            "where ex.exam_type = 'imaging' and ex.status = 'ordered' and ex.is_active = true "
+            "and e.is_active = true and e.status in ('registered', 'in_progress') "
+            "and (e.created_at at time zone 'Asia/Seoul')::date = $1 "
+            "order by ex.ordered_at asc",
+            on_date,
+        )
+        return [dict(r) for r in rows]
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_equipment(sub: UUID) -> list[dict[str, object]]:
+    """장비 목록·상태(FR-103) — 활성 장비(코드순). 게이트=라우터(order.read). 비민감 전역 참조.
+
+    service_role(RLS 우회·equipment 는 authenticated 전체 SELECT). 촬영 배정·가용성 확인용 읽기.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[dict[str, object]]:
+        rows = await conn.fetch(
+            "select id, code, name, modality, status, is_active "
+            "from public.equipment where is_active = true order by code"
+        )
+        return [dict(r) for r in rows]
+
+    return await _run_authed(sub, _op)
+
+
+async def insert_examination_image(
+    sub: UUID,
+    *,
+    examination_id: UUID,
+    storage_path: str,
+    content_type: str,
+    file_size: int | None,
+    uploaded_by: UUID,
+) -> dict[str, object]:
+    """촬영 영상 1건 연결(FR-101) — examination_images INSERT(자동 감사). Storage 업로드 후 호출.
+
+    검사 존재·imaging·ordered 선검사(미존재 404·lab 422 not_imaging·비-ordered 409 locked
+    = 이미 촬영 수행된 검사엔 추가 금지). DB 엔 storage_path(경로)만. 잘못된 FK(23503) → 422. 반환 =
+    users 조인 dict(서비스가 서명 URL 합성).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        meta = await conn.fetchrow(
+            "select exam_type, status from public.examinations where id = $1 and is_active = true",
+            examination_id,
+        )
+        if meta is None:
+            raise NotFoundError(
+                "검사 오더를 찾을 수 없습니다.", detail={"examination_id": str(examination_id)}
+            )
+        if meta["exam_type"] != "imaging":
+            raise AppError("영상검사 오더가 아닙니다.", code="not_imaging", status_code=422)
+        if meta["status"] != "ordered":
+            raise ConflictError("이미 촬영 수행된 검사입니다.", code="examination_locked")
+        try:
+            row = await conn.fetchrow(
+                "insert into public.examination_images "
+                "(examination_id, storage_path, content_type, file_size, uploaded_by) "
+                "values ($1, $2, $3, $4, $5) returning id",
+                examination_id,
+                storage_path,
+                content_type,
+                file_size,
+                uploaded_by,
+            )
+        except asyncpg.ForeignKeyViolationError as exc:
+            raise AppError(
+                "참조 대상이 올바르지 않습니다(검사 오더).",
+                code="invalid_reference",
+                status_code=422,
+            ) from exc
+        assert row is not None  # RETURNING 은 항상 1행
+        full = await conn.fetchrow(
+            f"select {_EXAMINATION_IMAGE_COLUMNS} {_EXAMINATION_IMAGE_FROM} where ei.id = $1",
+            row["id"],
+        )
+        assert full is not None
+        return dict(full)
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_examination_images(sub: UUID, examination_id: UUID) -> list[dict[str, object]]:
+    """한 검사의 촬영 영상 목록(업로드순·활성만, users 조인). 게이트=라우터(order.read).
+
+    service_role(RLS 우회). 서명 URL 은 서비스가 storage_path 로 매 조회 생성(db 는 경로만 반환 —
+    5.9 판독의도 이 경로로 재사용). 검사 미존재 시 빈 목록(404 아님 — 조회 관용).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[dict[str, object]]:
+        rows = await conn.fetch(
+            f"select {_EXAMINATION_IMAGE_COLUMNS} {_EXAMINATION_IMAGE_FROM} "
+            f"where ei.examination_id = $1 and ei.is_active = true "
+            f"order by ei.uploaded_at asc, ei.id asc",
+            examination_id,
+        )
+        return [dict(r) for r in rows]
+
+    return await _run_authed(sub, _op)
+
+
+async def call_perform_examination(
+    sub: UUID, *, examination_id: UUID, equipment_id: UUID | None
+) -> dict[str, object]:
+    """촬영 수행(FR-101·FR-093) — perform_examination RPC(ordered→performed). 영상≥1·장비 배정.
+
+    선검사: 검사 존재(404)·imaging(422 not_imaging)·ordered(아니면 409 invalid_transition = 재수행
+    차단 친절선, RPC PT409 백스톱). 활성 영상 0장 → 422 image_required. equipment_id 제공 시 활성
+    장비 검증(422 invalid_equipment) 후 same-status UPDATE 로 배정(0015 전이 트리거 통과).
+    이후 perform_examination RPC(SECURITY DEFINER·performed_by=auth.uid·performed_at, PT404/PT409
+    자동 매핑). 반환 = fee/users 조인 dict(_EXAMINATION_COLUMNS).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        meta = await conn.fetchrow(
+            "select exam_type, status from public.examinations where id = $1 and is_active = true",
+            examination_id,
+        )
+        if meta is None:
+            raise NotFoundError(
+                "검사 오더를 찾을 수 없습니다.", detail={"examination_id": str(examination_id)}
+            )
+        if meta["exam_type"] != "imaging":
+            raise AppError("영상검사 오더가 아닙니다.", code="not_imaging", status_code=422)
+        if meta["status"] != "ordered":
+            # 이미 performed/completed = 재수행 차단(FR-093). RPC PT409 도 동일하나 친절한 선검사.
+            raise ConflictError(code="invalid_transition")
+        image_count = await conn.fetchval(
+            "select count(*) from public.examination_images "
+            "where examination_id = $1 and is_active = true",
+            examination_id,
+        )
+        if not image_count:
+            raise AppError(
+                "촬영 영상을 1장 이상 업로드해야 수행할 수 있습니다.",
+                code="image_required",
+                status_code=422,
+            )
+        if equipment_id is not None:
+            active = await conn.fetchval(
+                "select is_active from public.equipment where id = $1", equipment_id
+            )
+            if not active:  # None(미존재) 또는 False(비활성)
+                raise AppError(
+                    "장비가 올바르지 않습니다.", code="invalid_equipment", status_code=422
+                )
+            # same-status UPDATE(status='ordered' 유지) → 전이 트리거 통과(0015:159) → 장비 배정.
+            await conn.execute(
+                "update public.examinations set equipment_id = $1, updated_at = now() "
+                "where id = $2",
+                equipment_id,
+                examination_id,
+            )
+        # 전이 RPC(SECURITY DEFINER·재수행 차단). SQLSTATE → _run_authed 매핑(여기 try/except 불요).
+        await conn.fetchrow("select * from public.perform_examination($1)", examination_id)
+        full = await conn.fetchrow(
+            f"select {_EXAMINATION_COLUMNS} {_EXAMINATION_FROM} where ex.id = $1",
+            examination_id,
+        )
+        assert full is not None
+        return dict(full)
+
+    return await _run_authed(sub, _op)
