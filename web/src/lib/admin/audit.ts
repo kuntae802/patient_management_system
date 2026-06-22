@@ -96,10 +96,11 @@ export function actorLabel(entry: AuditLogEntry): string {
 // 항상-민감 키(table-agnostic) — 연락처·건강민감(임상 프로필·SOAP)·암호/비밀. 스냅샷 표시 단 차단(UX-DR22, Story 3.6).
 // SOAP(subjective/objective/assessment/plan) = medical_records 자유텍스트(Story 4.6).
 // allergy_override_reason = prescription_details 알레르기 오버라이드 사유 자유텍스트(Story 5.5).
+// content = nursing_record 간호기록/처치 수행 내용 자유 임상 서사(Story 5.7).
 // 서버측 마스킹(services/audit.py `_SENSITIVE_KEY`)이 1차 권위 — 이 정규식은 방어심층이며 **동일 키
 // 집합으로 유지**(한쪽만 바꾸면 드리프트).
 const SENSITIVE_KEY =
-  /(resident_no|rrn|ssn|password|passwd|secret|token|email|phone|address|guardian|allergies|chronic_diseases|medications|notes|insurance_no|subjective|objective|assessment|plan|allergy_override_reason|_enc$|_hash$|_blind_index$|ciphertext)/i;
+  /(resident_no|rrn|ssn|password|passwd|secret|token|email|phone|address|guardian|allergies|chronic_diseases|medications|notes|insurance_no|subjective|objective|assessment|plan|allergy_override_reason|content|_enc$|_hash$|_blind_index$|ciphertext)/i;
 
 // `name` 은 테이블 의존 — 환자/보호자만 PII(masters 진료과명·roles 라벨은 비-PII). 서버 거울.
 export const PII_NAME_TABLES = new Set(["patients", "guardians"]);
