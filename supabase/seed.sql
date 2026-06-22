@@ -21,6 +21,8 @@
 --       ⚠️ 오더 도메인 403 baseline 은 reception(임상 오더 권한 0)으로 이동.
 --     · reception@pms.local  role=reception → encounter.register/read/call 보유(하단 grant) → walk-in 접수·호출
 --       골든 패스 가동(Story 4.2/4.3). 역할 grant 는 데모/통합테스트용 — 프로덕션은 1.7 매트릭스가 부여.
+--     · radiologist@pms.local role=radiologist → order.read·examination.perform 보유(5.1 grant) → 촬영 워크리스트·
+--       영상 업로드·촬영 수행 골든 패스(Story 5.8). 촬영 수행 403 baseline = reception + doctor(perform 무).
 --   ★ 안전: seed.sql 은 로컬 `supabase db reset` 에서만 실행된다. 운영 배포는 `supabase db push`
 --     (마이그레이션만, seed 미실행)이므로 클라우드에 이 계정이 생기지 않는다.
 --     🚫 `supabase db reset --linked`(클라우드 대상)는 절대 실행 금지 — DB 전체가 초기화된다.
@@ -39,7 +41,11 @@ declare
     -- 무권한 baseline(Story 4.4) — doctor 가 encounter.read/start 를 받으면 admin·reception·doctor 셋 다
     -- encounter.read 보유 → "권한 미보유 403" 검증 계정이 사라진다. nurse(간호 권한=Epic 5) 가 그 baseline.
     jsonb_build_object('uid','000000a4-0000-4000-8000-0000000000a4',
-      'email','nurse@pms.local','employee_no','EMP0004','name','간호사(테스트)','role','nurse')
+      'email','nurse@pms.local','employee_no','EMP0004','name','간호사(테스트)','role','nurse'),
+    -- 방사선사(Story 5.8) — 촬영 워크리스트·영상 업로드·촬영 수행(order.read·examination.perform = 위 5.1 grant 기보유).
+    --   촬영 수행 403 baseline = reception(임상 오더 권한 0) + doctor(examination.order 有·examination.perform 無).
+    jsonb_build_object('uid','000000a5-0000-4000-8000-0000000000a5',
+      'email','radiologist@pms.local','employee_no','EMP0005','name','방사선사(테스트)','role','radiologist')
   );
   v_acct jsonb;
   v_uid uuid;
@@ -164,7 +170,7 @@ on conflict (role_id, permission_id) do nothing;
 -- 소유 — 이 시드는 로컬 db reset 전용(운영 db push 미반영). 멱등.
 -- ⚠️ baseline 이동: nurse 가 오더 권한을 받으므로 nurse 는 더 이상 "오더" 무권한 baseline 이 아니다(여전히
 --    encounter.*/patient.* 권한 0 → 그쪽 4.4/4.5 baseline 은 유지·무영향). **오더 403 검증 baseline = reception**
---    (임상 오더 권한 0). radiologist 데모 계정은 미존재(5.8 신설) — 본 grant 는 forward-looking.
+--    (임상 오더 권한 0). radiologist 데모 계정 = EMP0005(Story 5.8 신설, 위 v_accounts) → 본 grant 가 그 계정에 적용.
 insert into public.role_permissions (role_id, permission_id)
 select r.id, p.id
 from public.roles r
