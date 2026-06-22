@@ -17,6 +17,7 @@ from datetime import UTC, date, datetime, time, timedelta, timezone
 from uuid import UUID
 
 from app.core import db
+from app.core.errors import NotFoundError
 from app.schemas.notifications import NotificationLogResponse, ReminderRunSummary
 
 # KST = 무 DST → 고정 +9 오프셋(zoneinfo/tzdata 의존 회피·6.2 _KST 동형).
@@ -142,3 +143,65 @@ async def list_notification_logs(sub: UUID, *, limit: int = 100) -> list[Notific
     """최근 알림 발송 이력(원무 읽기뷰). 원시 phone·환자명 미반환(마스킹·비-식별만)."""
     rows = await db.fetch_notification_logs(sub, limit=limit)
     return [NotificationLogResponse.model_validate(dict(r)) for r in rows]
+
+
+# ── 휴진 재배정/취소 환자 안내(Story 6.8 / FR-016·6.6 이음매 확장) ─────────────────────────────
+
+
+def _build_change_notice_body(
+    *, appointment_start: datetime, department_name: str, kind: str
+) -> str:
+    """비-식별 시뮬 변경 통지(_build_reminder_body 미러). ⚠️ 환자명·주민번호·연락처 금지(AC4) —
+    날짜·시각·진료과·병원명만. reschedule_notice = 재배정 후 새 시각·cancellation_notice = 휴진
+    취소."""
+    when = _format_kst_12h(appointment_start)
+    if kind == "reschedule_notice":
+        return (
+            f"[{_CLINIC_NAME}] 예약 변경 안내: {when} {department_name} 진료로 "
+            f"예약이 변경되었습니다. 문의는 병원으로 연락해 주세요."
+        )
+    return (
+        f"[{_CLINIC_NAME}] 예약 취소 안내: {when} {department_name} 진료 예약이 "
+        f"의사 사정(휴진)으로 취소되었습니다. 재예약은 병원으로 문의해 주세요."
+    )
+
+
+async def record_change_notice(
+    sub: UUID, appointment_id: UUID, kind: str
+) -> NotificationLogResponse | None:
+    """휴진 재배정/취소 환자 안내 기록(6.8·시뮬·6.6 이음매). 예약 컨텍스트(현재 시각·진료과·phone)로
+    비-식별 body 생성 후 notification_logs 에 멱등 INSERT. ⚠️ reschedule_notice 는 **재배정 성공 후**
+    호출해야 새 scheduled_start 가 반영된다. 연락처 있음=simulated·없음=skipped(no_recipient). 멱등
+    충돌(이미 안내됨) → None. 미존재 예약 → 404. 게이트 notification.send(insert_notification_log 가
+    동일 txn 재평가). 원시 phone 은 mask_phone 후에만 저장·응답에 미반환(AC4)."""
+    ctx = await db.fetch_appointment_notice_context(sub, appointment_id)
+    if ctx is None:
+        raise NotFoundError(
+            "예약을 찾을 수 없습니다.", detail={"appointment_id": str(appointment_id)}
+        )
+    recipient = mask_phone(ctx["phone"])
+    body = _build_change_notice_body(
+        appointment_start=ctx["scheduled_start"],
+        department_name=ctx["department_name"],
+        kind=kind,
+    )
+    if recipient is None:
+        status, skip_reason, sent_at = "skipped", "no_recipient", None
+    else:
+        status, skip_reason, sent_at = "simulated", None, datetime.now(UTC)
+
+    logged = await db.insert_notification_log(
+        sub,
+        appointment_id=appointment_id,
+        patient_id=ctx["patient_id"],
+        reminder_kind=kind,
+        recipient_masked=recipient,
+        body=body,
+        status=status,
+        skip_reason=skip_reason,
+        appointment_start=ctx["scheduled_start"],
+        sent_at=sent_at,
+    )
+    if logged is None:  # 멱등 충돌(이미 같은 종류 안내됨) → 새 행 0
+        return None
+    return NotificationLogResponse.model_validate(dict(logged))

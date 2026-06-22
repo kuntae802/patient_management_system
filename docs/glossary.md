@@ -574,3 +574,21 @@
 | `fetchNoShowStatus`·booking-peek 배지·patient-booking 안내 | 웹(`lib/scheduling/appointments.ts`·`components/scheduling/`) | 직원 booking-peek = 환자 선택 시 사전 조회 → `blocked` 면 노쇼 색(`status-received`) 경고 칩 + 저장 버튼 disable + 저장 409 인라인 표면화(음영 비의존) / 환자 앱 = 확정 시 409 → 쉬운 말 안내("병원으로 문의해 주세요") |
 
 > **노쇼 임계 제한 경계(Story 6.7 확정):** 카운트=파생 SQL 함수(`patient_no_show_count`·비정규화 컬럼 없음)·임계=앱 상수(`NO_SHOW_THRESHOLD=2`·`count>threshold`)·강제=db.py 가드(동일 txn·TOCTOU)·코드=409 `no_show_threshold_exceeded`. **차단 = 신규 예약 2경로만**(원무 대리 `POST /appointments` + 환자 본인 `POST /me/appointments`)·**reschedule·check-in 비대상**. 신규 권한·테이블 0(기존 `appointment.read`/`create` 재사용 → admin grant 재실행 불요). **원무 오버라이드(강제 예약)·롤링 윈도우(최근 N개월)·환자 앱 사전 차단(self no-show 엔드포인트) = 의도적 범위 밖(이월).**
+
+## 휴진 시 영향 예약 재배정 (Story 6.8, `0037_appointment_reassignment.sql`)
+
+> ⚠️ **마이그 번호 0037**: Epic 6 블록 0030~ 의 여덟 번째·**마지막**(6.1=0030·6.2=0031·6.3=0032·6.4=0033·6.5=0034·6.6=0035·6.7=0036). **캡스톤 = 기존 조각 묶기**: 신규 핵심 능력 = 영향 예약 조회 1건뿐·재배정 = 6.4 `reschedule` 재사용·안내 = 6.6 `notification_logs` 이음매 확장(사용자 확정). 0501("reminder_kind 전 도메인 0035 정의")·0432·0474·0511 의 "휴진 재배정=6.8" 이월 청산.
+
+| 용어/식별자 | 종류 | 정의 |
+|---|---|---|
+| **휴진 재배정 모델(표면화·수동 해소)** | 설계 결정 | 0030 휴진 등록은 부수효과 없음(영향 예약 자동 취소/이동 안 함·6.1 설계) → 6.8 은 등록 **후** 영향 예약을 **조회·표면화**하고, 관리자가 재배정/취소를 **명시 액션**으로 수행. 휴진 INSERT↔영향 조회는 분리(TOCTOU 무관·읽기). |
+| `GET …/scheduling/affected-appointments?doctor_id&start_at&end_at` | 엔드포인트(읽기) | 그 의사의 `status='booked'` 예약 중 휴진 윈도우 **반열림 겹침**만 + 환자명(cancelled·no_show·completed 제외=슬롯 미점유/종결). 게이트 `appointment.read` → 403(nurse). 겹침 0 → 빈 배열(404 아님)·날짜 파싱 실패 422. 정적 세그먼트(동적 라우트 충돌 없음) |
+| `POST …/scheduling/appointments/{id}/notify-change` | 엔드포인트(액션) | 휴진 재배정/취소 환자 안내 기록(시뮬·6.6 이음매). body `{kind: reschedule_notice\|cancellation_notice}`. 게이트 `notification.send` → 403. 재배정/취소 **성공 후** 호출(reschedule_notice 는 새 시각 반영). 멱등(이미 안내됨) → null·미존재 예약 404 |
+| `reschedule_notice`·`cancellation_notice` | reminder_kind 값(0037 CHECK 확장) | 변경 통지 2종 — `notification_logs.reminder_kind` 어휘에 추가(6.6 d_minus_3/d_minus_1 옆). UNIQUE(appointment_id, reminder_kind) 로 종류별 1건 멱등. ⚠️ 컬럼명 `reminder_kind` 가 이제 "알림 종류"(리마인더+통지)를 담음 — 정식 리네임(`notification_kind`) 이월 |
+| `reschedule_appointment` department 동기화 | db 보강(`core/db.py`·0037 스토리) | **의사 변경 시** `appointment.department_id` = 새 의사 home 진료과(`users.department_id`) 동기화 → 부서-스코프 캘린더 고아 방지(deferred 'reschedule department_id 미동기화' 청산). **같은 의사면 불변**(다중 진료과 의사가 시각만 옮길 때 회귀 차단). 새 의사 진료과 멤버십 검증(`_assert_doctor_in_department`)은 잔여 이월(UI 같은 진료과 피커로 미도달) |
+| `fetch_affected_appointments`·`list_affected_appointments` | db·service(`core/db.py`·`services/scheduling.py`) | service_role 읽기(booked∩윈도우 겹침+환자명·`fetch_appointments_for_date` posture) / `AffectedAppointment` 매핑(naive→UTC 간주) |
+| `fetch_appointment_notice_context`·`record_change_notice`·`_build_change_notice_body` | db·service(`core/db.py`·`services/notification.py`) | 통지 컨텍스트 읽기(시각·진료과명·phone[마스킹용 내부값·미반환]) / 안내 기록(mask_phone→simulated/skipped·`insert_notification_log` 멱등 재사용·미존재 404) / 비-식별 body 생성(환자명·연락처·주민번호 금지·AC4·`_build_reminder_body` 미러) |
+| `AffectedAppointment`·`ChangeNoticeRequest` | 스키마(`schemas/scheduling.py`·web 거울) | 영향 예약(id·patient_id·patient_name·doctor_id·department_id·시각·status) / 통지 요청(kind Literal). `ReminderKind`(schemas/notifications.py) 4값 확장 |
+| `AffectedAppointmentsPanel`·`fetchAffectedAppointments`·`recordChangeNotice` | 웹(`components/admin/`·`lib/scheduling/appointments.ts`) | 영향 예약 슬라이드오버(목록형·재배정 모드=의사 피커[같은 진료과 `bookable-doctors`]+슬롯 재선택→reschedule+notice·취소·안내 모드=cancel+notice·booking-detail 미러·이중제출 락·409 인라인 칩). `schedule-manager` = 휴진 등록(onSaved) 후 영향>0 패널 자동 오픈 + 휴진 행 "영향 예약" 액션(재방문) |
+
+> **휴진 재배정 경계(Story 6.8 확정·Epic 6 캡스톤):** 영향 조회=신규 read(booked∩겹침·환자명·`appointment.read`)·재배정=6.4 `reschedule` 재사용(+의사 변경 시 department_id 동기화로 deferred 청산)·안내=6.6 `notification_logs` 이음매 확장(reschedule_notice/cancellation_notice·시뮬·멱등·마스킹·비-식별·`notification.send`·best-effort). 주 surface=관리자 근무 스케줄(휴진 등록=`master.manage` admin). 신규 권한·테이블 0(기존 appointment.read/update·notification.send 재사용 → admin grant 재실행 불요). **자동 일괄 취소/이동·환자 수신함 UI·실 SMS·새 의사 진료과 멤버십 서버검증(`_assert_doctor_in_department`)·`reminder_kind`→`notification_kind` 리네임 = 의도적 범위 밖(이월).**

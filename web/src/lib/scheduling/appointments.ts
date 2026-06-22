@@ -78,6 +78,21 @@ export type NoShowStatus = {
   blocked: boolean;
 };
 
+/** 휴진 영향 예약(Story 6.8·FastAPI AffectedAppointment 거울). 항상 booked·환자명만(주민번호/연락처 미포함). */
+export type AffectedAppointment = {
+  id: string;
+  patient_id: string;
+  patient_name: string;
+  doctor_id: string;
+  department_id: string;
+  scheduled_start: string;
+  scheduled_end: string;
+  status: string;
+};
+
+/** 변경 통지 종류(Story 6.8). reschedule_notice=재배정 후·cancellation_notice=휴진 취소. */
+export type ChangeNoticeKind = "reschedule_notice" | "cancellation_notice";
+
 /**
  * 예약 생성(booking-peek 저장). 게이트 appointment.create.
  * 더블부킹 → 409 double_booking · 노쇼 임계 초과 → 409 no_show_threshold_exceeded(ApiError).
@@ -93,6 +108,30 @@ export function createAppointment(payload: AppointmentCreate): Promise<Appointme
 export function fetchNoShowStatus(patientId: string): Promise<NoShowStatus> {
   const query = new URLSearchParams({ patient_id: patientId });
   return apiFetch<NoShowStatus>(`/v1/scheduling/no-show-status?${query.toString()}`);
+}
+
+/**
+ * 휴진 기간에 걸린 영향 예약(그 의사·booked·윈도우 겹침)+환자명 조회(Story 6.8·AC1). 게이트 appointment.read.
+ * start/end = ISO timestamptz(휴진 start_at/end_at 그대로 전달). 겹침 0 → 빈 배열.
+ */
+export function fetchAffectedAppointments(
+  doctorId: string,
+  startAt: string,
+  endAt: string,
+): Promise<AffectedAppointment[]> {
+  const query = new URLSearchParams({ doctor_id: doctorId, start_at: startAt, end_at: endAt });
+  return apiFetch<AffectedAppointment[]>(`/v1/scheduling/affected-appointments?${query.toString()}`);
+}
+
+/**
+ * 휴진 재배정/취소 환자 안내 기록(Story 6.8·시뮬·6.6 이음매). 게이트 notification.send.
+ * ⚠️ 재배정/취소 **성공 후** 호출(reschedule_notice 는 새 시각 반영)·멱등(이미 안내됨)→null. best-effort.
+ */
+export function recordChangeNotice(appointmentId: string, kind: ChangeNoticeKind): Promise<unknown> {
+  return apiFetch<unknown>(`/v1/scheduling/appointments/${appointmentId}/notify-change`, {
+    method: "POST",
+    body: JSON.stringify({ kind }),
+  });
 }
 
 /** 예약 취소(booked→cancelled). 게이트 appointment.update. 잘못된 전이 → 409(ApiError). */

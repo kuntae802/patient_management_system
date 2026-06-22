@@ -12,7 +12,10 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-ReminderKind = Literal["d_minus_3", "d_minus_1"]
+# 알림 종류 — 리마인더(d_minus_3·d_minus_1·Story 6.6) + 변경 통지(reschedule_notice·
+# cancellation_notice·Story 6.8 휴진 재배정/취소 안내·0037 CHECK 확장). 컬럼명 `reminder_kind` 는
+# 이제 "알림 종류"를 담는다(리네임 이월).
+ReminderKind = Literal["d_minus_3", "d_minus_1", "reschedule_notice", "cancellation_notice"]
 NotificationStatus = Literal["simulated", "skipped"]
 
 

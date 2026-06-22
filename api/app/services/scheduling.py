@@ -16,6 +16,7 @@ from app.core import db
 from app.core.errors import AppError
 from app.schemas.encounters import EncounterResponse
 from app.schemas.scheduling import (
+    AffectedAppointment,
     AppointmentCancel,
     AppointmentCreate,
     AppointmentReschedule,
@@ -365,6 +366,20 @@ async def check_in_reservation(sub: UUID, appointment_id: UUID) -> EncounterResp
     """예약 환자 도착 접수 → reserved registered 내원 생성(대기 현황판 진입) + 예약 completed."""
     row = await db.check_in_reservation(sub, appointment_id)
     return EncounterResponse.model_validate(dict(row))
+
+
+# ── 휴진 영향 예약 조회 (Story 6.8 / FR-016) ──────────────────────────────────
+
+
+async def list_affected_appointments(
+    sub: UUID, doctor_id: UUID, start_at: datetime, end_at: datetime
+) -> list[AffectedAppointment]:
+    """휴진 기간에 걸린 영향 예약(그 의사·booked·윈도우 겹침) — 재배정/취소·안내 대상(AC1). 게이트는
+    라우터(appointment.read). naive datetime → UTC 간주(슬롯 함수 선례·_normalize_utc)."""
+    rows = await db.fetch_affected_appointments(
+        sub, doctor_id, _normalize_utc(start_at), _normalize_utc(end_at)
+    )
+    return [AffectedAppointment.model_validate(dict(r)) for r in rows]
 
 
 # 슬롯을 **점유하는** 예약 status → 캘린더 슬롯 status. ⚠️ cancelled·no_show 는 제외(6.4 AC2:

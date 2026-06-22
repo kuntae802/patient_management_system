@@ -12,7 +12,7 @@ authenticated SELECT). 게이트: require_permission('master.manage') → 403(ma
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, status
@@ -22,11 +22,13 @@ from app.schemas.encounters import EncounterResponse
 from app.schemas.masters import ActiveUpdate
 from app.schemas.notifications import NotificationLogResponse, ReminderRunSummary
 from app.schemas.scheduling import (
+    AffectedAppointment,
     AppointmentCancel,
     AppointmentCreate,
     AppointmentReschedule,
     AppointmentResponse,
     CalendarResponse,
+    ChangeNoticeRequest,
     DoctorScheduleCreate,
     DoctorScheduleResponse,
     DoctorScheduleUpdate,
@@ -207,6 +209,26 @@ async def get_no_show_status(
     return await scheduling_service.get_patient_no_show_status(user.sub, patient_id)
 
 
+# ── 휴진 영향 예약 조회 (Story 6.8 / FR-016) — 휴진 등록 후 재배정 prompt ──────────────────
+# 정적 세그먼트 'affected-appointments' — /appointments/{id}·/me·/no-show-status·/reminders 와
+# 충돌 없음.
+
+
+@router.get("/affected-appointments", response_model=list[AffectedAppointment])
+async def list_affected_appointments(
+    doctor_id: UUID,
+    start_at: datetime,
+    end_at: datetime,
+    user: CurrentUser = Depends(require_appointment_read),
+) -> list[AffectedAppointment]:
+    """휴진 기간에 걸린 영향 예약(그 의사·booked·윈도우 겹침)+환자명 — 재배정/취소·안내 대상(AC1).
+    게이트 appointment.read → 403. 겹침 0 → 빈 배열(404 아님). 날짜 파싱 실패 → 422. cancelled·
+    no_show·completed 제외(슬롯 미점유/종결)."""
+    return await scheduling_service.list_affected_appointments(
+        user.sub, doctor_id, start_at, end_at
+    )
+
+
 # ── 예약 전이·변경·도착 접수 (Story 6.4·액션 엔드포인트·status PATCH 아님) ──────────────────
 
 
@@ -252,6 +274,20 @@ async def check_in_reservation(
     """예약 환자 도착 접수 → reserved registered 내원 생성(대기 현황판 진입) + 예약 completed.
     게이트 appointment.update(+ 내원 생성 encounter.register TOCTOU). 미존재 404·잘못된 전이 409."""
     return await scheduling_service.check_in_reservation(user.sub, appointment_id)
+
+
+@router.post(
+    "/appointments/{appointment_id}/notify-change", response_model=NotificationLogResponse | None
+)
+async def notify_appointment_change(
+    appointment_id: UUID,
+    payload: ChangeNoticeRequest,
+    user: CurrentUser = Depends(require_notification_send),
+) -> NotificationLogResponse | None:
+    """휴진 재배정/취소 환자 안내 기록(6.8·시뮬·6.6 이음매). 게이트 notification.send → 403. 재배정/
+    취소 성공 후 호출(reschedule_notice 는 새 시각 반영). 멱등(이미 안내됨) → null·미존재 예약 404·
+    마스킹 수신처·비-식별 body(원시 phone 미반환)."""
+    return await notification_service.record_change_notice(user.sub, appointment_id, payload.kind)
 
 
 # ── 환자 본인 예약 (Story 6.5·세션 uid 스코프) ────────────────────────────────────────────

@@ -3409,6 +3409,32 @@ async def fetch_appointments_for_date(
     return await _run_authed(sub, _op)
 
 
+async def fetch_affected_appointments(
+    sub: UUID, doctor_id: UUID, range_start: datetime, range_end: datetime
+) -> list[asyncpg.Record]:
+    """휴진 영향 예약 조회(6.8·FR-016) — 그 의사의 `status='booked'` 예약 중 휴진 기간
+    [range_start, range_end) 와 **반열림 겹침**하는 것 + 환자명. cancelled·no_show·completed 는
+    슬롯 미점유/종결 → 제외. staff(appointment.read·라우터 게이트)라 환자명 반환 OK(대기 현황판 4.3·
+    캘린더 6.3 선례)·주민번호/연락처 미반환. service_role(RLS 우회·fetch_appointments_for_date
+    패턴)."""
+
+    async def _op(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+        return await conn.fetch(
+            "select a.id, a.patient_id, a.doctor_id, a.department_id, a.scheduled_start, "
+            "  a.scheduled_end, a.status, p.name as patient_name "
+            "from public.appointments a "
+            "join public.patients p on p.id = a.patient_id "
+            "where a.doctor_id = $1 and a.status = 'booked' "
+            "  and a.scheduled_start < $3 and a.scheduled_end > $2 "
+            "order by a.scheduled_start",
+            doctor_id,
+            range_start,
+            range_end,
+        )
+
+    return await _run_authed(sub, _op)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 예약 전이·변경·도착 접수 (Story 6.4 — 0033) — service_role 직접 UPDATE(전이 트리거 백스톱)
 # 전이 매트릭스 = enforce_appointment_transition(0033·booked→cancelled/no_show/completed·PT409).
@@ -3497,7 +3523,13 @@ async def reschedule_appointment(
     scheduled_end: datetime,
 ) -> asyncpg.Record:
     """예약 변경(시각·의사 재배치·status 불변 booked → 트리거 same-status 통과). 소스 booked 아니면
-    409·비-의사/비활성 → 422·더블부킹 EXCLUDE(23P01) → 409. 슬롯-윈도우 검증은 서비스."""
+    409·비-의사/비활성 → 422·더블부킹 EXCLUDE(23P01) → 409. 슬롯-윈도우 검증은 서비스.
+
+    ⚠️ 의사 변경(휴진 재배정·6.8) 시 department_id 를 새 의사의 home 진료과로 동기화 — 부서-스코프
+    캘린더(fetch_bookable_doctors)에서 고아 방지(deferred 'reschedule department_id 미동기화' 청산).
+    **같은 의사면 department_id 불변**(다중 진료과 의사가 시각만 옮길 때 home-dept 로 덮어쓰는 회귀
+    차단). 새 의사 진료과 멤버십(doctor_schedules) 검증은 UI 가 같은 진료과 피커로 제한해 미도달 —
+    서버 백스톱은 별개 이월."""
 
     async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
         await _require_appointment_update(conn)
@@ -3505,15 +3537,22 @@ async def reschedule_appointment(
         if row["status"] != "booked":
             raise _appointment_transition_error()
         await _assert_doctor_assignable(conn, doctor_id)
+        new_department_id = row["department_id"]
+        if doctor_id != row["doctor_id"]:
+            doctor_dept = await conn.fetchval(
+                "select department_id from public.users where id = $1", doctor_id
+            )
+            new_department_id = doctor_dept or row["department_id"]  # NULL home → 기존 유지
         try:
             updated = await conn.fetchrow(
-                f"update public.appointments set doctor_id = $2, scheduled_start = $3, "
-                f"scheduled_end = $4, updated_at = now() where id = $1 "
+                f"update public.appointments set doctor_id = $2, department_id = $5, "
+                f"scheduled_start = $3, scheduled_end = $4, updated_at = now() where id = $1 "
                 f"returning {_APPOINTMENT_COLUMNS}",
                 appointment_id,
                 doctor_id,
                 scheduled_start,
                 scheduled_end,
+                new_department_id,
             )
         except asyncpg.ExclusionViolationError as exc:
             raise _double_booking_error() from exc
@@ -3629,6 +3668,27 @@ async def fetch_reminder_due_appointments(
             d3_end,
             d1_start,
             d1_end,
+        )
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_appointment_notice_context(
+    sub: UUID, appointment_id: UUID
+) -> asyncpg.Record | None:
+    """변경 통지(6.8 reschedule_notice/cancellation_notice) 생성용 — 예약의 현재 시각·환자·진료과명.
+    환자 phone. ⚠️ phone 은 **마스킹용 내부값**(fetch_reminder_due_appointments posture — 서비스가
+    mask_phone 후 저장·응답에 원시 phone 절대 미반환). status 무관 조회(취소된 예약도 통지 대상).
+    미존재 → None(서비스가 404). service_role(RLS 우회)."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record | None:
+        return await conn.fetchrow(
+            "select a.patient_id, a.scheduled_start, p.phone, d.name as department_name "
+            "from public.appointments a "
+            "join public.patients p on p.id = a.patient_id "
+            "join public.departments d on d.id = a.department_id "
+            "where a.id = $1",
+            appointment_id,
         )
 
     return await _run_authed(sub, _op)
