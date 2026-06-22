@@ -2849,6 +2849,146 @@ async def fetch_treatment_orders(sub: UUID, encounter_id: UUID) -> list[dict[str
     return await _run_authed(sub, _op)
 
 
+# ── 간호 활력징후(vital_signs, Story 5.6 / FR-091·FR-032) — 0017 테이블 직접 INSERT/SELECT ──
+# 활력은 상태머신/불변식 없는 구조화 수치(SOAP·처치 오더와 별개) → service_role 직접 쓰기(전이 RPC
+# 아님, insert_medical_record 자세). 매 측정 = 새 행 append(수정/삭제 미구현 — §스코프). users 조인
+# 으로 측정자명(recorded_by_name) 합성. ⚠️ body_temp numeric(4,1) → INSERT 직전 Decimal 변환.
+_VITAL_SIGNS_COLUMNS = (
+    "vs.id, vs.encounter_id, vs.systolic, vs.diastolic, vs.pulse, vs.body_temp, "
+    "vs.respiratory_rate, vs.spo2, vs.notes, "
+    "vs.recorded_by, ur.name as recorded_by_name, vs.recorded_at, "
+    "vs.is_active, vs.created_at, vs.updated_at"
+)
+_VITAL_SIGNS_FROM = "from public.vital_signs vs left join public.users ur on ur.id = vs.recorded_by"
+
+
+async def _require_vital_record(conn: asyncpg.Connection) -> None:
+    """쓰기 직전 동일 txn 에서 vital.record 재평가(평가↔쓰기 TOCTOU). 미보유 → 403.
+
+    라우터 게이트는 방어심층 — 진짜 권위는 이 동일 txn 재평가(_require_treatment_order 선례).
+    """
+    if not bool(await conn.fetchval("select public.has_permission('vital.record')")):
+        raise ForbiddenError(detail={"required_permission": "vital.record"})
+
+
+async def insert_vital_signs(
+    sub: UUID,
+    *,
+    encounter_id: UUID,
+    recorded_by: UUID,
+    systolic: int | None,
+    diastolic: int | None,
+    pulse: int | None,
+    body_temp: float | None,
+    respiratory_rate: int | None,
+    spo2: int | None,
+    notes: str | None,
+) -> dict[str, object]:
+    """활력징후 기록 — vital_signs 단건 INSERT(자동 감사). recorded_by=기록 간호사(jwt sub).
+
+    내원 존재 선검사(미존재 404 — FK 위반 전 명시 오류, insert_treatment_order 선례). 최소-1개·범위
+    는 DB CHECK 최종선(서버 Pydantic 2차선·클라 1차선). 권한은 INSERT 직전 재평가(TOCTOU). 잘못된
+    encounter_id(23503) 또는 빈 활력/범위 위반(CHECK 23514) → 422 백스톱. body_temp 는 Decimal 변환
+    (asyncpg numeric 바인딩). status 게이트 없음(orders 동형 — 웹이 active 만 노출, 직접 API 이월).
+    반환 = users 조인 dict.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        await _require_vital_record(conn)
+        exists = await conn.fetchval(
+            "select true from public.encounters where id = $1", encounter_id
+        )
+        if exists is None:
+            raise NotFoundError(
+                "내원을 찾을 수 없습니다.", detail={"encounter_id": str(encounter_id)}
+            )
+        temp = Decimal(str(body_temp)) if body_temp is not None else None
+        try:
+            row = await conn.fetchrow(
+                "insert into public.vital_signs "
+                "(encounter_id, systolic, diastolic, pulse, body_temp, respiratory_rate, spo2, "
+                "notes, recorded_by) "
+                "values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id",
+                encounter_id,
+                systolic,
+                diastolic,
+                pulse,
+                temp,
+                respiratory_rate,
+                spo2,
+                notes,
+                recorded_by,
+            )
+        except asyncpg.ForeignKeyViolationError as exc:
+            # 동시 삭제 레이스 등 23503 → 입력 오류 422(미매핑 시 503 오분류).
+            raise AppError(
+                "참조 대상이 올바르지 않습니다(내원).",
+                code="invalid_reference",
+                status_code=422,
+            ) from exc
+        except asyncpg.CheckViolationError as exc:
+            # 최소-1개/범위 CHECK(직접 API 우회) → 422(서버 Pydantic 1차 차단, DB 최종선).
+            raise AppError(
+                "활력징후 값이 올바르지 않습니다.",
+                code="invalid_vital_signs",
+                status_code=422,
+            ) from exc
+        assert row is not None  # RETURNING 은 항상 1행
+        full = await conn.fetchrow(
+            f"select {_VITAL_SIGNS_COLUMNS} {_VITAL_SIGNS_FROM} where vs.id = $1", row["id"]
+        )
+        assert full is not None
+        return dict(full)
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_vital_signs(sub: UUID, encounter_id: UUID) -> list[dict[str, object]]:
+    """한 내원의 활력징후 목록(최신순·활성만, users 조인). 게이트=라우터(read∨record).
+
+    service_role 경로라 RLS 우회 — 조회 권위는 라우터 require_any_permission(읽기 TOCTOU 저위험,
+    fetch_treatment_orders 동형). 반환 = [users 조인 dict] (서비스가 매핑).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[dict[str, object]]:
+        rows = await conn.fetch(
+            f"select {_VITAL_SIGNS_COLUMNS} {_VITAL_SIGNS_FROM} "
+            f"where vs.encounter_id = $1 and vs.is_active = true "
+            f"order by vs.recorded_at desc, vs.id desc",
+            encounter_id,
+        )
+        return [dict(r) for r in rows]
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_vitals_worklist(sub: UUID, on_date: date) -> list[dict[str, object]]:
+    """활력 워크리스트(Story 5.6 AC3) — 오늘(KST) 활성 내원(registered·in_progress) + 최근 활력.
+
+    게이트=라우터(vital.record). service_role 경로라 RLS 우회(권위=라우터, encounter.read 0 무관).
+    patients·departments 조인은 비-PII 투영(resident_no 제외, fetch_encounters 자세). latest_vital_
+    recorded_at = 상관 서브쿼리(없으면 NULL=미측정). 일자=created_at KST(walk-in≈registered).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[dict[str, object]]:
+        rows = await conn.fetch(
+            "select e.id as encounter_id, p.chart_no, p.name as patient_name, "
+            "d.name as department_name, e.status, e.created_at, "
+            "(select max(v.recorded_at) from public.vital_signs v "
+            " where v.encounter_id = e.id and v.is_active = true) as latest_vital_recorded_at "
+            "from public.encounters e "
+            "join public.patients p on p.id = e.patient_id "
+            "join public.departments d on d.id = e.department_id "
+            "where e.is_active = true and e.status in ('registered', 'in_progress') "
+            "and (e.created_at at time zone 'Asia/Seoul')::date = $1 "
+            "order by e.created_at asc",
+            on_date,
+        )
+        return [dict(r) for r in rows]
+
+    return await _run_authed(sub, _op)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 예약 생성 · 캘린더 (Story 6.3 — 0032) — service_role 직접 INSERT(walk-in 패턴)
 # 더블부킹 EXCLUDE(0031, 23P01) → 409 double_booking(서비스 catch, schedule_overlap 동형).

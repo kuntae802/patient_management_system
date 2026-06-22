@@ -134,6 +134,22 @@ def require_permission(code: str) -> Callable[..., Awaitable[CurrentUser]]:
     return _dependency
 
 
+def require_any_permission(*codes: str) -> Callable[..., Awaitable[CurrentUser]]:
+    """codes 중 하나라도 보유 시 통과, 전무 시 403. require_permission 의 OR 변형(short-circuit).
+
+    첫 소비처 = 활력징후 조회(Story 5.6) — 의사 진료 허브(encounter.read)와 간호 기록자 read-back
+    (vital.record)가 양쪽 본다(둘은 공통 권한 없음). RLS vital_signs_select_staff 가 동일 OR 거울.
+    """
+
+    async def _dependency(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+        for code in codes:
+            if await db.fetch_has_permission(user.sub, code):
+                return user
+        raise ForbiddenError(detail={"required_any_permission": list(codes)})
+
+    return _dependency
+
+
 async def get_current_staff(
     user: CurrentUser = Depends(get_current_user),
 ) -> CurrentUser:
