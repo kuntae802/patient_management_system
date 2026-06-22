@@ -754,3 +754,151 @@ def test_cancel_returns_lifecycle_timestamps(
     body = cancel.json()
     assert body["cancelled_at"] is not None, "cancelled_at 이 응답에 누락(_APPOINTMENT_COLUMNS)"
     assert body["cancel_reason"] == "환자 요청"
+
+
+# ── 환자 본인 예약 (Story 6.5 / FR-010) — 가입→연결→본인 예약·세션 스코프·직원 차단 ──────────────
+# 공개가입 → admin 미연결환자 생성 → self-link → 환자 토큰으로 /me/* 호출(세션 스코프).
+# created_by 는 응답 모델에 없으므로 psql 로 검증(= 환자 auth uid·0034 FK 제거 end-to-end).
+from tests.test_patients_integration import _unique_rrn  # noqa: E402
+from tests.test_patients_self_link_integration import (  # noqa: E402
+    _create_unlinked_patient,
+    _new_patient_email,
+    _signup_patient,
+)
+
+_ME_SLOTS_URL = "/v1/scheduling/me/slots"
+_ME_BOOKABLE_URL = "/v1/scheduling/me/bookable-doctors"
+_ME_APPT_URL = "/v1/scheduling/me/appointments"
+_SELF_LINK_URL = "/v1/patients/self-link"
+# 직원 booking_patient_id(10:00 KST=01:00Z)와 충돌 회피 → 11:00 KST(02:00Z·오전 블록 내).
+_SELF_BOOK_START = "2030-06-03T02:00:00Z"
+
+
+def _self_appt_payload(doctor_id: str, dept_id: str) -> dict[str, object]:
+    # ⚠️ patient_id 없음(서버가 세션 도출) — self 예약 요청 스키마.
+    return {
+        "department_id": dept_id,
+        "doctor_id": doctor_id,
+        "scheduled_start": _SELF_BOOK_START,
+        "sms_opt_in": True,
+    }
+
+
+@pytest.fixture
+def linked_patient(
+    client: TestClient, admin_token: str, psql: Psql
+) -> Iterator[tuple[str, str, str]]:
+    """공개가입 + admin 미연결환자 생성 + self-link → (token, uid, pid). 종료 시 FK 역순 정리."""
+    sess = _signup_patient(_new_patient_email())
+    if sess is None:
+        pytest.skip("환자 공개 가입(enable_signup) 미가용 — config 재활성 + 스택 재시작 후 재실행")
+    token, uid = sess
+    rrn = _unique_rrn()
+    pid = _create_unlinked_patient(client, admin_token, rrn=rrn, name="예약환자")
+    res = client.post(
+        _SELF_LINK_URL, json={"resident_no": rrn, "name": "예약환자"}, headers=_bearer(token)
+    )
+    assert res.status_code == 200, res.text  # 연결 성공(auth_uid=uid)
+    yield token, uid, pid
+    psql.run(f"delete from public.encounters where patient_id='{pid}';")
+    psql.run(f"delete from public.appointments where patient_id='{pid}';")
+    psql.run(f"delete from public.patients where id='{pid}';")
+
+
+def test_self_booking_creates_own_appointment(
+    client: TestClient,
+    linked_patient: tuple[str, str, str],
+    demo_doctor_id: str,
+    demo_dept_id: str,
+    psql: Psql,
+) -> None:
+    """AC2/AC3: 환자 본인 예약 → 201·patient_id=본인·booked·created_by=환자 auth uid."""
+    token, uid, pid = linked_patient
+    res = client.post(
+        _ME_APPT_URL, headers=_bearer(token), json=_self_appt_payload(demo_doctor_id, demo_dept_id)
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["status"] == "booked" and body["sms_opt_in"] is True
+    assert body["patient_id"].lower() == pid.lower()  # 본인 예약(서버 도출·교차환자 불가)
+    assert body["scheduled_end"] == "2030-06-03T02:30:00Z"  # +30분(서버 계산)
+    # created_by = 환자 auth uid(응답 모델에 없음 → DB 직접 확인·0034 FK 제거 end-to-end).
+    created_by = psql.scalar(
+        f"select created_by::text from public.appointments where id='{body['id']}'"
+    )
+    assert created_by.lower() == uid.lower()
+
+
+def test_self_booking_forbidden_for_staff(
+    client: TestClient, reception_token: str, demo_doctor_id: str, demo_dept_id: str
+) -> None:
+    """AC3: 직원(active 5역할) → /me/appointments 403(앱 예약 환자 전용·게이트 반전)."""
+    res = client.post(
+        _ME_APPT_URL,
+        headers=_bearer(reception_token),
+        json=_self_appt_payload(demo_doctor_id, demo_dept_id),
+    )
+    assert res.status_code == 403
+
+
+def test_self_slots_and_doctors_for_patient(
+    client: TestClient,
+    linked_patient: tuple[str, str, str],
+    demo_doctor_id: str,
+    demo_dept_id: str,
+) -> None:
+    """AC1: 환자 토큰으로 /me/slots·/me/bookable-doctors → 가용 슬롯·재직 의사(비-PII)."""
+    token, _uid, _pid = linked_patient
+    slots = client.get(
+        _ME_SLOTS_URL,
+        headers=_bearer(token),
+        params={"doctor_id": demo_doctor_id, "date": _FUTURE_WEEKDAY},
+    )
+    assert slots.status_code == 200, slots.text
+    assert "available" in {s["status"] for s in slots.json()["slots"]}
+    docs = client.get(
+        _ME_BOOKABLE_URL, headers=_bearer(token), params={"department_id": demo_dept_id}
+    )
+    assert docs.status_code == 200
+    assert demo_doctor_id in {d["id"].lower() for d in docs.json()}
+
+
+def test_self_slots_forbidden_for_staff(
+    client: TestClient, reception_token: str, demo_doctor_id: str
+) -> None:
+    """AC3: 직원 → /me/slots 403(직원은 /scheduling/slots[appointment.read] 사용)."""
+    res = client.get(
+        _ME_SLOTS_URL,
+        headers=_bearer(reception_token),
+        params={"doctor_id": demo_doctor_id, "date": _FUTURE_WEEKDAY},
+    )
+    assert res.status_code == 403
+
+
+def test_self_booking_double_booking_409(
+    client: TestClient,
+    linked_patient: tuple[str, str, str],
+    demo_doctor_id: str,
+    demo_dept_id: str,
+) -> None:
+    """AC2: 같은 슬롯 본인 재예약 → 409 double_booking(직원 대리 예약과 동일 EXCLUDE 공유)."""
+    token, _uid, _pid = linked_patient
+    payload = _self_appt_payload(demo_doctor_id, demo_dept_id)
+    first = client.post(_ME_APPT_URL, headers=_bearer(token), json=payload)
+    assert first.status_code == 201, first.text
+    dup = client.post(_ME_APPT_URL, headers=_bearer(token), json=payload)
+    assert dup.status_code == 409 and dup.json()["error"]["code"] == "double_booking"
+
+
+def test_self_booking_unlinked_409(
+    client: TestClient, demo_doctor_id: str, demo_dept_id: str
+) -> None:
+    """AC3: 미연결 환자(self-link 미완) → 409 no_self_patient(온보딩 유도)."""
+    sess = _signup_patient(_new_patient_email())
+    if sess is None:
+        pytest.skip("환자 공개 가입 미가용 — config 재활성 + supabase stop/start 후 재실행")
+    token, _uid = sess  # self-link 안 함 → 본인 환자 레코드 없음
+    res = client.post(
+        _ME_APPT_URL, headers=_bearer(token), json=_self_appt_payload(demo_doctor_id, demo_dept_id)
+    )
+    assert res.status_code == 409 and res.json()["error"]["code"] == "no_self_patient"

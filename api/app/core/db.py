@@ -2862,6 +2862,75 @@ async def insert_appointment(
     return await _run_authed(sub, _op)
 
 
+async def insert_self_appointment(
+    sub: UUID,
+    *,
+    doctor_id: UUID,
+    department_id: UUID,
+    scheduled_start: datetime,
+    scheduled_end: datetime,
+    sms_opt_in: bool,
+) -> asyncpg.Record:
+    """환자 본인 예약 INSERT(Story 6.5·status='booked'·자동 감사). insert_appointment 미러하되:
+
+    (1) **권한검사 없음**(환자 RBAC 권한 0 — 권위 = self-scope·get_current_patient 가 직원 차단),
+    (2) **patient_id 를 인자로 받지 않고** 동일 txn 에서 `auth_uid = sub` 로 도출(클라 미수용·교차
+        환자 예약 구조적 차단 — IDOR), (3) `created_by = sub`(환자 auth uid·0034 가 users FK 제거),
+    (4) note 없음. 미연결(환자 레코드 없음) → 409 no_self_patient(온보딩 유도)·비활성 환자 → 422·
+    더블부킹 EXCLUDE → 409·FK(23503) → 422·의사/진료과 active 선검사(insert_appointment 재사용)."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        # 본인 환자 레코드(auth_uid=sub) 도출 — patient_id 는 클라 입력이 아니다(세션 uid 스코프).
+        patient = await conn.fetchrow(
+            "select id, is_active from public.patients where auth_uid = $1", sub
+        )
+        if patient is None:
+            raise AppError(
+                "연결된 환자 기록이 없습니다. 본인 진료기록을 먼저 연결해 주세요.",
+                code="no_self_patient",
+                status_code=409,
+            )
+        if not patient["is_active"]:
+            raise AppError(
+                "비활성 환자는 예약할 수 없습니다.",
+                code="patient_inactive",
+                status_code=422,
+            )
+        patient_id = patient["id"]
+        # 의사(role=doctor·active)·진료과 배정 가능 검증(6.1 헬퍼 재사용·room 없음).
+        await _assert_doctor_assignable(conn, doctor_id)
+        await _assert_department_assignable(conn, department_id)
+        try:
+            row = await conn.fetchrow(
+                f"insert into public.appointments "
+                f"(patient_id, doctor_id, department_id, room_id, scheduled_start, "
+                f"scheduled_end, note, sms_opt_in, created_by) "
+                f"values ($1, $2, $3, $4, $5, $6, $7, $8, $9) "
+                f"returning {_APPOINTMENT_COLUMNS}",
+                patient_id,
+                doctor_id,
+                department_id,
+                None,  # 진료실 동적 배정 이월(insert_appointment 동일)
+                scheduled_start,
+                scheduled_end,
+                None,  # note 없음(환자 자유텍스트=임상/PII 리스크 제외)
+                sms_opt_in,
+                sub,  # created_by = 환자 auth uid(비정규화·0034 FK 제거)
+            )
+        except asyncpg.ExclusionViolationError as exc:
+            raise _double_booking_error() from exc
+        except asyncpg.ForeignKeyViolationError as exc:  # 진료과·의사 동시삭제 레이스 백스톱
+            raise AppError(
+                "참조 대상이 올바르지 않습니다(진료과·의사 등).",
+                code="invalid_reference",
+                status_code=422,
+            ) from exc
+        assert row is not None
+        return row
+
+    return await _run_authed(sub, _op)
+
+
 async def fetch_appointments_for_date(
     sub: UUID, doctor_ids: list[UUID], range_start: datetime, range_end: datetime
 ) -> list[asyncpg.Record]:

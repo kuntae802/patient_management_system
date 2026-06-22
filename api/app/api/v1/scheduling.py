@@ -17,7 +17,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
 
-from app.core.security import CurrentUser, require_permission
+from app.core.security import CurrentUser, get_current_patient, require_permission
 from app.schemas.encounters import EncounterResponse
 from app.schemas.masters import ActiveUpdate
 from app.schemas.scheduling import (
@@ -33,6 +33,7 @@ from app.schemas.scheduling import (
     DoctorTimeOffResponse,
     DoctorTimeOffUpdate,
     SchedulingDoctor,
+    SelfAppointmentCreate,
     SlotGridResponse,
 )
 from app.services import scheduling as scheduling_service
@@ -228,3 +229,42 @@ async def check_in_reservation(
     """예약 환자 도착 접수 → reserved registered 내원 생성(대기 현황판 진입) + 예약 completed.
     게이트 appointment.update(+ 내원 생성 encounter.register TOCTOU). 미존재 404·잘못된 전이 409."""
     return await scheduling_service.check_in_reservation(user.sub, appointment_id)
+
+
+# ── 환자 본인 예약 (Story 6.5·세션 uid 스코프) ────────────────────────────────────────────
+# 게이트 = get_current_patient(권한 의존성 아님 — 직원 5역할 → 403·환자 권한 0). 권위 = "본인
+# patient_id 만 서버 도출"(클라 미수용·교차환자 차단). 읽기(슬롯·의사)는 비-PII 가용성이라 기존
+# 서비스를 환자 sub 로 재사용(직원 /scheduling/bookable-doctors·/slots[appointment.read]와 병존).
+# ⚠️ 정적 세그먼트 'me' — /appointments/{appointment_id} 동적 라우트와 충돌 없음.
+
+
+@router.get("/me/bookable-doctors", response_model=list[SchedulingDoctor])
+async def list_self_bookable_doctors(
+    department_id: UUID | None = None,
+    user: CurrentUser = Depends(get_current_patient),
+) -> list[SchedulingDoctor]:
+    """환자 예약용 재직 의사 목록(진료과 필터 옵션). 게이트 get_current_patient(직원 403)."""
+    return await scheduling_service.list_bookable_doctors(user.sub, department_id)
+
+
+@router.get("/me/slots", response_model=SlotGridResponse)
+async def get_self_available_slots(
+    doctor_id: UUID,
+    date: date,
+    user: CurrentUser = Depends(get_current_patient),
+) -> SlotGridResponse:
+    """환자 본인 예약용 가용 슬롯 그리드(근무−휴진−booked예약·FR-010). 게이트 get_current_patient.
+    비활성/미존재 의사 → 빈 슬롯(404 아님). date 파싱 실패 → 422."""
+    return await scheduling_service.compute_available_slots(user.sub, doctor_id, date)
+
+
+@router.post(
+    "/me/appointments", response_model=AppointmentResponse, status_code=status.HTTP_201_CREATED
+)
+async def create_self_appointment(
+    payload: SelfAppointmentCreate,
+    user: CurrentUser = Depends(get_current_patient),
+) -> AppointmentResponse:
+    """환자 본인 예약 생성. 게이트 get_current_patient. patient_id 는 서버가 auth_uid=sub 로 도출
+    (클라 미수용). 미연결 409 no_self_patient·더블부킹 409·과거 422·슬롯 불가 422·비활성 422."""
+    return await scheduling_service.create_self_appointment(user.sub, payload)

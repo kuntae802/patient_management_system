@@ -139,6 +139,17 @@ class AppointmentCreate(BaseModel):
     sms_opt_in: bool = False
 
 
+class SelfAppointmentCreate(BaseModel):
+    """환자 본인 예약 생성 요청(Story 6.5). ⚠️ **patient_id 없음** — 서버가 JWT 주체→
+    `patients.auth_uid` 로 도출(클라 미수용·세션 uid 스코프). **note 없음** — 운영 텍스트는 직원
+    입력(환자 자유텍스트=임상/PII 리스크 제외). scheduled_end 는 서버가 +SLOT_MINUTES 계산."""
+
+    department_id: UUID
+    doctor_id: UUID
+    scheduled_start: datetime
+    sms_opt_in: bool = False
+
+
 class AppointmentResponse(BaseModel):
     """예약 응답(생성·전이 공용). 전이 타임스탬프(0033)는 해당 전이 시에만 채워짐."""
 
