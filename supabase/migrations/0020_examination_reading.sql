@@ -1,0 +1,34 @@
+-- 0020_examination_reading.sql — 영상 판독 소견·결론 컬럼.
+-- Story 5.9 / FR-102(판독 소견 기록 → 검사 오더 완료, performed→completed·진료의 겸임).
+-- 식별자 영문 snake_case(docs/glossary.md 단일 진실 — findings·reading_conclusion 신규 등재). 한국어는 UI 라벨·주석만.
+--
+-- ⚠️ 판독·완료 엔진은 0015 가 완비 — 본 파일은 판독 소견 텍스트 컬럼 추가만(컬럼 2개·DDL 외 변경 0).
+--    complete_examination RPC(0015:223 — performed→completed·소스상태 precondition=FR-093 재완료 차단·
+--    completed_by=auth.uid()/completed_at 세팅·examination.complete 자가 게이트)·전이 트리거
+--    (enforce_act_order_transition — same-status UPDATE 통과 → 소견 컬럼 갱신 허용)·examinations 스키마
+--    (completed_by/completed_at 컬럼 기보유 0015:90-91)는 0015 소유. examination.complete 권한(0015:282
+--    카탈로그 + admin 부트 grant + doctor seed grant seed.sql) → **신규 권한·admin/seed grant 불요**.
+--    complete_examination RPC 는 `returns public.examinations`(행타입) → 컬럼 추가가 반환 형상에 자동 반영
+--    (재정의 안 함). 소견은 wrapper 의 same-status UPDATE 로 세팅 후 RPC 호출(call_complete_examination,
+--    5.8 equipment_id same-status UPDATE 패턴 미러).
+--
+-- ⚠️ "소견 없이 완료 차단"은 **서비스 레벨(call_complete_examination → 422 findings_required)** 이 강제 —
+--    DB CHECK 아님. 이유: `complete_examination(uuid)` RPC 는 0015 가 소유한 **공유 인프라**로 소견 없이도
+--    합법 완료(performed→completed)하는 단독 계약을 가진다(5.1 test_orders_db 가 RPC 단독 전이를 검증·
+--    findings 미사용). CHECK 로 강제하면 그 RPC 계약·테스트를 깬다. 5.8 "영상≥1" 전제도 동일하게 DB CHECK
+--    아닌 wrapper(call_perform_examination → 422 image_required)에서 강제(선례 일치). 3중 검증의 서버 tier
+--    가 권위(클라 disable 1차선 → 서버 findings_required 권위).
+--
+-- ⚠️ findings·reading_conclusion = 자유 임상 서사 → 감사 스냅샷 마스킹 **필수**(0018 nursing_record content
+--    선례, 0019 영상 메타와 대비). api/app/services/audit.py `_SENSITIVE_KEY` + web `audit.ts SENSITIVE_KEY`
+--    양쪽에 findings|reading_conclusion 등록(읽기시점 마스킹·DB 는 평문 저장). examinations 감사 트리거는
+--    0015 기부착(추가 컬럼 자동 스냅샷) → 본 파일은 트리거 무변경.
+--
+-- ⚠️ Epic 5 마이그 블록 = 0015~0029 고정(병렬 Epic 6 워크트리 0030~ 비침범). 0020 = examination_reading(0019 다음).
+--
+-- 의존: 0015(examinations·status enum·completed_* 컬럼·complete_examination RPC·전이 트리거·examination.complete 권한).
+
+-- ── 판독 소견·결론 컬럼(자유 임상 서사 — 완료 시 채워짐, ordered/performed 동안 NULL) ──────────
+-- findings = 판독 소견(필수·non-blank, 완료 시 — 서비스 강제), reading_conclusion = 판독 결론/임프레션(선택).
+alter table public.examinations add column if not exists findings text;            -- 판독 소견(자유텍스트)
+alter table public.examinations add column if not exists reading_conclusion text;  -- 판독 결론/임프레션(선택)
