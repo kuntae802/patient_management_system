@@ -32,7 +32,13 @@ describe("filterNav", () => {
     expect(labels(items)).toContain("수납"); // 직무 본질 → 권한 게이트 없음
     expect(labels(items)).toContain("환자 등록"); // 직무 본질 → 권한 게이트 없음
     expect(labels(items)).toContain("환자 검색");
+    expect(labels(items)).toContain("리마인더"); // 운영 본질(Story 6.6) → 역할 노출(권한 게이트 없음)
     expect(labels(items)).not.toContain("권한"); // admin 전용 관리 항목
+  });
+
+  it("리마인더(Story 6.6)는 원무 전용 — 타 역할 미노출", () => {
+    expect(labels(filterNav(STAFF_NAV, "nurse", () => true))).not.toContain("리마인더");
+    expect(labels(filterNav(STAFF_NAV, "doctor", () => true))).not.toContain("리마인더");
   });
 
   it("nurse 권한 0 → 활력징후 입력 등 직무 항목 노출", () => {

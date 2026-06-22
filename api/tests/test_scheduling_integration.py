@@ -902,3 +902,155 @@ def test_self_booking_unlinked_409(
         _ME_APPT_URL, headers=_bearer(token), json=_self_appt_payload(demo_doctor_id, demo_dept_id)
     )
     assert res.status_code == 409 and res.json()["error"]["code"] == "no_self_patient"
+
+
+# ── SMS 리마인더 디스패치·로그 (Story 6.6) — 시뮬 발송 + 멱등 + opt-in 게이트 + PII 마스킹 ────────
+# 데모 의사 근무일(2030-06-03 월) 예약을 만들고 as_of 로 D-3/D-1 발화를 재현(시간 목킹 없이).
+_REMINDERS_RUN_URL = "/v1/scheduling/reminders/run"
+_REMINDERS_URL = "/v1/scheduling/reminders"
+_REMIND_DATE = "2030-06-03"  # 월요일(데모 의사 근무)
+_AS_OF_D3 = "2030-05-31"  # +3일 = 2030-06-03 → D-3
+_AS_OF_D1 = "2030-06-02"  # +1일 = 2030-06-03 → D-1
+
+_PID_PHONE = "00000000-0000-4000-8000-00000000c001"
+_PID_NOPHONE = "00000000-0000-4000-8000-00000000c002"
+
+
+def _mk_remind_patient(psql: Psql, pid: str, rrn: str, phone: str | None) -> None:
+    phone_sql = f"'{phone}'" if phone is not None else "null"
+    psql.run(
+        "insert into public.patients (id, name, birth_date, sex, resident_no_enc, "
+        "resident_no_hash, resident_no_masked, insurance_type, phone) values "
+        f"('{pid}', '리마인더', '1990-01-01', 'male', "
+        f"public.encrypt_sensitive('{rrn}'), public.blind_index('{rrn}'), "
+        f"'900101-1******', 'health_insurance', {phone_sql}) on conflict (id) do nothing;"
+    )
+
+
+@pytest.fixture
+def reminder_appointments(
+    client: TestClient,
+    reception_token: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+    psql: Psql,
+) -> Iterator[dict[str, str]]:
+    """리마인더 테스트용 — 연락처 있는/없는 환자 + 2030-06-03 예약 3건(simulated·skipped·opt-out).
+
+    종료 시 notification_logs → appointments → patients(FK 역순) 정리."""
+    _mk_remind_patient(psql, _PID_PHONE, "9003031234567", "010-1234-5678")
+    _mk_remind_patient(psql, _PID_NOPHONE, "9004042345678", None)
+
+    def _book(pid: str, start_z: str, opt_in: bool) -> str:
+        payload = {
+            "department_id": demo_dept_id,
+            "doctor_id": demo_doctor_id,
+            "patient_id": pid,
+            "scheduled_start": start_z,
+            "sms_opt_in": opt_in,
+        }
+        res = client.post(_APPOINTMENTS_URL, headers=_bearer(reception_token), json=payload)
+        assert res.status_code == 201, res.text
+        return res.json()["id"].lower()
+
+    appts = {
+        # 연락처 O·동의 O → simulated(10:00 KST)
+        "simulated": _book(_PID_PHONE, "2030-06-03T01:00:00Z", True),
+        # 연락처 O·동의 X → 대상 외(로그 0·10:30 KST)
+        "optout": _book(_PID_PHONE, "2030-06-03T01:30:00Z", False),
+        # 연락처 X·동의 O → skipped(no_recipient·11:00 KST)
+        "skipped": _book(_PID_NOPHONE, "2030-06-03T02:00:00Z", True),
+    }
+    yield appts
+
+    psql.run(
+        "delete from public.notification_logs where patient_id in "
+        f"('{_PID_PHONE}', '{_PID_NOPHONE}');"
+    )
+    psql.run(
+        f"delete from public.appointments where patient_id in ('{_PID_PHONE}', '{_PID_NOPHONE}');"
+    )
+    psql.run(f"delete from public.patients where id in ('{_PID_PHONE}', '{_PID_NOPHONE}');")
+
+
+def _logs_by_appt(client: TestClient, token: str) -> dict[str, dict[str, object]]:
+    res = client.get(_REMINDERS_URL, headers=_bearer(token), params={"limit": 200})
+    assert res.status_code == 200, res.text
+    return {row["appointment_id"].lower(): row for row in res.json()}
+
+
+def test_reminder_dispatch_d3_simulated_skipped_optout(
+    client: TestClient, reception_token: str, reminder_appointments: dict[str, str]
+) -> None:
+    """AC1·AC3·AC4: D-3 디스패치 → 동의 O 발송(simulated·마스킹)·연락처 X(skipped)·opt-out 제외."""
+    run = client.post(
+        _REMINDERS_RUN_URL, headers=_bearer(reception_token), params={"as_of": _AS_OF_D3}
+    )
+    assert run.status_code == 200, run.text
+    summary = run.json()
+    assert summary["as_of"] == _AS_OF_D3
+    assert summary["created"] >= 2 and summary["by_kind"]["d_minus_3"] >= 2
+
+    logs = _logs_by_appt(client, reception_token)
+    sim = logs[reminder_appointments["simulated"]]
+    assert sim["status"] == "simulated"
+    assert sim["reminder_kind"] == "d_minus_3"
+    assert sim["recipient_masked"] == "010-****-5678"  # 마스킹(원시 phone 아님)
+    assert sim["sent_at"] is not None
+    # ⚠️ PII: 응답 어디에도 원시 전화번호(가운데 4자리)가 없어야(AC4).
+    assert "1234" not in str(sim) and "patient_name" not in sim
+
+    skip = logs[reminder_appointments["skipped"]]
+    assert skip["status"] == "skipped"
+    assert skip["skip_reason"] == "no_recipient"
+    assert skip["recipient_masked"] is None and skip["sent_at"] is None
+
+    # opt-out(sms_opt_in=false)은 대상 아님 → 로그 없음.
+    assert reminder_appointments["optout"] not in logs
+
+
+def test_reminder_dispatch_idempotent(
+    client: TestClient, reception_token: str, reminder_appointments: dict[str, str]
+) -> None:
+    """AC2: 같은 as_of 재실행 → 중복 발송 0(duplicate 집계·로그 행 불변)."""
+    headers = _bearer(reception_token)
+    first = client.post(_REMINDERS_RUN_URL, headers=headers, params={"as_of": _AS_OF_D3})
+    assert first.status_code == 200, first.text
+    before = _logs_by_appt(client, reception_token)
+
+    second = client.post(_REMINDERS_RUN_URL, headers=headers, params={"as_of": _AS_OF_D3})
+    assert second.status_code == 200, second.text
+    summary = second.json()
+    # 내 예약 2건(simulated·skipped)은 이미 발송됨 → 재실행은 새 행 0(duplicate 로 집계).
+    assert summary["created"] == 0 and summary["duplicate"] >= 2
+
+    after = _logs_by_appt(client, reception_token)
+    sim_id = reminder_appointments["simulated"]
+    assert before[sim_id]["id"] == after[sim_id]["id"]  # 같은 행(재발송 아님)
+
+
+def test_reminder_dispatch_d1(
+    client: TestClient, reception_token: str, reminder_appointments: dict[str, str]
+) -> None:
+    """AC1: 1일 전(D-1) 디스패치 — 다른 reminder_kind 라 같은 예약에도 새 로그(멱등은 종류별)."""
+    run = client.post(
+        _REMINDERS_RUN_URL, headers=_bearer(reception_token), params={"as_of": _AS_OF_D1}
+    )
+    assert run.status_code == 200, run.text
+    assert run.json()["by_kind"]["d_minus_1"] >= 2
+
+    # 신규 픽스처(D-3 미실행) → simulated 예약의 유일 로그는 d_minus_1.
+    sim = _logs_by_appt(client, reception_token)[reminder_appointments["simulated"]]
+    assert sim["reminder_kind"] == "d_minus_1" and sim["status"] == "simulated"
+
+
+def test_reminder_run_forbidden_for_nurse(client: TestClient, nurse_token: str) -> None:
+    """AC5: notification.send 미보유(nurse) → 디스패치 403."""
+    res = client.post(_REMINDERS_RUN_URL, headers=_bearer(nurse_token), params={"as_of": _AS_OF_D3})
+    assert res.status_code == 403 and res.json()["error"]["code"] == "forbidden"
+
+
+def test_reminder_list_forbidden_for_nurse(client: TestClient, nurse_token: str) -> None:
+    """AC5: notification.read 미보유(nurse) → 로그 조회 403."""
+    res = client.get(_REMINDERS_URL, headers=_bearer(nurse_token))
+    assert res.status_code == 403 and res.json()["error"]["code"] == "forbidden"

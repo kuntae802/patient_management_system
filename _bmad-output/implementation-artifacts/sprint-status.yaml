@@ -111,7 +111,7 @@ development_status:
   6-3-예약-캘린더-더블부킹-차단: done
   6-4-원무-대리-예약-생성-변경-취소: done
   6-5-환자-앱-예약: done
-  6-6-sms-리마인더-시뮬-로그: backlog
+  6-6-sms-리마인더-시뮬-로그: done
   6-7-노쇼-카운트-임계치-제한: backlog
   6-8-휴진-시-영향-예약-재배정: backlog
   epic-6-retrospective: optional

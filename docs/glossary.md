@@ -488,3 +488,24 @@
 | `(patient)/booking`·`PatientBooking`·`formatSlotTime12h` | 웹(`app/(patient)/`·`components/scheduling/`·`lib/scheduling/`) | 환자 앱 예약 화면(UX-DR17): 진료과(Supabase 직접조회)→의사→날짜 칩 레일→시간 슬롯 그리드(12h "오후 2:30")→sticky CTA "예약 확정하기"(≥44px)→쉬운 말 확인. 서버 가드=직원→home·연결확인=클라 `GET /patients/self`. `formatSlotTime12h`=hour12:true(직원 `formatSlotTime` 24h 와 별개) |
 
 > **환자 본인 예약 경계(Story 6.5 확정):** 환자=세션 uid 스코프(patient_id 서버 도출·클라 미수용). 읽기=기존 슬롯/의사 서비스 재사용(비-PII)·쓰기=`/me/appointments`(권한 게이트 아님·self-scope 권위). `created_by` 비정규화(Option C·`audit_logs.actor_id` 선례). **앱 예약 변경·취소("마이 메뉴") = 이월(Epic 8/후속) / SMS 실 발송 = 6.6 / 노쇼 임계 제한 = 6.7 / 내 기록·마이 탭 = Epic 8.**
+
+## SMS 리마인더 · 알림 로그 (Story 6.6, `0035_notifications.sql`)
+
+> ⚠️ **마이그 번호 0035**: Epic 6 블록 0030~ 의 여섯 번째(6.1=0030·6.2=0031·6.3=0032·6.4=0033·6.5=0034). 아키텍처 계획 `0013_notifications.sql`(SMS 시뮬·이월 갭 ③)에 대응. **트리거 = 명시적 디스패치 실행**(cron 부재의 이음매)·**발송 = 시뮬/로그**(실 SMS 미연동·`simulate_sms` = 게이트웨이 교체 지점).
+
+| 용어/식별자 | 종류 | 정의 |
+|---|---|---|
+| **SMS 리마인더 모델(시뮬 이음매·명시적 디스패치)** | 설계 결정 | 시스템에 cron 없음 → 리마인더는 자동 발화 안 하고 `POST /scheduling/reminders/run?as_of=` 로 트리거(운영 전환 시 cron 이 호출·`as_of` 로 시간목킹 없이 데모/테스트). 대상 = `status='booked'` ∩ `sms_opt_in=true` ∩ KST일자 ∈ {`as_of+3일`(D-3), `as_of+1일`(D-1)}. 발송=시뮬(로그 INSERT). |
+| `notification_log` | 테이블(0035) | SMS 리마인더 발송 이력(append-only by grant). `appointment_id`(appointments FK)·`patient_id`(patients FK·비정규화)·`channel`('sms' CHECK)·`reminder_kind`('d_minus_3'/'d_minus_1' CHECK)·`recipient_masked`(마스킹 수신처·skipped=null)·`body`(시뮬 메시지·**비-식별**)·`status`('simulated'/'skipped' CHECK)·`skip_reason`·`appointment_start`(예약 시각 스냅샷)·`sent_at`(simulated=발송시각·skipped=null)·`created_at`. ⚠️ **원시 phone·환자명 미저장**(PII 경계 AC4) |
+| `notification_logs_once` | UNIQUE 제약(0035) | `(appointment_id, reminder_kind)` — **멱등**(같은 디스패치 재실행이 중복 발송 안 함·`insert_notification_log` 가 `ON CONFLICT DO NOTHING`). 재실행 중복 0(AC2) |
+| `reminder_kind` | 값 어휘(CHECK) | `d_minus_3`(예약 3일 전)·`d_minus_1`(1일 전). **전 도메인 0035 정의**(미래 CHECK ALTER 회피). `as_of` 기준 대상일 매칭으로 결정 |
+| `notification_logs` append-only posture | GRANT(0035) | service_role=INSERT/SELECT·authenticated=SELECT(RLS notification.read). **UPDATE/DELETE grant 부재**(발송 후 불변·audit_logs 변형·단 삼중 가드까진 불요). appointments 의 full-CRUD 와 다른 모델 |
+| `notification.read`·`notification.send` | 권한(0035 신규 2종) | read=알림 로그 조회·send=디스패치 실행. **최소권한 분리**(read 만으론 run 403). **admin 부트 grant 재실행**(test_admin_role_has_all_permissions 회귀 회피)·reception seed grant(운영 본질). **403 baseline = nurse**(둘 다 미보유). RLS: 직원=notification.read 전체 SELECT(self 정책=Epic 8 포털 이월) |
+| `POST …/scheduling/reminders/run?as_of=` | 엔드포인트(디스패치) | 게이트 `notification.send`. booked∩opt-in∩{D-3,D-1} 스캔 → 시뮬 발송(연락처 있음=simulated·없음=skipped no_recipient) → 멱등 로그. 응답 = `ReminderRunSummary`. `as_of` 기본=KST 오늘 |
+| `GET …/scheduling/reminders?limit=` | 엔드포인트(읽기) | 게이트 `notification.read`. 최근 발송 이력(`created_at` 내림차순). 응답 = `list[NotificationLogResponse]`(원시 phone·환자명 미반환) |
+| `run_appointment_reminders`·`list_notification_logs`·`mask_phone`·`_build_reminder_body` | 서비스(`services/notification.py`) | 디스패치 오케스트레이션(KST date→UTC 범위·6.2 패턴·opt-in 필터·skipped 처리·by_kind 집계) / 로그 조회 / 전화번호 마스킹(`mask_rrn` 선례·`010-****-5678`) / 비-식별 시뮬 메시지 생성(이름·주민번호 금지) |
+| `fetch_reminder_due_appointments`·`insert_notification_log`·`fetch_notification_logs`·`_require_notification_send` | db 래퍼(`core/db.py`) | service_role 읽기(booked∩opt-in∩날짜+phone+dept명) / 멱등 INSERT(`ON CONFLICT (appointment_id,reminder_kind) DO NOTHING`→충돌 시 None) / 로그 조회 / 쓰기 직전 동일 txn `notification.send` 재평가(TOCTOU·`_require_appointment_create` 미러) |
+| `ReminderRunSummary`·`NotificationLogResponse` | 스키마(`schemas/notifications.py`·web 거울) | 디스패치 요약(`as_of`·`created`·`duplicate`·`simulated`·`skipped`·`by_kind`) / 로그 항목(⚠️ 원시 phone·patient_name 필드 부재·AC4) |
+| `(staff)/reception/reminders`·`ReminderLog`·`reminders.ts` | 웹(`app/(staff)/`·`components/scheduling/`·`lib/scheduling/`) | 원무 리마인더 화면 — 실행 패널(as_of·이중제출 락·`notification.send` PermissionGate) + 로그 표(시각·종류[3일 전/1일 전]·수신처[마스킹·"(연락처 없음)"]·상태[발송/스킵]·음영 비의존). nav "리마인더"(원무 운영 본질·역할 노출) |
+
+> **SMS 리마인더 경계(Story 6.6 확정):** 트리거=명시적 디스패치(cron 이음매)·발송=시뮬/로그(`simulate_sms` 게이트웨이 교체 지점)·동의 게이트=`sms_opt_in=true` 만(연락처 없으면 skipped·opt-in false 대상 외)·수신처=마스킹 스냅샷(원시 PII 로그·감사 미유입→`_SENSITIVE_KEY` 무변경)·멱등=`UNIQUE(appointment_id,reminder_kind)`. **실 SMS 게이트웨이·cron 자동 = 범위 밖 / 환자 수신함 UI·self SELECT = Epic 8 / 노쇼 카운트 = 6.7 / 휴진 재배정 통지 = 6.8 / 재-리마인더·다채널·재시도·발송 큐·D-N 설정 UI = 이월.**

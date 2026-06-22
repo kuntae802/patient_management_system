@@ -3343,3 +3343,111 @@ async def check_in_reservation(sub: UUID, appointment_id: UUID) -> asyncpg.Recor
         return enc
 
     return await _run_authed(sub, _op)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SMS 리마인더 · 알림 로그 (Story 6.6 — 0035) — service_role 직접 INSERT(시뮬 이음매)
+# 디스패치 = booked∩sms_opt_in∩{D-3,D-1} 스캔 → 시뮬 발송 → notification_logs(멱등 ON CONFLICT).
+# 읽기(due 예약·로그)는 service_role(RLS 우회·fetch_appointments_for_date 패턴). 발송 권한은 쓰기
+# 직전 동일 txn 재평가(_require_appointment_create 미러). PII: phone 은 마스킹용 내부 — 응답 미반환.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_NOTIFICATION_COLUMNS = (
+    "id, appointment_id, patient_id, channel, reminder_kind, recipient_masked, body, "
+    "status, skip_reason, appointment_start, sent_at, created_at"
+)
+
+
+async def _require_notification_send(conn: asyncpg.Connection) -> None:
+    """쓰기 직전 동일 트랜잭션에서 notification.send 재평가(TOCTOU 차단). 미보유 → 403."""
+    if not bool(await conn.fetchval("select public.has_permission('notification.send')")):
+        raise ForbiddenError(detail={"required_permission": "notification.send"})
+
+
+async def fetch_reminder_due_appointments(
+    sub: UUID,
+    *,
+    d3_start: datetime,
+    d3_end: datetime,
+    d1_start: datetime,
+    d1_end: datetime,
+) -> list[asyncpg.Record]:
+    """리마인더 디스패치용 — `status='booked'` ∩ `sms_opt_in` ∩ scheduled_start 가 D-3 또는 D-1
+    KST 일자(서비스가 UTC [start,end) 범위로 전달)인 예약 + 환자 phone + 진료과명.
+
+    ⚠️ phone·department_name 은 **마스킹·body 생성용 내부값** — 서비스가 마스킹/비-식별 처리 후
+    notification_logs 에 저장하며, 엔드포인트 응답에는 원시 phone 이 절대 반환되지 않는다(AC4).
+    service_role(RLS 우회·`fetch_appointments_for_date` 패턴). 취소·노쇼·완료·미동의는 대상 외.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+        return await conn.fetch(
+            "select a.id, a.patient_id, a.scheduled_start, p.phone, d.name as department_name "
+            "from public.appointments a "
+            "join public.patients p on p.id = a.patient_id "
+            "join public.departments d on d.id = a.department_id "
+            "where a.status = 'booked' and a.sms_opt_in "
+            "  and ((a.scheduled_start >= $1 and a.scheduled_start < $2) "
+            "    or (a.scheduled_start >= $3 and a.scheduled_start < $4)) "
+            "order by a.scheduled_start",
+            d3_start,
+            d3_end,
+            d1_start,
+            d1_end,
+        )
+
+    return await _run_authed(sub, _op)
+
+
+async def insert_notification_log(
+    sub: UUID,
+    *,
+    appointment_id: UUID,
+    patient_id: UUID,
+    reminder_kind: str,
+    recipient_masked: str | None,
+    body: str,
+    status: str,
+    skip_reason: str | None,
+    appointment_start: datetime,
+    sent_at: datetime | None,
+) -> asyncpg.Record | None:
+    """리마인더 발송 로그 INSERT(시뮬·자동 감사). 멱등: `on conflict (appointment_id, reminder_kind)
+    do nothing` → 충돌(이미 발송됨) 시 **None** 반환(재실행 중복 0·AC2). 발송 권한은 쓰기 직전
+    동일 txn 재평가(TOCTOU). ⚠️ recipient_masked 는 마스킹 완료값·body 는 비-식별(AC4)."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record | None:
+        await _require_notification_send(conn)
+        return await conn.fetchrow(
+            f"insert into public.notification_logs "
+            f"(appointment_id, patient_id, reminder_kind, recipient_masked, body, status, "
+            f"skip_reason, appointment_start, sent_at) "
+            f"values ($1, $2, $3, $4, $5, $6, $7, $8, $9) "
+            f"on conflict (appointment_id, reminder_kind) do nothing "
+            f"returning {_NOTIFICATION_COLUMNS}",
+            appointment_id,
+            patient_id,
+            reminder_kind,
+            recipient_masked,
+            body,
+            status,
+            skip_reason,
+            appointment_start,
+            sent_at,
+        )
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_notification_logs(sub: UUID, *, limit: int) -> list[asyncpg.Record]:
+    """알림 로그 조회(최근 발송 이력·created_at 내림차순). 엔드포인트 notification.read 게이트로
+    충분(읽기 재평가 불요·슬롯 선례). service_role(RLS 우회). 원시 phone 미조회(컬럼 없음)."""
+
+    async def _op(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+        return await conn.fetch(
+            f"select {_NOTIFICATION_COLUMNS} from public.notification_logs "
+            f"order by created_at desc limit $1",
+            limit,
+        )
+
+    return await _run_authed(sub, _op)

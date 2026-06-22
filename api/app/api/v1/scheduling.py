@@ -15,11 +15,12 @@ from __future__ import annotations
 from datetime import date
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 
 from app.core.security import CurrentUser, get_current_patient, require_permission
 from app.schemas.encounters import EncounterResponse
 from app.schemas.masters import ActiveUpdate
+from app.schemas.notifications import NotificationLogResponse, ReminderRunSummary
 from app.schemas.scheduling import (
     AppointmentCancel,
     AppointmentCreate,
@@ -36,6 +37,7 @@ from app.schemas.scheduling import (
     SelfAppointmentCreate,
     SlotGridResponse,
 )
+from app.services import notification as notification_service
 from app.services import scheduling as scheduling_service
 
 router = APIRouter(prefix="/scheduling", tags=["scheduling"])
@@ -48,6 +50,10 @@ require_appointment_read = require_permission("appointment.read")
 require_appointment_create = require_permission("appointment.create")
 # 예약 변경·취소·노쇼·도착접수(기존 예약 상태 변경 — 원무). create 와 별개 최소권한.
 require_appointment_update = require_permission("appointment.update")
+# 알림 로그 조회(원무·관리자). 디스패치 실행과 별개 최소권한(조회만 vs 발송).
+require_notification_read = require_permission("notification.read")
+# 알림 디스패치 실행(리마인더 발송 — 원무). read 와 별개 최소권한.
+require_notification_send = require_permission("notification.send")
 
 
 # ── 근무표(doctor_schedules) ──────────────────────────────────────────────────
@@ -268,3 +274,29 @@ async def create_self_appointment(
     """환자 본인 예약 생성. 게이트 get_current_patient. patient_id 는 서버가 auth_uid=sub 로 도출
     (클라 미수용). 미연결 409 no_self_patient·더블부킹 409·과거 422·슬롯 불가 422·비활성 422."""
     return await scheduling_service.create_self_appointment(user.sub, payload)
+
+
+# ── SMS 리마인더 디스패치·로그 (Story 6.6·시뮬 이음매) ──────────────────────────────────────
+# 트리거 = 명시적 디스패치(cron 부재의 이음매·운영 전환 시 cron 이 /reminders/run 호출). 발송 =
+# 시뮬/로그. 정적 세그먼트 'reminders' — /appointments/{id}·/me 동적 라우트와 충돌 없음.
+
+
+@router.post("/reminders/run", response_model=ReminderRunSummary)
+async def run_reminders(
+    as_of: date | None = None,
+    user: CurrentUser = Depends(require_notification_send),
+) -> ReminderRunSummary:
+    """리마인더 디스패치 실행 — booked∩sms_opt_in∩{as_of+3일 D-3, as_of+1일 D-1} 예약마다 시뮬 발송
+    후 멱등 로그. 게이트 notification.send → 403. as_of 기본 = KST 오늘. 연락처 있음=simulated·없음=
+    skipped(no_recipient)·재실행 중복=duplicate(새 행 0)."""
+    return await notification_service.run_appointment_reminders(user.sub, as_of)
+
+
+@router.get("/reminders", response_model=list[NotificationLogResponse])
+async def list_reminders(
+    limit: int = Query(default=100, ge=1, le=500),
+    user: CurrentUser = Depends(require_notification_read),
+) -> list[NotificationLogResponse]:
+    """알림 발송 이력 조회(최근순). 게이트 notification.read → 403. 마스킹 수신처·비-식별 body 만
+    (원시 phone·환자명 미반환)."""
+    return await notification_service.list_notification_logs(user.sub, limit=limit)

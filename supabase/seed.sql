@@ -281,6 +281,19 @@ join public.permissions p on p.code = 'appointment.update'
 where r.code = 'reception'
 on conflict (role_id, permission_id) do nothing;
 
+-- ── (DEV/데모) 원무(reception) 역할 → 알림 조회·디스패치 권한 grant (Story 6.6) ───────────────────
+-- 리마인더 로그 조회(notification.read)·디스패치 실행(notification.send)은 원무 운영 본질(예약 운영의
+-- 일부). 둘 다 0035 신규 — 여기선 역할 매핑만. ★ 프로덕션 런타임 grant 는 1.7 매트릭스 UI 소유 — 로컬
+-- db reset 전용(운영 db push 미반영). 멱등.
+-- ⚠️ notification 403 검증 baseline = nurse(read·send 둘 다 미보유). reception 이 notification.* 를 받아도
+--    encounter/patient/order baseline 은 비중첩 유지(무영향).
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code in ('notification.read', 'notification.send')
+where r.code = 'reception'
+on conflict (role_id, permission_id) do nothing;
+
 -- ════════════════════════════════════════════════════════════════════════════
 -- 마스터 시드 (Story 2.5) — 진료과 · 진료실 · KCD 진단 · EDI 수가 · 약품
 -- ════════════════════════════════════════════════════════════════════════════

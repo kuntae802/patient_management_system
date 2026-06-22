@@ -1,6 +1,7 @@
 import {
   Activity,
   BarChart3,
+  BellRing,
   CalendarClock,
   CalendarDays,
   CircleHelp,
@@ -55,6 +56,7 @@ export const STAFF_NAV: NavItem[] = [
   { section: "운영", label: "대기 현황", icon: LayoutDashboard, href: "/reception/waiting", roles: ["reception"] },
   { section: "운영", label: "접수", icon: UserPlus, href: "/reception/intake", roles: ["reception"] },
   { section: "운영", label: "예약 관리", icon: CalendarDays, href: "/reception/schedule", roles: ["reception"] },
+  { section: "운영", label: "리마인더", icon: BellRing, href: "/reception/reminders", roles: ["reception"] },
   { section: "환자", label: "환자 등록", icon: UserRoundPlus, href: "/reception/register", roles: ["reception"] },
   { section: "환자", label: "환자 검색", icon: Search, href: "/reception/search", roles: ["reception"] },
   { section: "정산", label: "수납", icon: Wallet, href: "/reception/billing", roles: ["reception"] },
