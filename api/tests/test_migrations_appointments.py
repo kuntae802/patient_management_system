@@ -159,12 +159,12 @@ def test_double_booking_adjacent_and_cancelled_allowed(psql):
 
 
 def test_appointments_fks(psql):
+    # created_by → users FK 는 0034 가 제거(환자 auth uid 는 users 에 없음·비정규화 생성자 uid).
     fks = (
         ("patient_id", "patients"),
         ("doctor_id", "users"),
         ("department_id", "departments"),
         ("room_id", "rooms"),
-        ("created_by", "users"),
     )
     for col, ref in fks:
         cnt = psql.scalar(
@@ -442,3 +442,45 @@ def test_appointment_update_permission_grants(psql):
             f"where r.code='{role}' and p.code='appointment.update';"
         )
         assert cnt == expected, f"{role} appointment.update={cnt}(기대 {expected})"
+
+
+# ── 0034: 환자 본인 예약 — created_by 비정규화(FK 제거) ────────────────────────
+
+
+def test_created_by_users_fk_dropped(psql):
+    """0034: created_by → users FK 제거(환자 auth uid 는 users 에 없음·비정규화 생성자 uid)."""
+    cnt = psql.scalar(
+        "select count(*) from pg_constraint c "
+        "join pg_class t on t.oid=c.conrelid and t.relname='appointments' "
+        "where c.contype='f' "
+        "and 'created_by' = any("
+        "  select attname from pg_attribute where attrelid=t.oid and attnum=any(c.conkey));"
+    )
+    assert cnt == "0", "appointments.created_by 에 FK 가 남아있음(0034 미적용)"
+
+
+def test_created_by_still_not_null(psql):
+    """FK 만 제거 — created_by 는 NOT NULL 유지(직원·환자 모두 항상 sub 보유)."""
+    nullable = psql.scalar(
+        "select is_nullable from information_schema.columns "
+        "where table_schema='public' and table_name='appointments' and column_name='created_by';"
+    )
+    assert nullable == "NO", "created_by 가 nullable 이 됨(NOT NULL 유지 위반)"
+
+
+def test_created_by_accepts_non_users_uuid(psql):
+    """환자 auth uid(users 미존재) 로도 예약 INSERT 성공 — FK 부재 행동 검증(begin/rollback)."""
+    # users 에 없는 임의 uuid(환자 auth_uid 시뮬). 환자 1건 인라인 → 예약 INSERT → ROLLBACK.
+    fake_patient_sub = "'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'"
+    out = psql.run(
+        "begin;"
+        f"{_MK_PATIENT}"
+        "insert into public.appointments (patient_id, doctor_id, department_id, "
+        "scheduled_start, scheduled_end, status, created_by) values "
+        f"({_PATIENT}, {_DOCTOR}, {_DEPT}, "
+        "'2026-09-01 01:00:00+00', '2026-09-01 01:30:00+00', 'booked', "
+        f"{fake_patient_sub});"
+        "rollback;"
+    )
+    assert out.returncode == 0, f"users 외 created_by INSERT 실패(FK 잔존?): {out.stderr}"
+    assert "ERROR" not in out.stderr, f"INSERT 오류: {out.stderr}"

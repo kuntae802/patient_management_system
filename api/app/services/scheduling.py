@@ -31,6 +31,7 @@ from app.schemas.scheduling import (
     DoctorTimeOffResponse,
     DoctorTimeOffUpdate,
     SchedulingDoctor,
+    SelfAppointmentCreate,
     Slot,
     SlotGridResponse,
     SlotStatus,
@@ -272,6 +273,33 @@ async def create_appointment(sub: UUID, payload: AppointmentCreate) -> Appointme
         note=payload.note,
         sms_opt_in=payload.sms_opt_in,
         created_by=sub,
+    )
+    return AppointmentResponse.model_validate(dict(row))
+
+
+# ── 환자 본인 예약 생성 (Story 6.5 / FR-010) ──────────────────────────────────
+
+
+async def create_self_appointment(sub: UUID, payload: SelfAppointmentCreate) -> AppointmentResponse:
+    """환자 본인 예약 생성(booked). `create_appointment` 미러하되 patient_id 는 서버가 도출(세션 uid
+    스코프·클라 미수용)·권한검사 없음(권위=self-scope). 과거 시각 → 422 appointment_in_past·슬롯-
+    윈도우 → 422 slot_unavailable·미연결 → 409 no_self_patient·더블부킹 → 409 double_booking."""
+    start = _normalize_utc(payload.scheduled_start)
+    if start <= datetime.now(UTC):
+        raise AppError(
+            "과거 시각으로는 예약할 수 없습니다.",
+            code="appointment_in_past",
+            status_code=422,
+        )
+    await _assert_slot_bookable(sub, payload.doctor_id, start)
+    scheduled_end = start + timedelta(minutes=SLOT_MINUTES)
+    row = await db.insert_self_appointment(
+        sub,
+        doctor_id=payload.doctor_id,
+        department_id=payload.department_id,
+        scheduled_start=start,
+        scheduled_end=scheduled_end,
+        sms_opt_in=payload.sms_opt_in,
     )
     return AppointmentResponse.model_validate(dict(row))
 

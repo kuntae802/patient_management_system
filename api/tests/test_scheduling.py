@@ -636,3 +636,138 @@ def test_reschedule_forbidden_without_update(monkeypatch: pytest.MonkeyPatch) ->
         json={"doctor_id": str(_DOCTOR_ID), "scheduled_start": "2030-06-03T01:00:00Z"},
     )
     assert res.status_code == 403
+
+
+# ── 환자 본인 예약 (Story 6.5·세션 uid 스코프) ──────────────────────────────────
+# 게이트 = get_current_patient(db.fetch_user_role 가 직원 5역할이면 403). create_self_appointment 는
+# patient_id 를 payload 에서 받지 않고 db.insert_self_appointment 가 세션 도출(여기선 row 모킹).
+
+_SELF_APPT_URL = "/v1/scheduling/me/appointments"
+_VALID_SELF_APPT = {
+    "department_id": str(_DEPT_ID),
+    "doctor_id": str(_DOCTOR_ID),
+    "scheduled_start": "2030-06-03T01:00:00Z",
+    "sms_opt_in": True,
+}
+
+
+def _self_client(monkeypatch: pytest.MonkeyPatch, *, role: str | None = None) -> TestClient:
+    """환자 self 라우트 클라이언트 — get_current_patient(fetch_user_role) 게이트 + db 모킹.
+    role=None → 환자(통과)·role='reception' 등 직원 → 403(게이트 반전)."""
+    app = FastAPI()
+    init_error_handlers(app)
+    app.include_router(scheduling.router, prefix="/v1")
+    app.dependency_overrides[get_current_user] = lambda: _FAKE_ADMIN
+
+    async def _role(sub: uuid.UUID) -> str | None:
+        return role
+
+    monkeypatch.setattr(db, "fetch_user_role", _role)
+
+    async def _insert_self(sub: uuid.UUID, **kwargs: Any) -> dict[str, Any]:
+        # patient_id 는 kwargs 로 전달되지 않아야 한다(서버 도출) — 세션 스코프 계약 단언.
+        assert "patient_id" not in kwargs, "self 예약에 patient_id 클라 전달됨(스코프 위반)"
+        return _APPT_ROW
+
+    monkeypatch.setattr(db, "insert_self_appointment", _insert_self)
+
+    # _assert_slot_bookable(compute_available_slots) 가 db 읽기를 타므로 모킹(월 09:00–12:30 근무).
+    async def _sched(sub: uuid.UUID, doctor_id: uuid.UUID, weekday: int) -> list[Any]:
+        return [{"start_time": time(9, 0), "end_time": time(12, 30)}]
+
+    async def _empty_rows(*args: Any, **kwargs: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(db, "fetch_doctor_schedules_for_weekday", _sched)
+    monkeypatch.setattr(db, "fetch_doctor_time_offs_in_range", _empty_rows)
+    monkeypatch.setattr(db, "fetch_booked_appointments_in_range", _empty_rows)
+    monkeypatch.setattr(db, "fetch_bookable_doctors", _empty_rows)
+    return TestClient(app)
+
+
+def test_self_create_succeeds_for_patient(monkeypatch: pytest.MonkeyPatch) -> None:
+    """비직원(환자) → 본인 예약 생성 201·scheduled_end 서버 계산."""
+    res = _self_client(monkeypatch).post(_SELF_APPT_URL, json=_VALID_SELF_APPT)
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["status"] == "booked"
+    assert body["scheduled_end"] == "2030-06-03T01:30:00Z"  # start + 30분
+
+
+def test_self_create_forbidden_for_staff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """직원(active 5역할) → get_current_patient 반전 403(앱 예약은 환자 전용)."""
+    res = _self_client(monkeypatch, role="reception").post(_SELF_APPT_URL, json=_VALID_SELF_APPT)
+    assert res.status_code == 403
+
+
+def test_self_slots_forbidden_for_staff(monkeypatch: pytest.MonkeyPatch) -> None:
+    res = _self_client(monkeypatch, role="doctor").get(
+        "/v1/scheduling/me/slots", params={"doctor_id": str(_DOCTOR_ID), "date": "2030-06-03"}
+    )
+    assert res.status_code == 403
+
+
+def test_self_slots_ok_for_patient(monkeypatch: pytest.MonkeyPatch) -> None:
+    res = _self_client(monkeypatch).get(
+        "/v1/scheduling/me/slots", params={"doctor_id": str(_DOCTOR_ID), "date": "2030-06-03"}
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["slot_minutes"] == 30
+
+
+def test_self_bookable_doctors_ok_for_patient(monkeypatch: pytest.MonkeyPatch) -> None:
+    res = _self_client(monkeypatch).get("/v1/scheduling/me/bookable-doctors")
+    assert res.status_code == 200
+    assert res.json() == []
+
+
+def test_self_create_rejects_client_patient_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """payload 에 patient_id 를 넣어도 스키마가 무시(extra 무시) — 서버 도출만 사용(세션 스코프)."""
+    payload = {**_VALID_SELF_APPT, "patient_id": str(uuid.uuid4())}
+    res = _self_client(monkeypatch).post(_SELF_APPT_URL, json=payload)
+    # 거부 아니라 무시(Pydantic extra=ignore) — _insert_self 의 assert 가 patient_id 미전달 보장.
+    assert res.status_code == 201, res.text
+
+
+def test_self_create_no_self_patient_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    """미연결 환자(self-link 미완) → 409 no_self_patient(온보딩 유도)."""
+    client = _self_client(monkeypatch)
+
+    async def _raise(sub: uuid.UUID, **kwargs: Any) -> dict[str, Any]:
+        raise AppError("미연결", code="no_self_patient", status_code=409)
+
+    monkeypatch.setattr(db, "insert_self_appointment", _raise)
+    res = client.post(_SELF_APPT_URL, json=_VALID_SELF_APPT)
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "no_self_patient"
+
+
+def test_self_create_double_booking_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _self_client(monkeypatch)
+
+    async def _raise(sub: uuid.UUID, **kwargs: Any) -> dict[str, Any]:
+        raise ConflictError("겹침", code="double_booking")
+
+    monkeypatch.setattr(db, "insert_self_appointment", _raise)
+    res = client.post(_SELF_APPT_URL, json=_VALID_SELF_APPT)
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "double_booking"
+
+
+def test_self_create_past_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {**_VALID_SELF_APPT, "scheduled_start": "2020-01-01T00:00:00Z"}
+    res = _self_client(monkeypatch).post(_SELF_APPT_URL, json=payload)
+    assert res.status_code == 422
+    assert res.json()["error"]["code"] == "appointment_in_past"
+
+
+def test_self_create_slot_unavailable_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _self_client(monkeypatch)
+
+    async def _no_sched(sub: uuid.UUID, doctor_id: uuid.UUID, weekday: int) -> list[Any]:
+        return []  # 근무 없음 → available 슬롯 0
+
+    monkeypatch.setattr(db, "fetch_doctor_schedules_for_weekday", _no_sched)
+    res = client.post(_SELF_APPT_URL, json=_VALID_SELF_APPT)
+    assert res.status_code == 422
+    assert res.json()["error"]["code"] == "slot_unavailable"

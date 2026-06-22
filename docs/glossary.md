@@ -452,3 +452,19 @@
 | reception → `appointment.update` | seed grant(`seed.sql`) | 예약 변경·취소·노쇼·도착접수 권한(원무 대리). 데모 전이 시드 없음(통합 테스트가 환자 인라인 생성 후 커버) |
 
 > **예약 생명주기 경계(Story 6.4 확정·Option A):** 상태머신 = DB 트리거(`enforce_appointment_transition`·BEFORE UPDATE). 전이 = 액션 엔드포인트(service_role UPDATE·소스상태 precondition·트리거 백스톱). 도착 접수 = reserved registered 내원 직접 생성(대기 흐름). 슬롯-윈도우 검증(생성·변경·6.3 이월 청산)·취소/노쇼 슬롯 가용 복귀(캘린더 overlay 정련). 컬럼 비-PII → **감사 마스킹 집합 무변경**. **환자 앱 예약 = 6.5 / SMS 실 발송 = 6.6 / 노쇼 카운트·임계 제한 = 6.7 / 휴진 재배정 = 6.8 / encounters scheduled·register_encounter 정리 = 이월(무해).**
+
+## 환자 본인 예약 (Story 6.5, `0034_patient_self_booking.sql`)
+
+> ⚠️ **마이그 번호 0034**: Epic 6 블록 0030~ 의 다섯 번째. 0031~0033(예약 본체·생성·생명주기) 위에 **created_by FK 제거만** 추가(신규 권한·시드·테이블 없음). 환자는 RBAC 권한 0 — 본인 예약 경로는 `get_current_patient` + **서버 patient_id 도출**(auth_uid=sub)이 권위.
+
+| 용어/식별자 | 종류 | 정의 |
+|---|---|---|
+| **환자 본인 예약 모델(세션 uid 스코프)** | 설계 결정 | 환자는 앱에서 **본인 예약만** 생성(직원 대리 예약 6.4 와 대칭). 게이트 = `get_current_patient`(직원 5역할→403·환자 RBAC 권한 0). `patient_id` 는 **서버가 `auth_uid = sub` 로 도출**(클라 patient_id 미수용·3.4 self-link 패턴) → 교차환자 예약 구조적 불가(IDOR 차단). 미연결 환자(self-link 미완)→409 `no_self_patient`(온보딩 유도) |
+| `appointments.created_by`(의미 확장) | 컬럼(0034·FK 제거) | '예약 생성자(원무/시스템)' → **'생성자 auth uid'**(직원 uid=`users.id` 또는 환자 auth_uid=`patients.auth_uid`). 0031 의 `→ users` FK 를 **제거**(환자 auth uid 는 users 에 없음·분리 프로필). `audit_logs.actor_id` 선례(FK 미부착·직원/환자 uid 혼용·0004:5-10)와 일치. **NOT NULL 유지**·`doctor_id`/`patient_id`/`department_id`/`room_id` FK 무변경 |
+| `SelfAppointmentCreate` | 스키마(Pydantic·web Zod 거울) | 환자 본인 예약 요청 — `department_id`·`doctor_id`·`scheduled_start`·`sms_opt_in`. ⚠️ **`patient_id` 없음**(서버 도출)·**`note` 없음**(운영 텍스트는 직원 입력·환자 자유텍스트=임상/PII 리스크 제외). 응답=`AppointmentResponse` 재사용 |
+| `GET …/scheduling/me/bookable-doctors`·`/me/slots` | 엔드포인트(환자 읽기) | 게이트 `get_current_patient`. 슬롯·의사 계산은 비-PII 가용성 → 기존 `list_bookable_doctors`·`compute_available_slots` 를 환자 sub 로 재사용(직원 `/scheduling/bookable-doctors`·`/slots` 는 `appointment.read` 유지·병존). 슬롯 응답에 타 환자명 없음 |
+| `POST …/scheduling/me/appointments` | 엔드포인트(환자 생성·201) | 게이트 `get_current_patient`. 본인 예약 생성(booked). 더블부킹 409 `double_booking`·과거 422 `appointment_in_past`·슬롯 불가 422 `slot_unavailable`·미연결 409 `no_self_patient`·비활성 환자/의사 422. `_require_appointment_create` **미호출**(권위=self-scope) |
+| `create_self_appointment`·`insert_self_appointment` | 서비스·db 래퍼 | `create_appointment`·`insert_appointment` 미러하되 **권한검사 제거 + patient_id 세션 도출**. `insert_self_appointment` 는 동일 txn `select id,is_active from patients where auth_uid=$1(sub)` 로만 patient_id 획득(인자 미수용)·`created_by = sub`(환자 auth uid·FK 제거됨). `_assert_slot_bookable`·과거 거부·active 선검사·EXCLUDE 재사용 |
+| `(patient)/booking`·`PatientBooking`·`formatSlotTime12h` | 웹(`app/(patient)/`·`components/scheduling/`·`lib/scheduling/`) | 환자 앱 예약 화면(UX-DR17): 진료과(Supabase 직접조회)→의사→날짜 칩 레일→시간 슬롯 그리드(12h "오후 2:30")→sticky CTA "예약 확정하기"(≥44px)→쉬운 말 확인. 서버 가드=직원→home·연결확인=클라 `GET /patients/self`. `formatSlotTime12h`=hour12:true(직원 `formatSlotTime` 24h 와 별개) |
+
+> **환자 본인 예약 경계(Story 6.5 확정):** 환자=세션 uid 스코프(patient_id 서버 도출·클라 미수용). 읽기=기존 슬롯/의사 서비스 재사용(비-PII)·쓰기=`/me/appointments`(권한 게이트 아님·self-scope 권위). `created_by` 비정규화(Option C·`audit_logs.actor_id` 선례). **앱 예약 변경·취소("마이 메뉴") = 이월(Epic 8/후속) / SMS 실 발송 = 6.6 / 노쇼 임계 제한 = 6.7 / 내 기록·마이 탭 = Epic 8.**
