@@ -412,6 +412,30 @@
 
 > **간호 처치 수행·간호기록 경계(Story 5.7 확정):** **신규 마이그 1건(0018=nursing_record + 권한 nursing.record)·신규 권한 1**(처치 수행=treatment.perform 기존, 일상 간호기록=nursing.record 신규·admin 재grant·nurse grant). 처치 수행=`perform_treatment_order` RPC(0015 기완비) 소비 — 재수행 차단=소스상태 precondition(409). content(처치기록 내용)=수행 시 선택 입력→연결 nursing_record. 워크리스트=encounter-centric(`/nursing/worklist` 공유·5.6 미러). **재수행 차단 임상 해석**: 동일 *오더* 재수행만 차단(반복 처치=의사 신규 오더). **이월**: 처치 `completed` 전이·`complete_treatment_order` RPC·수가 자동발생(5.10/Epic7)·오더-by-내원상태 게이트(완료/취소 내원)·same-status attribution 덮어쓰기(RPC 경로만 보호)·간호기록 수정/삭제(append-only)·의사 허브 간호기록 표시·환자 포털 간호기록(RLS self 미연결).
 
+## 방사선 촬영 · 영상 업로드 · 장비 (Story 5.8, `0019_examination_imaging.sql`)
+
+> ⚠️ **마이그 번호 0019**: Epic 5 블록 0015~0029 의 다섯 번째(5.1=0015·5.5=0016·5.6=0017·5.7=0018). **촬영 수행 엔진은 0015 가 완비**(`perform_examination` RPC·전이 트리거·`examinations.equipment_id`/`performed_*` 컬럼·`examination.perform`/`order.read` 권한·radiologist seed grant) → 0019 = 소비만 + `examination_images` 1:N 테이블 + Storage 버킷. **신규 권한 0·admin 재grant 불요**(5.3 posture). 영상자료 = Supabase Storage(비공개 버킷) + 서명 URL·**DB 엔 경로만**(architecture.md:217).
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `examination_images` | 테이블(0019) | 촬영 영상 — `examination_id` FK(1:N·한 영상검사 N장)·`storage_path` text(비공개 버킷 객체 경로·서명 URL 아님·🔒 PII 금지)·`content_type`·`file_size`·`uploaded_by` FK·`uploaded_at`·`is_active`. 자유 서사 컬럼 없음 → **감사 마스킹 무변경**(판독 소견 텍스트는 5.9) |
+| `examination_images_select_staff`/`_self` | RLS(0019) | 직원=`has_permission('order.read')`·환자=본인 내원(image→examination→encounter→patient→auth_uid). **방어심층**(FastAPI service_role 우회·권위=라우터). nursing_record RLS 미러 + examinations 한 단계 |
+| `examination-images` | Storage 버킷(0019·`storage.buckets` insert) | **비공개**(public=false)·`file_size_limit` 50MiB·`allowed_mime_types` image/png·jpeg·webp. 접근 = service_role 서명 URL 전용(storage.objects 정책 부여 안 함·deny-by-default·서명 URL=RLS 우회). 마이그 인라인(architecture.md:326 의 `storage.sql` 대신·단일 소스 재현성). ⚠️ db reset 후 Storage 게이트웨이(Kong) 준비 대기 필요 |
+| `perform_examination(uuid)` | RPC(0015·소비) | 촬영 전진 전이(ordered→performed) — 권한 자가 게이트·`for update`·**소스상태 precondition(재수행 차단 FR-093)**·performed_by/at=auth.uid()/now(). `call_perform_examination`(db) 가 검사 선검사(404/422 not_imaging/409)+**영상≥1 검사(422 image_required)**+장비 검증·same-status UPDATE 배정(422 invalid_equipment)+RPC 를 동일 txn 에. **RPC 재정의 안 함**(equipment_id=wrapper UPDATE·0015 전이 트리거 same-status 통과) |
+| `examination.perform`/`order.read` | 권한(0015 기존) | 촬영 수행·업로드·워크리스트=examination.perform(방사선·간호)·영상/장비 조회=order.read(의사 판독 5.9·간호·방사선). **신규 0·admin 재grant 불요**. radiologist seed grant(`order.read`·`examination.perform`)=5.1 기보유 |
+| `GET …/radiology/worklist` | 엔드포인트(api·`radiology`) | 촬영 워크리스트(FR-100) — 오늘(KST) 활성 내원의 `exam_type='imaging' AND status='ordered'` + `fee_name`·`image_count`(상관 서브쿼리)·지시자/시각. 게이트 `examination.perform`. FIFO(ordered_at asc)·비-PII·`/radiology/*` 네임스페이스(/encounters/{id} 흡수 회피) |
+| `POST …/examinations/{id}/images` | 엔드포인트(api·`radiology`·201) | 영상 업로드(FR-101·multipart `file`) — Storage 저장 + `examination_images` 경로 연결. 게이트 `examination.perform`. 잘못된 MIME/용량 422·lab 422 not_imaging·이미 수행 409 examination_locked·미존재 404. 응답=메타+`signed_url`(`storage_path` 비노출) |
+| `GET …/examinations/{id}/images` | 엔드포인트(api·`radiology`) | 영상 목록+서명 URL(FR-101). 게이트 **`order.read`**(5.9 판독 의사 재사용·examination.perform 아님). 서명 URL=조회 시점 재생성. 직접 배열 |
+| `POST …/examinations/{id}/perform` | 엔드포인트(api·`radiology`) | 촬영 수행(FR-101·FR-093). 게이트 `examination.perform`. body `PerformExaminationBody`(equipment_id 선택). 영상 0장→422 image_required·재수행→409 invalid_transition·미존재 404·잘못된 장비 422. 응답=갱신 `ExaminationResponse`(performed_*·equipment_id) |
+| `GET …/equipment` | 엔드포인트(api·`radiology`) | 장비 목록·상태(FR-103) — 활성 장비(코드순). 게이트 `order.read`. 읽기 전용(상태 변경 5.8 범위 밖). 직접 배열 |
+| `upload_object`/`create_signed_url` | 함수(`core/storage.py`) | Storage 래퍼 — `supabase_admin._get_admin_client()`(service_role) 싱글톤 **재사용**·동기 storage3 → `anyio.to_thread` 오프로드(supabase_admin 선례). `SIGNED_URL_TTL_SECONDS=300`(5분). 미설정 secret 키→503 |
+| `fetch_radiology_worklist`/`fetch_equipment`/`insert_examination_image`/`fetch_examination_images`/`call_perform_examination` | 함수(`core/db`) | service_role(RLS 우회). 업로드=서비스가 Storage 선행 후 경로 INSERT. 수행=영상≥1·장비·RPC 동일 txn. `_EXAMINATION_IMAGE_COLUMNS`/`_FROM` users 조인 |
+| `(staff)/radiology/{worklist,upload,equipment}`·`RadiologyWorklistPage`·`CapturePanel`·`EquipmentList`·`lib/radiology/imaging.ts` | 웹(`app/(staff)/`·`components/radiology/`) | 가드 `requirePermission('examination.perform')`. 워크리스트(좌 미수행 영상검사·우 캡처 패널)·캡처(파일 업로드 멀티파트·서명 URL 썸네일·장비 select·수행 버튼[영상 0장 disabled])·장비 목록(읽기 전용 테이블). nav radiologist 역할 노출(기정의). `/upload`=워크리스트 surface 재사용 |
+| `apiFetch` FormData 분기 | `lib/api/client.ts` | `init.body instanceof FormData` 면 Content-Type JSON 강제 건너뜀(브라우저 multipart boundary 설정) — 멀티파트 업로드 필수. 기존 JSON 호출 무영향 |
+| EMP0005 radiologist 데모 | seed(`seed.sql`) | `radiologist@pms.local`(Staff1234)·`order.read`·`examination.perform` 보유 → 촬영 골든 패스. **촬영 수행 403 baseline = reception(권한 0) + doctor(examination.order 有·examination.perform 無)** |
+
+> **방사선 촬영 경계(Story 5.8 확정):** **신규 마이그 1건(0019=examination_images + Storage 버킷)·신규 권한 0**(examination.perform·order.read 모두 0015 기존·radiologist 5.1 grant). **결정 3건**: ① 영상=1:N `examination_images`(단일 컬럼 아님·검사당 N장) ② 장비=표시+촬영 배정만(상태 변경·`equipment.manage` 권한 없음 — AC3=표시) ③ 수행 전제=활성 영상≥1(422 image_required·누락 0 디텍터 정신). Storage=비공개 버킷+서버 서명 URL·DB 경로만·🔒 객체 경로 PII 금지. perform_examination RPC 재정의 안 함(equipment_id=same-status UPDATE). **배포**: `SUPABASE_URL` = api 환경(.env.example·docker-compose) 보강 완료(클라우드 서명 URL 호스트). **이월**: 판독 소견 컬럼·`complete_examination`·검사 오더 완료 전이=5.9 / 수가 자동발생(영상 수행 완료→수가)=5.10 / 장비 상태 변경·영상 삭제·환자 포털 영상 조회(RLS self 미연결)=이월.
+
 ## 근무표 · 휴진 (Story 6.1, `0030_doctor_schedules.sql`)
 
 > ⚠️ **마이그 번호 0030**: Epic 6 = 병렬 worktree → 마이그 블록 0030~(main 0014/Epic5 0015~0029 와 충돌 회피). 에픽/아키 묶음 계획 `0011_scheduling.sql`(3테이블)을 **스토리별 분리**(4.6/4.7 선례) → 6.1 = 근무표·휴진 2테이블만, **예약(appointments)·예약 생성·`encounters.reservation_id` FK·더블부킹은 booking 스토리(6.2/6.3)** 소유.

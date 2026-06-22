@@ -330,3 +330,11 @@
 - **지연 디텍터 `nowMs` 1회 고정** [web/src/components/nurse/treatment-worklist-page.tsx] — `setNowMs(Date.now())` 가 마운트 effect 1회만 실행 → 화면 장기 노출 시 "지연 N분" 배지가 임계 교차해도 갱신 안 됨. order-panel·waiting-board 의 "로드 시점 nowMs" 동일 posture. 해소 시 `setInterval(60s)` + cleanup 으로 주기 갱신(세 화면 일괄).
 - **`loadRecords` 에러 → 빈 목록 강등** [web/src/components/nurse/nursing-notes-page.tsx] — catch 가 403/네트워크/500 을 전부 "작성된 간호기록이 없습니다"로 강등(로드 실패와 데이터 부재 시각 동일·중복 기록 유인). 5.6 `loadVitals` 동일 Low UX(deferred). 워크리스트 본체는 별도 에러 처리.
 - **오더-by-내원상태 게이트 부재** [api/app/core/db.py `call_perform_treatment_order`·`insert_nursing_record`] — perform RPC 는 오더 status(ordered) 만 검사하고 내원 status(완료/취소)·is_active 를 보지 않아, 종결/취소 내원의 ordered 처치를 직접 API 로 수행/기록할 수 있다(UI 는 active 내원만 노출 1차선). 5.2~5.6·deferred-work(276/289) 동일 "오더-by-내원상태 게이트=이월" posture. 해소: 수행/기록 직전 동일 txn 에서 내원 status/is_active 재검증(→409/422). 마스터·내원 불변식 일관 정책 스토리에서 일괄.
+
+## Deferred from: code review of story-5.8 (2026-06-22)
+
+- **영상 MIME 매직바이트 미검증** [api/app/services/radiology.py:58-65] — 업로드 MIME 화이트리스트·확장자가 클라 선언 `content_type` 만 신뢰(실제 바이트 시그니처 미검사). 임의 바이트를 `image/png` 라벨로 저장 가능. 비공개 버킷+서버 발급 단기 서명 URL+`<img>` 렌더(SVG 스크립트 비실행)로 악용 표면 제한·코드베이스에 매직바이트 검사 선례 없음. 해소 시 `imghdr`/시그니처 스니프(공통 업로드 헬퍼로).
+- **서명 URL 1건 실패 시 전체 목록 503** [api/app/services/radiology.py:88-93] — `list_examination_images` 가 `[await _to_image_response(r) for r in rows]` → 한 객체의 `create_signed_url` 가 빈 응답이면 503 으로 전체 GET 실패(유효 영상까지 숨김). 서명은 경로 기반이라 유효 행은 실패 거의 없음(드문 견고성). 해소 시 per-image try/except + null 서명 URL 강등(스키마 optional 화 동반).
+- **장비 배정 시 status(available) 미강제** [api/app/core/db.py:378-392] — `call_perform_examination` 가 `is_active` 만 검사하고 `status`(available/in_use/maintenance)는 미검사 → 점검중/사용중 장비도 직접 API 로 배정 가능(웹 `<option disabled>` 가 1차선). 스펙은 `is_active` 만 요구·`equipment.status`=상태머신 아님(0015)·배정이 장비 상태를 바꾸지 않음. 장비 가용성 정책 강화 시 `status='available'` 조건 추가.
+- **웹: 업로드 중 검사 전환 레이스** [web/src/components/radiology/capture-panel.tsx] — `handleFiles` 가 클로저 `examinationId` 로 순차 업로드 중 사용자가 다른 검사 선택 시, 남은 파일이 이전 검사로 업로드되고 패널은 새 검사를 표시(abort/ref 가드 없음). 저빈도(업로드 빠름)·복잡도. 해소 시 AbortController 또는 examinationId ref 가드.
+- **웹: 서명 URL 만료(5분) 시 깨진 썸네일** [web/src/components/radiology/capture-panel.tsx] — `<img src={signed_url}>` 에 `onError` 폴백·만료 재서명 없음 → 캡처 패널 5분 초과 노출 후 재요청 시 깨진 이미지. UX 견고성·스펙 외. 해소 시 `onError → loadImages()` 재서명 루프.
