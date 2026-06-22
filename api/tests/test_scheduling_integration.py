@@ -448,8 +448,11 @@ def booking_patient_id(psql: Psql) -> Iterator[str]:
         "'900101-1******', 'health_insurance') on conflict (id) do nothing;"
     )
     yield pid
-    # 정리 순서: 내원(도착접수가 reservation_id→appointment 로 생성) → 예약 → 환자(FK 역순).
+    # 정리 순서: 내원(도착접수가 reservation_id→appointment)·알림로그(6.8 notify-change 가
+    # appointment FK 로 생성) → 예약 → 환자(FK 역순). notification_logs 미선삭 시 appointments 삭제
+    # 가 FK 로 실패해 환자가 잔존 → 후속 마이그 테스트 RRN(blind index) 충돌(6.8 교훈).
     psql.run(f"delete from public.encounters where patient_id='{pid}';")
+    psql.run(f"delete from public.notification_logs where patient_id='{pid}';")
     psql.run(f"delete from public.appointments where patient_id='{pid}';")
     psql.run(f"delete from public.patients where id='{pid}';")
 
@@ -1207,3 +1210,305 @@ def test_reminder_list_forbidden_for_nurse(client: TestClient, nurse_token: str)
     """AC5: notification.read 미보유(nurse) → 로그 조회 403."""
     res = client.get(_REMINDERS_URL, headers=_bearer(nurse_token))
     assert res.status_code == 403 and res.json()["error"]["code"] == "forbidden"
+
+
+# ── 휴진 영향 예약 재배정 (Story 6.8 / FR-016) ─────────────────────────────────────────────────
+# ⚠️ 단일 supabase 스택 공유 → 0037 포함 reset 직후 실행. _BOOK_START(10:00 KST·2030-06-03 월)·
+# _RESCHEDULE_START(11:00 KST·같은 월요일)·demo 의사(IM 09:00–12:30 근무)는 기존 상수 재사용.
+_AFFECTED_URL = "/v1/scheduling/affected-appointments"
+_NOTIFY_URL = _APPOINTMENTS_URL + "/{id}/notify-change"
+_WIN_START = "2030-06-03T00:00:00Z"  # 휴진 윈도우(그날 오전 _BOOK_START 10:00 KST 덮음)
+_WIN_END = "2030-06-03T03:30:00Z"  # 12:30 KST
+_WIN_OUTSIDE_START = "2030-06-10T00:00:00Z"  # 다른 주(겹침 없음)
+_WIN_OUTSIDE_END = "2030-06-10T03:30:00Z"
+
+
+def _affected(client: TestClient, token: str, doctor_id: str, start: str, end: str):
+    return client.get(
+        _AFFECTED_URL,
+        headers=_bearer(token),
+        params={"doctor_id": doctor_id, "start_at": start, "end_at": end},
+    )
+
+
+@pytest.fixture(scope="module")
+def os_dept_id(psql: Psql) -> str:
+    """데모 의사와 다른 진료과(정형외과 OS) — 재배정 시 department_id 동기화 검증용."""
+    return psql.scalar(
+        "select id::text from public.departments where lower(code) = lower('OS') limit 1"
+    ).lower()
+
+
+_SECOND_DOCTOR_ID = "00000000-0000-4000-8000-0000000d0002"
+_SECOND_DOCTOR_EMAIL = "reassign-doc@pms.local"
+
+
+def _clean_second_doctor(psql: Psql) -> None:
+    """FK 역순 정리(appointments·schedules·public.users·auth.users). 멱등."""
+    did = _SECOND_DOCTOR_ID
+    psql.run(
+        f"delete from public.appointments where doctor_id='{did}'; "
+        f"delete from public.doctor_schedules where doctor_id='{did}'; "
+        f"delete from public.users where id='{did}'; "
+        f"delete from auth.users where id='{did}' or email='{_SECOND_DOCTOR_EMAIL}';"
+    )
+
+
+@pytest.fixture(scope="module")
+def second_doctor(psql: Psql, os_dept_id: str) -> Iterator[dict[str, str]]:
+    """재배정 대상 2번째 의사(다른 진료과 OS·월요일 오전 근무) — cross-doctor reschedule department
+    동기화 검증용. ⚠️ public.users.id → auth.users(id) FK(분리 프로필) → auth.users 먼저 생성
+    (seed.sql 패턴·로그인 미사용이라 meta '{}'·token '' 최소). pre-clean 후 insert·종료 시 FK 역순
+    정리."""
+    did = _SECOND_DOCTOR_ID
+    _clean_second_doctor(psql)
+    # auth.users (로그인 미사용 — FK 충족 최소 행. GoTrue token 컬럼은 '' 로 채움[seed.sql 주석]).
+    auth_insert = (
+        "insert into auth.users (instance_id, id, aud, role, email, encrypted_password, "
+        "email_confirmed_at, created_at, updated_at, raw_app_meta_data, raw_user_meta_data, "
+        "is_super_admin, confirmation_token, recovery_token, email_change, email_change_token_new, "
+        "email_change_token_current, phone_change, phone_change_token, reauthentication_token) "
+        "values ('00000000-0000-0000-0000-000000000000', '"
+        + did
+        + "', 'authenticated', 'authenticated', '"
+        + _SECOND_DOCTOR_EMAIL
+        + "', extensions.crypt('Staff1234', extensions.gen_salt('bf')), now(), now(), now(), "
+        "'{}', '{}', false, '', '', '', '', '', '', '', '');"
+    )
+    res = psql.run(auth_insert)
+    assert res.returncode == 0, f"auth.users 생성 실패: {res.stderr}"
+    psql.run(
+        "insert into public.users (id, employee_no, name, role_id, department_id, "
+        "employment_status) values "
+        f"('{did}', 'EMP9908', '재배정의사', (select id from public.roles where code='doctor'), "
+        f"'{os_dept_id}', 'active');"
+    )
+    sched = psql.run(
+        "insert into public.doctor_schedules (doctor_id, department_id, weekday, start_time, "
+        f"end_time) values ('{did}', '{os_dept_id}', 1, '09:00', '12:30');"
+    )
+    assert sched.returncode == 0, f"근무표 생성 실패: {sched.stderr}"
+    yield {"id": did, "department_id": os_dept_id}
+    _clean_second_doctor(psql)
+
+
+def test_affected_lists_booked_in_window(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+) -> None:
+    """AC1: 휴진 윈도우에 걸린 booked 예약 + 환자명 반환·윈도우 밖은 빈 배열."""
+    created = client.post(
+        _APPOINTMENTS_URL,
+        headers=_bearer(reception_token),
+        json=_appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id),
+    )
+    assert created.status_code == 201, created.text
+    appt_id = created.json()["id"]
+
+    res = _affected(client, reception_token, demo_doctor_id, _WIN_START, _WIN_END)
+    assert res.status_code == 200, res.text
+    rows = res.json()
+    hit = next((r for r in rows if r["id"] == appt_id), None)
+    assert hit is not None, "윈도우 내 booked 예약이 영향 목록에 없음"
+    assert hit["patient_name"] == "예약테스트" and hit["status"] == "booked"
+
+    outside = _affected(
+        client, reception_token, demo_doctor_id, _WIN_OUTSIDE_START, _WIN_OUTSIDE_END
+    )
+    assert outside.status_code == 200
+    assert all(r["id"] != appt_id for r in outside.json()), "윈도우 밖인데 영향 목록에 포함됨"
+
+
+def test_affected_excludes_cancelled(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+) -> None:
+    """AC1: 취소된 예약은 영향 목록에서 제외(슬롯 미점유)."""
+    created = client.post(
+        _APPOINTMENTS_URL,
+        headers=_bearer(reception_token),
+        json=_appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id),
+    )
+    appt_id = created.json()["id"]
+    client.post(f"{_APPOINTMENTS_URL}/{appt_id}/cancel", headers=_bearer(reception_token), json={})
+    res = _affected(client, reception_token, demo_doctor_id, _WIN_START, _WIN_END)
+    assert res.status_code == 200
+    assert all(r["id"] != appt_id for r in res.json()), "취소된 예약이 영향 목록에 포함됨"
+
+
+def test_affected_forbidden_for_nurse(
+    client: TestClient, nurse_token: str, demo_doctor_id: str
+) -> None:
+    """AC1: appointment.read 미보유(nurse) → 403."""
+    res = _affected(client, nurse_token, demo_doctor_id, _WIN_START, _WIN_END)
+    assert res.status_code == 403 and res.json()["error"]["code"] == "forbidden"
+
+
+def test_reschedule_same_doctor_keeps_department(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+) -> None:
+    """AC3: 같은 의사 재배정 → department_id 불변(다중 진료과 의사 회귀 차단)."""
+    created = client.post(
+        _APPOINTMENTS_URL,
+        headers=_bearer(reception_token),
+        json=_appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id),
+    )
+    appt_id = created.json()["id"]
+    res = client.post(
+        f"{_APPOINTMENTS_URL}/{appt_id}/reschedule",
+        headers=_bearer(reception_token),
+        json={"doctor_id": demo_doctor_id, "scheduled_start": _RESCHEDULE_START},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["department_id"].lower() == demo_dept_id.lower()
+
+
+def test_reschedule_other_doctor_syncs_department(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+    second_doctor: dict[str, str],
+) -> None:
+    """AC3(deferred 청산): 다른 진료과 의사로 재배정 → appointment.department_id 가 새 의사 진료과로
+    동기화(부서-스코프 캘린더 고아 방지)."""
+    created = client.post(
+        _APPOINTMENTS_URL,
+        headers=_bearer(reception_token),
+        json=_appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id),
+    )
+    appt_id = created.json()["id"]
+    res = client.post(
+        f"{_APPOINTMENTS_URL}/{appt_id}/reschedule",
+        headers=_bearer(reception_token),
+        json={"doctor_id": second_doctor["id"], "scheduled_start": _RESCHEDULE_START},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["doctor_id"].lower() == second_doctor["id"].lower()
+    assert body["department_id"].lower() == second_doctor["department_id"].lower(), (
+        "다른 진료과 의사 재배정인데 department_id 미동기화(deferred 청산 실패)"
+    )
+
+
+def test_notify_change_records_cancellation_notice(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+    psql: Psql,
+) -> None:
+    """AC4: 취소·안내 → cancellation_notice 시뮬 기록(마스킹 수신처·비-식별 body)·멱등(재호출 새 행
+    0)."""
+    psql.run(f"update public.patients set phone='010-1234-5678' where id='{booking_patient_id}';")
+    created = client.post(
+        _APPOINTMENTS_URL,
+        headers=_bearer(reception_token),
+        json=_appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id),
+    )
+    appt_id = created.json()["id"]
+    client.post(f"{_APPOINTMENTS_URL}/{appt_id}/cancel", headers=_bearer(reception_token), json={})
+
+    notice = client.post(
+        _NOTIFY_URL.format(id=appt_id),
+        headers=_bearer(reception_token),
+        json={"kind": "cancellation_notice"},
+    )
+    assert notice.status_code == 200, notice.text
+    log = notice.json()
+    assert log["reminder_kind"] == "cancellation_notice"
+    assert log["status"] == "simulated"
+    assert log["recipient_masked"] == "010-****-5678"  # 마스킹(원시 phone 미반환·AC4)
+    assert "취소" in log["body"] and "예약테스트" not in log["body"]  # 비-식별(환자명 금지)
+
+    # 멱등: 같은 종류 재호출 → 새 행 없음(null 반환)·로그 1건만.
+    again = client.post(
+        _NOTIFY_URL.format(id=appt_id),
+        headers=_bearer(reception_token),
+        json={"kind": "cancellation_notice"},
+    )
+    assert again.status_code == 200 and again.json() is None
+    cnt = psql.scalar(
+        "select count(*) from public.notification_logs where "
+        f"appointment_id='{appt_id}' and reminder_kind='cancellation_notice';"
+    )
+    assert cnt == "1", f"멱등 위반(행 {cnt}건)"
+
+
+def test_notify_change_reschedule_notice(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+    psql: Psql,
+) -> None:
+    """AC3/AC4: 재배정 후 reschedule_notice 안내 기록(연락처 없으면 skipped no_recipient·정직
+    기록)."""
+    created = client.post(
+        _APPOINTMENTS_URL,
+        headers=_bearer(reception_token),
+        json=_appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id),
+    )
+    appt_id = created.json()["id"]
+    client.post(
+        f"{_APPOINTMENTS_URL}/{appt_id}/reschedule",
+        headers=_bearer(reception_token),
+        json={"doctor_id": demo_doctor_id, "scheduled_start": _RESCHEDULE_START},
+    )
+    notice = client.post(
+        _NOTIFY_URL.format(id=appt_id),
+        headers=_bearer(reception_token),
+        json={"kind": "reschedule_notice"},
+    )
+    assert notice.status_code == 200, notice.text
+    log = notice.json()
+    assert log["reminder_kind"] == "reschedule_notice"
+    # booking_patient 는 phone 미시드 → skipped(no_recipient·정직 기록). 비-식별 body.
+    assert log["status"] == "skipped" and log["skip_reason"] == "no_recipient"
+    assert "예약테스트" not in log["body"]
+
+
+def test_notify_change_forbidden_for_nurse(
+    client: TestClient,
+    nurse_token: str,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+) -> None:
+    """AC4: notification.send 미보유(nurse) → 403."""
+    created = client.post(
+        _APPOINTMENTS_URL,
+        headers=_bearer(reception_token),
+        json=_appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id),
+    )
+    appt_id = created.json()["id"]
+    res = client.post(
+        _NOTIFY_URL.format(id=appt_id),
+        headers=_bearer(nurse_token),
+        json={"kind": "cancellation_notice"},
+    )
+    assert res.status_code == 403 and res.json()["error"]["code"] == "forbidden"
+
+
+def test_notify_change_missing_appointment_404(client: TestClient, reception_token: str) -> None:
+    """AC4: 미존재 예약 → 404."""
+    res = client.post(
+        _NOTIFY_URL.format(id=str(uuid.uuid4())),
+        headers=_bearer(reception_token),
+        json={"kind": "cancellation_notice"},
+    )
+    assert res.status_code == 404

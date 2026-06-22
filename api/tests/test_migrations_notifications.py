@@ -100,6 +100,21 @@ def test_status_check_rejects_invalid(psql):
     assert "check" in err.lower() or "status" in err.lower(), err
 
 
+def test_reminder_kind_check_accepts_change_notices(psql):
+    """0037(Story 6.8): reschedule_notice·cancellation_notice 가 reminder_kind 어휘에 추가됨."""
+    for kind in ("reschedule_notice", "cancellation_notice"):
+        # scalar 가 returncode==0 단언 → INSERT 성공 = CHECK 수용(거부 시 ON_ERROR_STOP 으로 실패).
+        out = psql.scalar(
+            "begin;"
+            + _MK_PATIENT
+            + _MK_APPT
+            + _notif(kind=kind)
+            + f"select reminder_kind from public.notification_logs where appointment_id={_APPT_ID};"
+            + "rollback;"
+        )
+        assert kind in out.splitlines(), f"{kind} 거부됨(0037 CHECK 확장 누락?): {out}"
+
+
 def test_channel_check_rejects_invalid(psql):
     """channel 은 sms 만(향후 push/email = CHECK 확장 이음매)."""
     err = psql.expect_error(

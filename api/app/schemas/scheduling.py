@@ -193,6 +193,29 @@ class NoShowStatus(BaseModel):
     blocked: bool
 
 
+# ── 휴진 영향 예약 · 변경 통지 (Story 6.8 / FR-016) ────────────────────────────
+
+
+class AffectedAppointment(BaseModel):
+    """휴진 기간에 걸린 영향 예약(항상 booked) — 재배정/취소·안내 대상. patient_name = staff 표시용
+    (appointment.read·캘린더 4.3/6.3 선례)·주민번호/연락처 미포함."""
+
+    id: UUID
+    patient_id: UUID
+    patient_name: str
+    doctor_id: UUID
+    department_id: UUID
+    scheduled_start: datetime
+    scheduled_end: datetime
+    status: str
+
+
+class ChangeNoticeRequest(BaseModel):
+    """변경 통지 기록 요청 — 재배정(reschedule_notice) 또는 취소(cancellation_notice) 안내 종류."""
+
+    kind: Literal["reschedule_notice", "cancellation_notice"]
+
+
 # 캘린더 슬롯 상태 = 가용(available/time_off/past) + 예약 overlay(confirmed/완료/노쇼/취소).
 CalendarSlotStatus = Literal[
     "available", "confirmed", "completed", "no_show", "cancelled", "time_off", "past"
