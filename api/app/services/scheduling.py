@@ -30,6 +30,7 @@ from app.schemas.scheduling import (
     DoctorTimeOffCreate,
     DoctorTimeOffResponse,
     DoctorTimeOffUpdate,
+    NoShowStatus,
     SchedulingDoctor,
     SelfAppointmentCreate,
     Slot,
@@ -321,6 +322,22 @@ async def mark_appointment_no_show(
     """예약 노쇼(booked→no_show). 6.7 노쇼 카운트 근거."""
     row = await db.mark_appointment_no_show(sub, appointment_id, reason=payload.reason)
     return AppointmentResponse.model_validate(dict(row))
+
+
+# ── 노쇼 카운트·임계치 (Story 6.7 / FR-015) ────────────────────────────────────
+
+
+async def get_patient_no_show_status(sub: UUID, patient_id: UUID) -> NoShowStatus:
+    """환자 노쇼 상태(횟수·임계치·차단 여부) — booking-peek 프로액티브 배지용. count = 단일 진실
+    함수(db.fetch_patient_no_show_count)·threshold = 앱 상수(db.NO_SHOW_THRESHOLD)·blocked = 임계
+    초과(생성 가드와 동일 판정). 게이트는 라우터(appointment.read)."""
+    count = await db.fetch_patient_no_show_count(sub, patient_id)
+    return NoShowStatus(
+        patient_id=patient_id,
+        no_show_count=count,
+        threshold=db.NO_SHOW_THRESHOLD,
+        blocked=count > db.NO_SHOW_THRESHOLD,
+    )
 
 
 async def reschedule_appointment(

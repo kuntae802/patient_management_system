@@ -220,6 +220,11 @@ export function PatientBooking() {
           }
         } else if (err.code === "no_self_patient") {
           setLinkState("unlinked");
+        } else if (err.code === "no_show_threshold_exceeded") {
+          // 노쇼 누적 차단(6.7) — 쉬운 말 + 병원 문의 안내. 슬롯 선택은 유지(사용자가 사유 인지).
+          setError(
+            "미방문(노쇼)이 누적되어 앱에서 바로 예약하기 어려워요. 병원으로 문의해 주세요.",
+          );
         } else {
           setError(err.message);
         }

@@ -70,12 +70,29 @@ export type CheckInResult = {
   status: string;
 };
 
-/** 예약 생성(booking-peek 저장). 게이트 appointment.create. 더블부킹 → 409 double_booking(ApiError). */
+/** 환자 노쇼 상태(Story 6.7·FastAPI NoShowStatus 거울). blocked=초과(count>threshold)·서버 권위. */
+export type NoShowStatus = {
+  patient_id: string;
+  no_show_count: number;
+  threshold: number;
+  blocked: boolean;
+};
+
+/**
+ * 예약 생성(booking-peek 저장). 게이트 appointment.create.
+ * 더블부킹 → 409 double_booking · 노쇼 임계 초과 → 409 no_show_threshold_exceeded(ApiError).
+ */
 export function createAppointment(payload: AppointmentCreate): Promise<AppointmentResponse> {
   return apiFetch<AppointmentResponse>("/v1/scheduling/appointments", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+/** 환자 노쇼 상태 조회(booking-peek 프로액티브 배지). 게이트 appointment.read. */
+export function fetchNoShowStatus(patientId: string): Promise<NoShowStatus> {
+  const query = new URLSearchParams({ patient_id: patientId });
+  return apiFetch<NoShowStatus>(`/v1/scheduling/no-show-status?${query.toString()}`);
 }
 
 /** 예약 취소(booked→cancelled). 게이트 appointment.update. 잘못된 전이 → 409(ApiError). */

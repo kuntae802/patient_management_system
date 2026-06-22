@@ -6,7 +6,11 @@ import { useEffect, useRef, useState } from "react";
 
 import { ApiError } from "@/lib/api/client";
 import { maskPhone, searchPatients, sexLabel, type PatientListItem } from "@/lib/reception/patients";
-import { createAppointment } from "@/lib/scheduling/appointments";
+import {
+  createAppointment,
+  fetchNoShowStatus,
+  type NoShowStatus,
+} from "@/lib/scheduling/appointments";
 import { formatSlotTime } from "@/lib/scheduling/slots";
 
 const FIELD =
@@ -42,6 +46,7 @@ export function BookingPeek({
   const [smsOptIn, setSmsOptIn] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
+  const [noShow, setNoShow] = useState<NoShowStatus | null>(null); // 노쇼 임계(6.7) — blocked 시 저장 차단
   const [submitting, setSubmitting] = useState(false);
   const submitLock = useRef(false);
 
@@ -66,6 +71,24 @@ export function BookingPeek({
     };
   }, [query]);
 
+  // 환자 선택 시 노쇼 상태 사전 조회(6.7 AC4 프로액티브 — blocked 면 경고 + 저장 차단). 실패는
+  // 조용히 무시(저장 시 서버 가드 _assert_no_show_under_threshold 가 최종선). 선택 변경/해제 시
+  // setNoShow(null) 은 호출부에서 처리(set-state-in-effect 회피).
+  useEffect(() => {
+    if (!selected) return;
+    let cancelled = false;
+    fetchNoShowStatus(selected.id)
+      .then((s) => {
+        if (!cancelled) setNoShow(s);
+      })
+      .catch(() => {
+        /* 일시 오류는 무시 — 저장 시 서버 가드가 최종 차단 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected]);
+
   async function handleSave() {
     if (!selected || submitLock.current) return;
     submitLock.current = true;
@@ -86,6 +109,15 @@ export function BookingPeek({
     } catch (err) {
       if (err instanceof ApiError && err.code === "double_booking") {
         setConflict(true);
+      } else if (err instanceof ApiError && err.code === "no_show_threshold_exceeded") {
+        // 서버 가드 권위 — 프로액티브 조회를 못 했거나 경합으로 통과한 경우도 여기서 차단 표시.
+        const d = err.detail as { no_show_count?: number; threshold?: number } | null;
+        setNoShow({
+          patient_id: selected.id,
+          no_show_count: d?.no_show_count ?? noShow?.no_show_count ?? 0,
+          threshold: d?.threshold ?? noShow?.threshold ?? 0,
+          blocked: true,
+        });
       } else {
         setError(err instanceof ApiError ? err.message : "예약을 저장하지 못했습니다.");
       }
@@ -141,7 +173,10 @@ export function BookingPeek({
                   <button
                     type="button"
                     className="text-[12px] text-muted-foreground underline"
-                    onClick={() => setSelected(null)}
+                    onClick={() => {
+                      setSelected(null);
+                      setNoShow(null);
+                    }}
                   >
                     변경
                   </button>
@@ -168,7 +203,10 @@ export function BookingPeek({
                           <button
                             type="button"
                             className="flex w-full flex-col gap-0.5 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-muted"
-                            onClick={() => setSelected(p)}
+                            onClick={() => {
+                              setSelected(p);
+                              setNoShow(null);
+                            }}
                           >
                             <span className="text-[13px] font-medium text-foreground">
                               {p.name} · {p.chart_no}
@@ -225,6 +263,20 @@ export function BookingPeek({
                 ✕ 더블부킹 차단 — 같은 시간대에 이미 예약이 있습니다.
               </p>
             )}
+
+            {/* 노쇼 임계 초과 경고 칩(6.7 AC4·노쇼 색 status-received·음영 비의존). 횟수 절을 count>0
+                일 때만 표기 — detail 누락(방어적 폴백) 시 "0회(임계 0회 초과)" 무의미 텍스트 방지. */}
+            {noShow?.blocked && (
+              <p
+                role="alert"
+                aria-live="assertive"
+                className="rounded-md border border-status-received/45 bg-status-received/12 px-3 py-2 text-[12.5px] font-medium text-status-received-ink"
+              >
+                {noShow.no_show_count > 0
+                  ? `● 노쇼 ${noShow.no_show_count}회(임계 ${noShow.threshold}회 초과) — 신규 예약이 제한됩니다.`
+                  : "● 미방문(노쇼)이 누적되어 신규 예약이 제한됩니다."}
+              </p>
+            )}
             {error && (
               <p role="alert" className="text-[12.5px] text-status-cancelled">
                 {error}
@@ -244,7 +296,7 @@ export function BookingPeek({
               type="button"
               className="h-9 rounded-md bg-primary px-4 text-[13px] font-medium text-primary-foreground hover:bg-primary-hover disabled:opacity-60"
               onClick={handleSave}
-              disabled={!selected || submitting}
+              disabled={!selected || submitting || !!noShow?.blocked}
             >
               {submitting ? "저장 중…" : "예약 저장"}
             </button>

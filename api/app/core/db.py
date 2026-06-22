@@ -3205,6 +3205,31 @@ def _double_booking_error() -> ConflictError:
     return ConflictError("같은 의사·시간대에 이미 예약이 있습니다.", code="double_booking")
 
 
+# 노쇼 임계치(기본 2회·Story 6.7/FR-015) — "초과"(엄격 `>`) 시 신규 예약 제한. DB(0036 함수)는
+# 카운트만 소유하고 임계 판정은 앱이 한다(클리닉 설정 테이블 미생성·튜너블 의도는 본 상수). 가드가
+# 트랜잭션 내부에서 에러 detail 을 만들므로 상수도 여기 소유(SLOT_MINUTES 가 service 소유와 정합).
+NO_SHOW_THRESHOLD = 2
+
+
+async def _assert_no_show_under_threshold(conn: asyncpg.Connection, patient_id: UUID) -> None:
+    """신규 예약 직전 동일 txn 에서 노쇼 카운트 검사(TOCTOU 안전·_require_appointment_create 사상).
+    count > NO_SHOW_THRESHOLD(기본 2 → 3회째 차단) → 409 no_show_threshold_exceeded(FR-015·상습
+    노쇼 슬롯 낭비 차단). 카운트 = 단일 진실 함수 patient_no_show_count(status='no_show' 집계).
+    ⚠️ 신규 생성(insert_appointment·insert_self_appointment)에만 — reschedule/check-in 비대상."""
+    count = await conn.fetchval("select public.patient_no_show_count($1)", patient_id)
+    if count > NO_SHOW_THRESHOLD:
+        raise AppError(
+            "미방문(노쇼)이 누적되어 신규 예약이 제한됩니다.",
+            code="no_show_threshold_exceeded",
+            status_code=409,
+            detail={
+                "patient_id": str(patient_id),
+                "no_show_count": count,
+                "threshold": NO_SHOW_THRESHOLD,
+            },
+        )
+
+
 async def insert_appointment(
     sub: UUID,
     *,
@@ -3220,7 +3245,8 @@ async def insert_appointment(
 ) -> asyncpg.Record:
     """예약 INSERT(status='booked'·자동 감사). service_role 직접(insert_walk_in_encounter 패턴):
     권한·환자/의사/진료과 active 동일-txn 선검사 → INSERT. 더블부킹 EXCLUDE(0031, 23P01) → 409
-    double_booking·FK(23503) → 422 백스톱·미존재 환자 404·비활성 422."""
+    double_booking·FK(23503) → 422 백스톱·미존재 환자 404·비활성 422·노쇼 임계 초과 409
+    no_show_threshold_exceeded(6.7)."""
 
     async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
         await _require_appointment_create(conn)
@@ -3237,6 +3263,8 @@ async def insert_appointment(
                 status_code=422,
                 detail={"patient_id": str(patient_id)},
             )
+        # 노쇼 임계 초과 차단(6.7/FR-015) — 환자 확정 후·INSERT 전(동일 txn TOCTOU).
+        await _assert_no_show_under_threshold(conn, patient_id)
         # 의사(role=doctor·active)·진료과·진료실 배정 가능 검증(6.1 헬퍼 재사용).
         await _assert_doctor_assignable(conn, doctor_id)
         await _assert_department_assignable(conn, department_id)
@@ -3288,7 +3316,8 @@ async def insert_self_appointment(
     (2) **patient_id 를 인자로 받지 않고** 동일 txn 에서 `auth_uid = sub` 로 도출(클라 미수용·교차
         환자 예약 구조적 차단 — IDOR), (3) `created_by = sub`(환자 auth uid·0034 가 users FK 제거),
     (4) note 없음. 미연결(환자 레코드 없음) → 409 no_self_patient(온보딩 유도)·비활성 환자 → 422·
-    더블부킹 EXCLUDE → 409·FK(23503) → 422·의사/진료과 active 선검사(insert_appointment 재사용)."""
+    더블부킹 EXCLUDE → 409·노쇼 임계 초과 → 409 no_show_threshold_exceeded(6.7·본인 예약도 제한)·
+    FK(23503) → 422·의사/진료과 active 선검사(insert_appointment 재사용)."""
 
     async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
         # 본인 환자 레코드(auth_uid=sub) 도출 — patient_id 는 클라 입력이 아니다(세션 uid 스코프).
@@ -3308,6 +3337,8 @@ async def insert_self_appointment(
                 status_code=422,
             )
         patient_id = patient["id"]
+        # 노쇼 임계 초과 차단(6.7/FR-015) — 본인 예약도 제한 대상(원무 대리와 동일 정책).
+        await _assert_no_show_under_threshold(conn, patient_id)
         # 의사(role=doctor·active)·진료과 배정 가능 검증(6.1 헬퍼 재사용·room 없음).
         await _assert_doctor_assignable(conn, doctor_id)
         await _assert_department_assignable(conn, department_id)
@@ -3338,6 +3369,18 @@ async def insert_self_appointment(
             ) from exc
         assert row is not None
         return row
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_patient_no_show_count(sub: UUID, patient_id: UUID) -> int:
+    """환자 노쇼 횟수 조회(6.7·read 엔드포인트용) — 단일 진실 함수 patient_no_show_count(0036) 호출.
+    권한 게이트는 라우터(appointment.read). service_role 읽기(존재하지 않는 환자도 0·404 불요).
+    쓰기 가드(_assert_no_show_under_threshold)와 같은 함수 공유(카운트 정의 단일 진실)."""
+
+    async def _op(conn: asyncpg.Connection) -> int:
+        count = await conn.fetchval("select public.patient_no_show_count($1)", patient_id)
+        return int(count)
 
     return await _run_authed(sub, _op)
 

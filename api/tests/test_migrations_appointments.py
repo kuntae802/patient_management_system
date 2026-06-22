@@ -484,3 +484,70 @@ def test_created_by_accepts_non_users_uuid(psql):
     )
     assert out.returncode == 0, f"users 외 created_by INSERT 실패(FK 잔존?): {out.stderr}"
     assert "ERROR" not in out.stderr, f"INSERT 오류: {out.stderr}"
+
+
+# ── 0036: 노쇼 카운트 단일 진실 함수 (Story 6.7 / FR-015) ───────────────────────
+
+
+def test_patient_no_show_count_function_exists(psql):
+    """patient_no_show_count(uuid) returns integer 함수 존재(0036)."""
+    cnt = psql.scalar(
+        "select count(*) from pg_proc p "
+        "join pg_namespace n on n.oid=p.pronamespace and n.nspname='public' "
+        "where p.proname='patient_no_show_count';"
+    )
+    assert cnt == "1", "patient_no_show_count 함수 없음(0036 미적용)"
+
+
+def test_patient_no_show_count_counts_only_no_show(psql):
+    """노쇼만 집계 — booked·cancelled·completed 제외(파생 카운트 단일 진실)."""
+    out = psql.scalar(
+        "begin;"
+        + _MK_PATIENT
+        # no_show 2건(서로 다른 시각) + cancelled 1 + completed 1 + booked 1 = 노쇼 카운트 2 기대
+        + _appt("2030-06-03 09:00+09", "2030-06-03 09:30+09", "no_show")
+        + _appt("2030-06-03 09:30+09", "2030-06-03 10:00+09", "no_show")
+        + _appt("2030-06-03 10:00+09", "2030-06-03 10:30+09", "cancelled")
+        + _appt("2030-06-03 10:30+09", "2030-06-03 11:00+09", "completed")
+        + _appt("2030-06-03 11:00+09", "2030-06-03 11:30+09", "booked")
+        + "select public.patient_no_show_count("
+        + _PATIENT
+        + ");"
+        "rollback;"
+    )
+    nums = [ln.strip() for ln in out.splitlines() if ln.strip().lstrip("-").isdigit()]
+    assert nums and int(nums[-1]) == 2, f"노쇼 카운트가 2가 아님(노쇼만 집계 위반): {out!r}"
+
+
+def test_patient_no_show_count_zero_for_none(psql):
+    """노쇼 예약이 없는(존재하지 않는) 환자 → 0(404 아님·조회 목적)."""
+    cnt = psql.scalar(
+        "select public.patient_no_show_count('00000000-0000-4000-8000-0000000000ff');"
+    )
+    assert cnt == "0", f"노쇼 0이어야 함: {cnt}"
+
+
+def test_patient_no_show_count_execute_granted(psql):
+    """authenticated·service_role 에 EXECUTE grant(public 회수 후 명시 grant)."""
+    grantees = psql.scalar(
+        "select string_agg(distinct grantee, ',' order by grantee) "
+        "from information_schema.role_routine_grants "
+        "where routine_schema='public' and routine_name='patient_no_show_count' "
+        "  and privilege_type='EXECUTE';"
+    )
+    have = set((grantees or "").split(","))
+    assert {"authenticated", "service_role"} <= have, f"EXECUTE grant 누락: {grantees}"
+
+
+def test_patient_no_show_count_public_execute_revoked(psql):
+    """PUBLIC 의 EXECUTE 회수 검증(revoke all from public). pg_proc.proacl 직접 검사 — proacl NULL
+    (기본=PUBLIC EXECUTE 보유) 또는 grantee=0(PUBLIC) EXECUTE acl 이 있으면 회수 누락. 기대 0."""
+    cnt = psql.scalar(
+        "select count(*) from pg_proc p "
+        "join pg_namespace n on n.oid=p.pronamespace and n.nspname='public' "
+        "where p.proname='patient_no_show_count' and ("
+        "  p.proacl is null "
+        "  or exists (select 1 from aclexplode(p.proacl) a "
+        "             where a.grantee=0 and a.privilege_type='EXECUTE'));"
+    )
+    assert cnt == "0", "PUBLIC 이 patient_no_show_count EXECUTE 를 보유(revoke 누락)"
