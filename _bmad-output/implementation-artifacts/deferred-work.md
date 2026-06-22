@@ -283,3 +283,7 @@
 - **다중 슬롯 예약 overlay "render once" 가드 부재** [api/app/services/scheduling.py `_build_doctor_column`] — 한 예약을 겹치는 모든 base 슬롯에 반복 overlay. 6.3 은 전부 `start+30분` slot-aligned 라 1:1(무해)이나, 6.4 가변 길이/전이 예약 시 한 예약이 여러 confirmed 셀로 중복 렌더. 해소: 6.4 가 슬롯-소유(start-equality) 또는 multi-slot 연속 표기 추가.
 
 - **환자 교차-의사 더블부킹 미차단** [supabase/migrations/0031 EXCLUDE·db.py insert_appointment] — 더블부킹 EXCLUDE 는 `doctor_id`+시간만(같은 환자가 동시간 2명 의사에게 예약 가능). 단일 의사 외래 흐름 범위 밖·환자-레벨 충돌 미명세. 필요 시 환자-시간 부분 제약 또는 앱-레벨 검사.
+
+## Deferred from: code review of 6-4-원무-대리-예약-생성-변경-취소 (2026-06-22)
+
+- **reschedule 가 다른 진료과 의사로 변경 시 `appointment.department_id` 미동기화** [api/app/core/db.py `reschedule_appointment`] — UPDATE 는 doctor_id/scheduled_start/scheduled_end 만 변경하고 department_id 는 그대로 두며, `_assert_doctor_assignable` 은 role+active 만 검증(부서 멤버십 미검증). 다른 진료과 의사로 reschedule 하면 appointment.department_id 가 새 의사의 부서와 불일치 → 부서-스코프 캘린더(`fetch_bookable_doctors(department_id)` 가 부서별 의사 열)에서 고아(어느 부서에도 안 보임). **현 web UI 는 같은 의사만 변경**(`doctor_id: doctorId` 고정)이라 미도달 — API 직접 경로만 노출. 해소: 교차-의사 reschedule UI 착수 시 (a) 새 의사의 부서 == appointment.department_id 검증(422) 또는 (b) department_id 동반 갱신 가드 추가.
