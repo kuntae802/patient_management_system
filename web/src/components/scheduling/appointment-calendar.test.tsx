@@ -12,11 +12,18 @@ vi.mock("@/lib/scheduling/appointments", async (importOriginal) => {
 });
 // 진료과 직접조회용 가짜 Supabase.
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => fakeSupabase }));
-// BookingPeek 은 스텁(프롭 노출) — 캘린더 클릭→peek 오픈만 검증.
+// BookingPeek·BookingDetail 은 스텁(프롭 노출) — 캘린더 클릭→오픈만 검증.
 vi.mock("@/components/scheduling/booking-peek", () => ({
   BookingPeek: (props: { doctorName: string; scheduledStart: string }) => (
     <div data-testid="peek">
       {props.doctorName}|{props.scheduledStart}
+    </div>
+  ),
+}));
+vi.mock("@/components/scheduling/booking-detail", () => ({
+  BookingDetail: (props: { appointmentId: string; patientName: string | null }) => (
+    <div data-testid="detail">
+      {props.appointmentId}|{props.patientName}
     </div>
   ),
 }));
@@ -91,12 +98,14 @@ describe("AppointmentCalendar", () => {
     expect(peek).toHaveTextContent("의사A|2030-06-03T01:30:00Z");
   });
 
-  it("확정 슬롯(비활성)은 button 아님 — 클릭 불가", async () => {
+  it("확정 슬롯 클릭 → booking-detail 오픈(appointment_id·환자명 전달, 6.4)", async () => {
     mockCalendar.mockResolvedValue(CALENDAR);
-    await selectDept();
+    const user = await selectDept();
     const confirmed = await screen.findByText("홍길동");
-    // 확정 슬롯 셀은 button 이 아니라 div(data-status=confirmed).
-    expect(confirmed.closest("button")).toBeNull();
-    expect(confirmed.closest("[data-status='confirmed']")).not.toBeNull();
+    // 6.4: 확정 슬롯은 클릭 가능 button(상세·액션 진입).
+    const cell = confirmed.closest("button");
+    expect(cell).not.toBeNull();
+    await user.click(cell!);
+    expect(await screen.findByTestId("detail")).toHaveTextContent("a1|홍길동");
   });
 });
