@@ -4,6 +4,7 @@ import { AlertTriangle, ArrowLeft } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { ConsultationWorkspace } from "@/components/encounters/consultation-workspace";
+import { ExaminationPanel } from "@/components/encounters/examination-panel";
 import { PatientBanner } from "@/components/encounters/patient-banner";
 import { PatientContextPanel } from "@/components/encounters/patient-context-panel";
 import { PrescriptionPanel } from "@/components/encounters/prescription-panel";
@@ -163,8 +164,11 @@ export function EncounterHub({ encounterId, today }: { encounterId: string; toda
             />
             {/* 중앙 작성 = 진단 블록(4.7) + SOAP ledger(4.6) + 진료 완료 액션(4.7). */}
             <ConsultationWorkspace encounter={encounter} today={today} />
-            {/* 우 오더 pane = 처방(5.2). 검사/영상/처치 탭·전체 UX-DR13 통합은 5.3/5.4/5.5. */}
-            <PrescriptionPanel encounter={encounter} today={today} />
+            {/* 우 오더 pane = 처방(5.2)·검사·영상(5.3) 섹션 스택. 처치 탭·전체 UX-DR13 통합은 5.4/5.5. */}
+            <div className="space-y-3">
+              <PrescriptionPanel encounter={encounter} today={today} />
+              <ExaminationPanel encounter={encounter} today={today} />
+            </div>
           </div>
         </div>
       )}
