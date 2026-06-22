@@ -14,6 +14,9 @@ services:
       SUPABASE_DB_URL: ${SUPABASE_DB_URL}
       SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY}
       SUPABASE_JWKS_URL: ${SUPABASE_JWKS_URL}
+      # Supabase API 베이스 — supabase-py Storage 서명 URL 호스트(Story 5.8). 누락 시 localhost 기본값
+      # → 클라우드 서명 URL 깨짐. 클라우드 프로젝트 URL로 주입.
+      SUPABASE_URL: ${SUPABASE_URL}
       API_ROOT_PATH: ${API_ROOT_PATH:-/patient_management_system/api}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://kuntae802.mooo.com}
       TZ: Asia/Seoul
