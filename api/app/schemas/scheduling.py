@@ -183,6 +183,16 @@ class AppointmentReschedule(BaseModel):
     scheduled_start: datetime
 
 
+class NoShowStatus(BaseModel):
+    """환자 노쇼 상태(Story 6.7·booking-peek 프로액티브 배지용). count=노쇼 횟수·threshold=임계치(앱
+    상수)·blocked=초과(count>threshold) 여부. web 이 threshold 를 하드코딩하지 않게 서버가 권위."""
+
+    patient_id: UUID
+    no_show_count: int
+    threshold: int
+    blocked: bool
+
+
 # 캘린더 슬롯 상태 = 가용(available/time_off/past) + 예약 overlay(confirmed/완료/노쇼/취소).
 CalendarSlotStatus = Literal[
     "available", "confirmed", "completed", "no_show", "cancelled", "time_off", "past"

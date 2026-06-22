@@ -756,6 +756,142 @@ def test_cancel_returns_lifecycle_timestamps(
     assert body["cancel_reason"] == "환자 요청"
 
 
+# ── 노쇼 카운트 · 임계치 제한 (Story 6.7 / FR-015) — 집계·생성 차단·경계·비대상·읽기 ────────────
+_NO_SHOW_STATUS_URL = "/v1/scheduling/no-show-status"
+
+
+def _seed_no_shows(psql: Psql, patient_id: str, doctor_id: str, dept_id: str, n: int) -> None:
+    """환자에게 no_show 예약 n건 직접 INSERT(트리거 BEFORE UPDATE 만 우회·EXCLUDE booked 만 무충돌).
+    시각은 과거·서로 다른 슬롯(카운트만 목적 — 슬롯 가용성은 booked 만 차감하므로 무관)."""
+    rows = ",".join(
+        f"('{patient_id}', '{doctor_id}', '{dept_id}', "
+        f"'2020-01-{i + 1:02d}T00:00:00Z', "
+        f"'2020-01-{i + 1:02d}T00:30:00Z', 'no_show', '{doctor_id}')"
+        for i in range(n)
+    )
+    psql.run(
+        "insert into public.appointments (patient_id, doctor_id, department_id, "
+        "scheduled_start, scheduled_end, status, created_by) values " + rows + ";"
+    )
+
+
+def test_create_appointment_blocked_over_no_show_threshold(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+    psql: Psql,
+) -> None:
+    """AC2: 노쇼 3회(임계 2 초과) 환자 신규 예약 → 409 no_show_threshold_exceeded + 사유 detail."""
+    _seed_no_shows(psql, booking_patient_id, demo_doctor_id, demo_dept_id, 3)
+    res = client.post(
+        _APPOINTMENTS_URL,
+        headers=_bearer(reception_token),
+        json=_appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id),
+    )
+    assert res.status_code == 409, res.text
+    err = res.json()["error"]
+    assert err["code"] == "no_show_threshold_exceeded"
+    assert err["detail"]["no_show_count"] == 3
+    assert err["detail"]["threshold"] == 2
+
+
+def test_create_appointment_allowed_at_no_show_threshold(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+    psql: Psql,
+) -> None:
+    """AC3 경계: 노쇼 정확히 2회(= 임계치)는 '초과' 아님(엄격 >) → 신규 예약 201."""
+    _seed_no_shows(psql, booking_patient_id, demo_doctor_id, demo_dept_id, 2)
+    res = client.post(
+        _APPOINTMENTS_URL,
+        headers=_bearer(reception_token),
+        json=_appt_payload(booking_patient_id, demo_doctor_id, demo_dept_id),
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["status"] == "booked"
+
+
+def test_reschedule_not_blocked_over_no_show_threshold(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+    psql: Psql,
+) -> None:
+    """AC3 비대상: 임계 초과 환자라도 기존 예약 변경(reschedule)은 차단되지 않음(신규 아님)."""
+    _seed_no_shows(psql, booking_patient_id, demo_doctor_id, demo_dept_id, 3)
+    booked_id = "00000000-0000-4000-8000-00000000b777"
+    psql.run(
+        "insert into public.appointments (id, patient_id, doctor_id, department_id, "
+        "scheduled_start, scheduled_end, status, created_by) values "
+        f"('{booked_id}', '{booking_patient_id}', '{demo_doctor_id}', '{demo_dept_id}', "
+        f"'{_BOOK_START}', '2030-06-03T01:30:00Z', 'booked', '{demo_doctor_id}');"
+    )
+    res = client.post(
+        f"{_APPOINTMENTS_URL}/{booked_id}/reschedule",
+        headers=_bearer(reception_token),
+        json={"doctor_id": demo_doctor_id, "scheduled_start": _RESCHEDULE_START},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["scheduled_start"] == _RESCHEDULE_START
+
+
+def test_no_show_status_reports_count_and_blocked(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+    demo_doctor_id: str,
+    demo_dept_id: str,
+    psql: Psql,
+) -> None:
+    """AC1: GET /no-show-status → 노쇼 횟수·임계치·차단 여부(생성 가드와 동일 판정)."""
+    _seed_no_shows(psql, booking_patient_id, demo_doctor_id, demo_dept_id, 3)
+    res = client.get(
+        _NO_SHOW_STATUS_URL,
+        headers=_bearer(reception_token),
+        params={"patient_id": booking_patient_id},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["no_show_count"] == 3
+    assert body["threshold"] == 2
+    assert body["blocked"] is True
+
+
+def test_no_show_status_zero_for_clean_patient(
+    client: TestClient,
+    reception_token: str,
+    booking_patient_id: str,
+) -> None:
+    """노쇼 0 환자 → count 0·blocked False."""
+    res = client.get(
+        _NO_SHOW_STATUS_URL,
+        headers=_bearer(reception_token),
+        params={"patient_id": booking_patient_id},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["no_show_count"] == 0 and body["blocked"] is False
+
+
+def test_no_show_status_forbidden_for_nurse(
+    client: TestClient, nurse_token: str, booking_patient_id: str
+) -> None:
+    """AC4 게이트: appointment.read 미보유(nurse) → 403."""
+    res = client.get(
+        _NO_SHOW_STATUS_URL,
+        headers=_bearer(nurse_token),
+        params={"patient_id": booking_patient_id},
+    )
+    assert res.status_code == 403
+
+
 # ── 환자 본인 예약 (Story 6.5 / FR-010) — 가입→연결→본인 예약·세션 스코프·직원 차단 ──────────────
 # 공개가입 → admin 미연결환자 생성 → self-link → 환자 토큰으로 /me/* 호출(세션 스코프).
 # created_by 는 응답 모델에 없으므로 psql 로 검증(= 환자 auth uid·0034 FK 제거 end-to-end).
@@ -902,6 +1038,23 @@ def test_self_booking_unlinked_409(
         _ME_APPT_URL, headers=_bearer(token), json=_self_appt_payload(demo_doctor_id, demo_dept_id)
     )
     assert res.status_code == 409 and res.json()["error"]["code"] == "no_self_patient"
+
+
+def test_self_booking_blocked_over_no_show_threshold(
+    client: TestClient,
+    linked_patient: tuple[str, str, str],
+    demo_doctor_id: str,
+    demo_dept_id: str,
+    psql: Psql,
+) -> None:
+    """AC2: 노쇼 3회 연결환자 본인 예약 → 409 no_show_threshold_exceeded(본인 예약도 동일 정책)."""
+    token, _uid, pid = linked_patient
+    _seed_no_shows(psql, pid, demo_doctor_id, demo_dept_id, 3)
+    res = client.post(
+        _ME_APPT_URL, headers=_bearer(token), json=_self_appt_payload(demo_doctor_id, demo_dept_id)
+    )
+    assert res.status_code == 409, res.text
+    assert res.json()["error"]["code"] == "no_show_threshold_exceeded"
 
 
 # ── SMS 리마인더 디스패치·로그 (Story 6.6) — 시뮬 발송 + 멱등 + opt-in 게이트 + PII 마스킹 ────────

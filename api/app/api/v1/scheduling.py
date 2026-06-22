@@ -33,6 +33,7 @@ from app.schemas.scheduling import (
     DoctorTimeOffCreate,
     DoctorTimeOffResponse,
     DoctorTimeOffUpdate,
+    NoShowStatus,
     SchedulingDoctor,
     SelfAppointmentCreate,
     SlotGridResponse,
@@ -174,8 +175,9 @@ async def create_appointment(
     payload: AppointmentCreate,
     user: CurrentUser = Depends(require_appointment_create),
 ) -> AppointmentResponse:
-    """예약 생성(booking-peek). 게이트 appointment.create. 더블부킹 → 409 double_booking·미존재
-    환자 404·비활성 환자/의사·비-의사 → 422·미존재 진료실 등 FK → 422."""
+    """예약 생성(booking-peek). 게이트 appointment.create. 더블부킹 → 409 double_booking·노쇼 임계
+    초과 → 409 no_show_threshold_exceeded(6.7)·미존재 환자 404·비활성 환자/의사·비-의사 → 422·
+    미존재 진료실 등 FK → 422."""
     return await scheduling_service.create_appointment(user.sub, payload)
 
 
@@ -188,6 +190,21 @@ async def get_day_calendar(
     """진료과·날짜(KST)의 예약 캘린더(시간레일 × 의사 열·일 보기) = 가용 슬롯 + 예약 overlay
     (확정/완료/노쇼/취소+환자명). 게이트 appointment.read. date 파싱 실패 → 422."""
     return await scheduling_service.get_day_calendar(user.sub, department_id, date)
+
+
+# ── 노쇼 카운트·임계치 (Story 6.7 / FR-015) — booking-peek 프로액티브 배지 ──────────────────
+# 정적 세그먼트 'no-show-status' — /appointments/{id}·/me 동적 라우트와 충돌 없음.
+
+
+@router.get("/no-show-status", response_model=NoShowStatus)
+async def get_no_show_status(
+    patient_id: UUID,
+    user: CurrentUser = Depends(require_appointment_read),
+) -> NoShowStatus:
+    """환자 노쇼 상태(횟수·임계치·차단 여부) — booking-peek 가 환자 선택 시 사전 안내(AC4). 게이트
+    appointment.read → 403. count = 단일 진실 함수(status='no_show')·blocked = 임계 초과(생성 가드와
+    동일 판정·web 이 임계치 하드코딩 회피). PII 미반환(카운트 정수만)."""
+    return await scheduling_service.get_patient_no_show_status(user.sub, patient_id)
 
 
 # ── 예약 전이·변경·도착 접수 (Story 6.4·액션 엔드포인트·status PATCH 아님) ──────────────────
@@ -272,7 +289,8 @@ async def create_self_appointment(
     user: CurrentUser = Depends(get_current_patient),
 ) -> AppointmentResponse:
     """환자 본인 예약 생성. 게이트 get_current_patient. patient_id 는 서버가 auth_uid=sub 로 도출
-    (클라 미수용). 미연결 409 no_self_patient·더블부킹 409·과거 422·슬롯 불가 422·비활성 422."""
+    (클라 미수용). 미연결 409 no_self_patient·더블부킹 409·노쇼 임계 초과 409
+    no_show_threshold_exceeded(6.7)·과거 422·슬롯 불가 422·비활성 422."""
     return await scheduling_service.create_self_appointment(user.sub, payload)
 
 
