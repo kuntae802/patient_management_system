@@ -10,11 +10,38 @@ vi.mock("@/lib/reception/patients", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/reception/patients")>();
   return { ...actual, fetchPatient: vi.fn(), fetchPatientEncounters: vi.fn() };
 });
+vi.mock("@/lib/encounters/vitals", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/encounters/vitals")>();
+  return { ...actual, fetchEncounterVitals: vi.fn() };
+});
 
+import { fetchEncounterVitals, type VitalSigns } from "@/lib/encounters/vitals";
 import { fetchPatient, fetchPatientEncounters } from "@/lib/reception/patients";
 
 const mockFetchPatient = vi.mocked(fetchPatient);
 const mockFetchEncounters = vi.mocked(fetchPatientEncounters);
+const mockFetchVitals = vi.mocked(fetchEncounterVitals);
+
+function vital(over: Partial<VitalSigns> = {}): VitalSigns {
+  return {
+    id: "v1",
+    encounter_id: "cur",
+    systolic: 120,
+    diastolic: 80,
+    pulse: 72,
+    body_temp: 36.5,
+    respiratory_rate: 16,
+    spo2: 98,
+    notes: null,
+    recorded_by: "n1",
+    recorded_by_name: "간호사김",
+    recorded_at: "2026-06-22T01:00:00Z",
+    is_active: true,
+    created_at: "2026-06-22T01:00:00Z",
+    updated_at: "2026-06-22T01:00:00Z",
+    ...over,
+  };
+}
 
 afterEach(() => vi.clearAllMocks());
 
@@ -67,14 +94,24 @@ function encounter(id: string): EncounterListItem {
   };
 }
 
-describe("PatientContextPanel — 활력 빈-상태(데이터 현실, AC1)", () => {
-  it("활력 테이블 미구축 → 명시 빈-상태(Epic 5 안내), 가짜 데이터 없음", async () => {
+describe("PatientContextPanel — 활력징후(Story 5.6, AC2/FR-032)", () => {
+  it("활력 미측정 → 빈-상태 문구", async () => {
     mockFetchPatient.mockResolvedValueOnce(patient());
     mockFetchEncounters.mockResolvedValueOnce([]);
+    mockFetchVitals.mockResolvedValueOnce([]);
     render(<PatientContextPanel patientId="p1" currentEncounterId="cur" />);
 
     expect(await screen.findByText("측정된 활력징후가 없습니다.")).toBeInTheDocument();
-    expect(screen.getByText(/간호 활력징후 기록은 Epic 5/)).toBeInTheDocument();
+  });
+
+  it("기록된 활력 → 최신 측정값·측정자 표시(간호 5.6 연동)", async () => {
+    mockFetchPatient.mockResolvedValueOnce(patient());
+    mockFetchEncounters.mockResolvedValueOnce([]);
+    mockFetchVitals.mockResolvedValueOnce([vital()]);
+    render(<PatientContextPanel patientId="p1" currentEncounterId="cur" />);
+
+    expect(await screen.findByText("120/80")).toBeInTheDocument(); // 혈압 합산
+    expect(screen.getByText("간호사김")).toBeInTheDocument();
   });
 });
 
@@ -82,6 +119,7 @@ describe("PatientContextPanel — 임상 프로필 + 과거 이력(AC1)", () => 
   it("임상 프로필을 읽기전용 표시(혈액형·기저질환)", async () => {
     mockFetchPatient.mockResolvedValueOnce(patient());
     mockFetchEncounters.mockResolvedValueOnce([]);
+    mockFetchVitals.mockResolvedValueOnce([]);
     render(<PatientContextPanel patientId="p1" currentEncounterId="cur" />);
 
     expect(await screen.findByText("A+")).toBeInTheDocument();
@@ -92,6 +130,7 @@ describe("PatientContextPanel — 임상 프로필 + 과거 이력(AC1)", () => 
   it("과거 내원 이력에서 현재 진행중 내원은 제외한다", async () => {
     mockFetchPatient.mockResolvedValueOnce(patient());
     mockFetchEncounters.mockResolvedValueOnce([encounter("cur"), encounter("past-1")]);
+    mockFetchVitals.mockResolvedValueOnce([]);
     render(<PatientContextPanel patientId="p1" currentEncounterId="cur" />);
 
     // 과거 이력엔 진료과·담당의 표시가 1건(past-1)만 — 현재(cur)는 제외.

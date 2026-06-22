@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { StatusBadge } from "@/components/encounters/status-badge";
+import { VitalsDisplay } from "@/components/encounters/vitals-display";
 import { ApiError } from "@/lib/api/client";
 import { type EncounterListItem } from "@/lib/reception/encounters";
+import { fetchEncounterVitals, type VitalSigns } from "@/lib/encounters/vitals";
 import {
   bloodTypeLabel,
   fetchPatient,
@@ -12,9 +14,9 @@ import {
   type Patient,
 } from "@/lib/reception/patients";
 
-// 진료 허브 좌 컨텍스트 패널(Story 4.5, FR-031·FR-032, 읽기전용) — 활력·임상 프로필·과거 내원 이력.
-// ⚠️ 데이터 현실: 간호 활력 테이블(5.6)·과거 진단/처방/검사(4.7/Epic5)는 미구축 → 명시 빈-상태로
-// 렌더(가짜 데이터·테이블 선행생성 금지). 실데이터 = 임상 프로필(0009/3.2)·과거 내원(0010).
+// 진료 허브 좌 컨텍스트 패널(Story 4.5/5.6, FR-031·FR-032, 읽기전용) — 활력·임상 프로필·과거 내원 이력.
+// 활력징후(5.6)는 간호사가 /nurse/vitals 에서 기록 → 의사가 여기서 본다(FR-032). 과거 진단/처방/검사
+// (4.7/Epic5 per-visit)는 미구축 → 명시 빈-상태. 실데이터 = 활력(0017)·임상 프로필(0009)·과거 내원(0010).
 
 // API `fetch_patient_encounters` 의 안전 상한(db.py limit 100)과 일치 — 도달 시 절단을 명시(no-silent-cap).
 const HISTORY_LIMIT = 100;
@@ -38,21 +40,24 @@ export function PatientContextPanel({
 }) {
   const [patient, setPatient] = useState<Patient | null>(null);
   const [history, setHistory] = useState<EncounterListItem[] | null>(null);
+  const [vitals, setVitals] = useState<VitalSigns[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [p, h] = await Promise.all([
+      const [p, h, v] = await Promise.all([
         fetchPatient(patientId),
         fetchPatientEncounters(patientId),
+        fetchEncounterVitals(currentEncounterId),
       ]);
       setPatient(p);
       setHistory(h);
+      setVitals(v);
       setError(null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "환자 컨텍스트를 불러오지 못했습니다.");
     }
-  }, [patientId]);
+  }, [patientId, currentEncounterId]);
 
   useEffect(() => {
     // setState 는 await 이후(patient-detail 동형 — 외부 시스템 동기화의 정당한 예외).
@@ -80,14 +85,9 @@ export function PatientContextPanel({
 
   return (
     <div className="space-y-3">
-      {/* 활력징후 — 명시 빈-상태(간호 활력 기록은 Epic 5 / 5.6). */}
+      {/* 활력징후(0017/5.6) — 간호사가 /nurse/vitals 에서 기록한 최신 측정(FR-032). */}
       <Card title="활력징후">
-        <p className="text-[12px] text-muted-foreground">
-          측정된 활력징후가 없습니다.
-        </p>
-        <p className="mt-1 text-[11px] text-muted-foreground/80">
-          간호 활력징후 기록은 Epic 5(간호)에서 입력됩니다.
-        </p>
+        {vitals === null ? <PanelSkeleton /> : <VitalsDisplay vitals={vitals} />}
       </Card>
 
       {/* 임상 프로필(0009/3.2) — 읽기전용. */}
