@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-23T12:00:00+0000
+last_updated: 2026-06-23T00:00:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -101,7 +101,7 @@ development_status:
   5-7-간호-처치-수행-재수행-차단-일상-간호기록: done
   5-8-방사선-촬영-영상-업로드-장비: done
   5-9-영상-판독-검사-오더-완료: done
-  5-10-수가-자동발생-트리거-가동: backlog
+  5-10-수가-자동발생-트리거-가동: done
   epic-5-retrospective: optional
 
   # ── Epic 6: 예약 · 근무 스케줄 ──

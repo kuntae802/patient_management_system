@@ -28,8 +28,8 @@
 | `drug` | 약품 | 마스터(버전·유효기간) |
 | `diagnosis` | 진단 | KCD 코드 마스터 |
 | `fee_schedule` | 수가 | EDI 행위 마스터(버전·유효기간) |
-| `fee_item` | 수가항목 | 수납상세에 적재되는 항목 |
-| `fee_mapping` | 수가매핑 | 임상 행위 → 수가코드 규칙 |
+| `fee_item` | 수가항목 | `fee_items`(0021·5.10)·내원별 자동 적재·금액 스냅샷·멱등 (source_type, source_id)·Epic 7 수납상세가 집계 |
+| `fee_mapping` | 수가매핑 | `fee_mappings`(0021·5.10)·임상 행위→수가코드 규칙(진찰=비항등 매핑 / 검사·처치=fee_schedule_id 직접) |
 | `encounter` | 내원 | 파이프라인 허브(예약→접수→진행중→완료) |
 | `medical_record` | 진료기록 | SOAP, 한 내원 1:N |
 | `encounter_diagnosis` | 내원진단 | `encounter_diagnoses`(0014)·KCD `diagnosis_id` FK·`is_primary` 주/부상병·활성 주상병 ≤1(부분 unique) |
@@ -451,6 +451,21 @@
 | `(staff)/doctor/radiology`·`ReadingWorklistPage`·`ReadingPanel`·`lib/doctor/reading.ts` | 웹(`app/(staff)/`·`components/doctor/`) | 가드 `requirePermission('examination.complete')`. 워크리스트(좌 미판독 영상검사·우 판독 패널)·판독 패널(서명 URL 썸네일[`fetchExaminationImages` 재사용]·소견/결론 textarea·완료 버튼[소견 빈 disabled·busy disable]·completed 잠금). nav doctor "판독" `/doctor/radiology`(기정의) |
 
 > **영상 판독 경계(Story 5.9 확정):** **신규 마이그 1건(0020=판독 소견 컬럼 2·DDL만)·신규 권한·RPC·CHECK·시드 0**(`examination.complete`·`complete_examination`·doctor grant 모두 0015/seed 기존). **결정 3건(사용자 확정)**: ① 판독지=`findings`(소견·필수) + `reading_conclusion`(결론·선택) 2-필드·examinations 컬럼(별도 테이블 아님) ② `completed`=종결·정정/애드덤 이월(재완료=PT409) ③ `/doctor/radiology` 판독 워크리스트 신규=5.8 방사선사 워크리스트와 대칭(상태 축 ordered→performed). 소견·결론=자유 임상 서사→감사 마스킹 필수(5.8 과 결정적 차이). findings non-blank=서버 findings_required 422(5.8 image_required 형제·DB CHECK 아님 — `complete_examination` RPC 공유 계약 보존). 영상 조회=order.read 재사용(5.8 이 판독의용으로 게이트). **이월**: 판독 정정/애드덤·진료 허브 오더패널 교차링크=future / 영상 수가 자동발생=5.10 / lab 완료(외부 의뢰 결과 FR-061)·환자 포털 판독 조회=이월.
+
+## 수가 자동발생 · fee_items 적재 (Story 5.10, `0021_billing.sql`)
+
+> ⚠️ **마이그 번호 0021**: Epic 5 블록 0015~0029 의 일곱 번째(5.9=0020 다음). 에픽/아키 stale `0012_billing` — 실제 0021(누적 시프트·0015 선례 동형·Epic 6 워크트리 0030~ 비침범). **수가 자동발생 = DB 트리거 + 수가매핑 규칙(DEC-1 메커니즘 확정 / 시드 내용·청구 단순화 선 = Epic 7).**
+
+| 식별자 | 종류 | 의미 |
+|---|---|---|
+| `fee_items` | 테이블(0021) | 수가항목 — 내원별 자동 적재(`encounter_id` 1:N·`fee_schedule_id`·`source_type` encounter/examination/treatment·`source_id` 발생원+멱등키·`quantity`·`unit_amount_krw`/`amount_krw` 금액 스냅샷·`category`/`coverage_type` 분류 스냅샷). **`unique(source_type, source_id)`** 멱등. Epic 7 payment_details 가 집계 |
+| `fee_mappings` | 테이블(0021) | 수가매핑 — 행위→수가코드 규칙 외부화(`source_event` CHECK `encounter_start` 단일·`fee_schedule_id`·`is_active`). 진찰만 비-항등(매핑 필요)·검사/처치는 fee_schedule_id 직접(항등·미경유) |
+| `insert_fee_item` | 함수(0021·SECURITY DEFINER) | fee_schedules 금액·분류 스냅샷 복사 → fee_items 멱등 INSERT(`on conflict do nothing`). 트리거 3종 공유 |
+| `fee_on_encounter_start` / `_examination_performed` / `_treatment_performed` | 트리거 함수(0021·SECURITY DEFINER) | 진찰료(fee_mappings 룩업)·검사료/처치료(NEW.fee_schedule_id 직접) 적재 |
+| `trg_encounters_fee` / `trg_examinations_fee` / `trg_treatment_orders_fee` | 트리거(0021) | **AFTER UPDATE OF status + WHEN**(encounters registered→in_progress·examinations/treatment_orders ordered→performed) = 전이만 1회 포착(중복 적재 방지) |
+| `fee_item.read` | 권한(0021 신규) | 수가항목 조회(원무·의사·Epic 7 수납 소비) — **admin 부트 grant 재실행**(회귀 회피). doctor·reception seed grant·403 baseline=nurse |
+
+> **수가 자동발생 경계(Story 5.10 확정):** **신규 마이그 1건(0021)·신규 권한 1(fee_item.read)·admin 부트 grant 재실행.** 적재 시점(FR-116): 진찰료=`registered→in_progress`(start_consult·fee_mappings encounter_start)·검사영상료/처치료=`ordered→performed`(perform RPC·`fee_schedule_id` 직접). **중복 방지 3중**: `AFTER UPDATE OF status`+`WHEN` 절·`unique(source_type,source_id)` on conflict·RPC 소스상태 precondition. 금액=적재 시점 스냅샷(마스터 변경 후 불변). 감사 마스킹 무변경(FK·숫자·짧은 텍스트만·5.1 §AC6 동형). **이월(Epic 7)**: payments 헤더·payment_details 집계·finalize·진료비 문서·급여/본인부담 산정·초진/재진 동적 판정·가산·**약제비(drugs 약가 컬럼 부재 → 처방 발행 시 fee_item 0)**. 검사 `performed→completed`(판독)=추가 적재 없음(수가=수행 1회).
 
 ## 근무표 · 휴진 (Story 6.1, `0030_doctor_schedules.sql`)
 
