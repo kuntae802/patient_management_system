@@ -599,3 +599,161 @@ def test_list_examinations_nurse_can_read(client, admin_token, nurse_token, dept
     eid = _walk_in(client, admin_token, dept_id)
     res = client.get(_examinations_url(eid), headers=_bearer(nurse_token))
     assert res.status_code == 200, res.text
+
+
+# ══ Story 5.4: 처치 오더 ══════════════════════════════════════════════════════
+# treatment_orders = 단건 평면(검사 동형, 단 exam_type/equipment_id/completed_* 없음 — 처치는
+# 간호 단일 라우팅 FR-070). fee_schedule 마스터 FK = free-text 차단. 5.3 검사·영상 미러(신규권한 0).
+
+
+@pytest.fixture(scope="module")
+def treatment_fee_ids(psql: Psql) -> dict[str, str]:
+    """시드 EDI 처치 행위 id — 단순처치(드레싱 M0030)·표층열치료(핫팩 MM070). 처치 오더 대상."""
+    return {
+        "dressing": psql.scalar(
+            "select id::text from public.fee_schedules where code = 'M0030' limit 1"
+        ),
+        "hotpack": psql.scalar(
+            "select id::text from public.fee_schedules where code = 'MM070' limit 1"
+        ),
+    }
+
+
+def _treatment_orders_url(eid: str) -> str:
+    return f"{_ENCOUNTERS_URL}/{eid}/treatment-orders"
+
+
+# ── AC1·AC2: 처치 오더 생성(지시 상태 · 간호 워크리스트 단일 라우팅) ──────────────
+
+
+def test_create_treatment_order_golden_path(
+    client, admin_token, doctor_token, doctor_id, dept_id, treatment_fee_ids
+):
+    """doctor → 201 + status='ordered' + ordered_by=doctor + fee 조인 + performed=None."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _treatment_orders_url(eid),
+        json={"fee_schedule_id": treatment_fee_ids["dressing"]},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["encounter_id"] == eid
+    assert body["status"] == "ordered"
+    assert body["ordered_by"] == doctor_id
+    assert body["fee_schedule_id"] == treatment_fee_ids["dressing"]
+    assert body["fee_code"] == "M0030"  # fee_schedules 마스터 조인
+    assert body["fee_name"]  # 한글 행위명(비어있지 않음)
+    assert body["amount_krw"] == 4500
+    assert body["performed_by"] is None  # 수행 = 5.7
+    assert body["performed_at"] is None
+
+
+def test_create_treatment_order_invalid_fee_422(client, admin_token, doctor_token, dept_id):
+    """잘못된 fee_schedule_id(마스터 미존재) → 422(FK 23503 백스톱 — free-text 차단 서버 최종선)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _treatment_orders_url(eid),
+        json={"fee_schedule_id": str(uuid.uuid4())},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "invalid_reference", res.text
+
+
+def test_create_treatment_order_nonexistent_encounter_404(client, doctor_token, treatment_fee_ids):
+    """미존재 내원에 오더 → 404(FK 위반 전 명시 선검사)."""
+    res = client.post(
+        _treatment_orders_url(str(uuid.uuid4())),
+        json={"fee_schedule_id": treatment_fee_ids["dressing"]},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 404, res.text
+
+
+def test_list_treatment_orders_newest_first(
+    client, admin_token, doctor_token, dept_id, treatment_fee_ids
+):
+    """한 내원에 2건 오더 → 목록 최신순(시각 내림차순) + fee 조인 + 양 행위 반환."""
+    eid = _walk_in(client, admin_token, dept_id)
+    for key in ("dressing", "hotpack"):
+        r = client.post(
+            _treatment_orders_url(eid),
+            json={"fee_schedule_id": treatment_fee_ids[key]},
+            headers=_bearer(doctor_token),
+        )
+        assert r.status_code == 201, r.text
+    res = client.get(_treatment_orders_url(eid), headers=_bearer(doctor_token))
+    assert res.status_code == 200, res.text
+    rows = res.json()
+    assert len(rows) == 2
+    assert {r["fee_code"] for r in rows} == {"M0030", "MM070"}  # 양 행위 모두 반환
+    # 최신순 — 랜덤 UUID id desc 타이브레이크는 삽입순서 무상관 → 위치 단언 대신 시각 내림차순.
+    # 실제 정렬키 = created_at(fetch_treatment_orders), ordered_at 은 동일 now() 라 동행 검증.
+    assert rows[0]["created_at"] >= rows[1]["created_at"]
+    assert rows[0]["ordered_at"] >= rows[1]["ordered_at"]
+    assert all(r["fee_code"] for r in rows)  # fee_schedules 조인
+
+
+def test_create_treatment_order_audited(
+    client, admin_token, doctor_token, dept_id, treatment_fee_ids, psql
+):
+    """오더 → audit_logs action='create' 행(treatment_orders, 0015 트리거)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _treatment_orders_url(eid),
+        json={"fee_schedule_id": treatment_fee_ids["dressing"]},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 201, res.text
+    tid = res.json()["id"]
+    audits = psql.scalar(
+        "select count(*) from public.audit_logs "
+        f"where target_table='treatment_orders' and target_id='{tid}' and action='create';"
+    )
+    assert int(audits) >= 1
+
+
+# ── AC4: 권한 게이트(오더=treatment.order · 조회=order.read) ───────────────────
+
+
+def test_create_treatment_order_forbidden_reception_403(
+    client, admin_token, reception_token, dept_id, treatment_fee_ids
+):
+    """reception(오더 권한 0) → 오더 403(게이트가 본문 처리 전 차단)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _treatment_orders_url(eid),
+        json={"fee_schedule_id": treatment_fee_ids["dressing"]},
+        headers=_bearer(reception_token),
+    )
+    assert res.status_code == 403, res.text
+
+
+def test_create_treatment_order_forbidden_nurse_403(
+    client, admin_token, nurse_token, dept_id, treatment_fee_ids
+):
+    """nurse(order.read 有·treatment.order 無) → 오더 403(read-yes/order-no)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _treatment_orders_url(eid),
+        json={"fee_schedule_id": treatment_fee_ids["dressing"]},
+        headers=_bearer(nurse_token),
+    )
+    assert res.status_code == 403, res.text
+
+
+def test_list_treatment_orders_forbidden_reception_403(
+    client, admin_token, reception_token, dept_id
+):
+    """reception(order.read 미보유) → 조회 403."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.get(_treatment_orders_url(eid), headers=_bearer(reception_token))
+    assert res.status_code == 403, res.text
+
+
+def test_list_treatment_orders_nurse_can_read(client, admin_token, nurse_token, dept_id):
+    """nurse(order.read 보유) → 조회 200(read-yes)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.get(_treatment_orders_url(eid), headers=_bearer(nurse_token))
+    assert res.status_code == 200, res.text

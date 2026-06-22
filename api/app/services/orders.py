@@ -16,6 +16,8 @@ from app.schemas.orders import (
     ExaminationResponse,
     PrescriptionCreate,
     PrescriptionResponse,
+    TreatmentOrderCreate,
+    TreatmentOrderResponse,
 )
 
 
@@ -73,3 +75,30 @@ async def list_examinations(sub: UUID, encounter_id: UUID) -> list[ExaminationRe
     """한 내원의 검사·영상 오더 목록(최신순, fee 조인). 게이트=라우터(order.read)."""
     rows = await db.fetch_examinations(sub, encounter_id)
     return [_to_examination(r) for r in rows]
+
+
+def _to_treatment_order(row: dict[str, object]) -> TreatmentOrderResponse:
+    """db 의 fee 조인 dict → TreatmentOrderResponse(단건 평면 — 중첩 없음)."""
+    return TreatmentOrderResponse.model_validate(row)
+
+
+async def create_treatment_order(
+    sub: UUID, encounter_id: UUID, payload: TreatmentOrderCreate
+) -> TreatmentOrderResponse:
+    """처치 오더 생성(FR-070) — treatment_orders 단건 INSERT. ordered_by=지시 의사(sub).
+
+    간호 워크리스트로 전달(단일 라우팅 — 검사의 exam_type 분기 없음). 미존재 내원 → 404,
+    잘못된 처치 행위 → 422, 권한 미보유 → 403(전부 db 가 동일 트랜잭션 검증·raise)."""
+    row = await db.insert_treatment_order(
+        sub,
+        encounter_id=encounter_id,
+        fee_schedule_id=payload.fee_schedule_id,
+        ordered_by=sub,
+    )
+    return _to_treatment_order(row)
+
+
+async def list_treatment_orders(sub: UUID, encounter_id: UUID) -> list[TreatmentOrderResponse]:
+    """한 내원의 처치 오더 목록(최신순, fee 조인). 게이트=라우터(order.read)."""
+    rows = await db.fetch_treatment_orders(sub, encounter_id)
+    return [_to_treatment_order(r) for r in rows]

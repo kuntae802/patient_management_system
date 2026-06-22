@@ -137,3 +137,39 @@ class ExaminationResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+
+
+class TreatmentOrderCreate(BaseModel):
+    """처치 오더 생성 요청(Story 5.4, FR-070). 단건 — exam_type 분류 축 없음(간호 단일 라우팅).
+
+    처치 행위는 fee_schedule_id(EDI 처치 행위 마스터 FK)로만 — free-text 차단. 1 POST = 1 처치 오더.
+    """
+
+    fee_schedule_id: UUID
+
+
+class TreatmentOrderResponse(BaseModel):
+    """처치 오더 응답(0015 treatment_orders + fee_schedules 마스터 조인). snake_case 유지.
+
+    fee_code·fee_name·fee_category·amount_krw 는 행위 마스터 조인 합성(읽기시점). status='ordered'
+    (지시). 수행(performed)은 5.7 이 세팅(본 스토리는 NULL). ⚠️ 검사와 달리 exam_type·equipment_id·
+    completed_* 없음(treatment_orders 미보유). 행 자체엔 자유텍스트 없음(감사 마스킹 불요).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    encounter_id: UUID
+    fee_schedule_id: UUID
+    fee_code: str
+    fee_name: str
+    fee_category: str | None = None
+    amount_krw: int
+    status: str
+    ordered_by: UUID
+    ordered_at: datetime
+    performed_by: UUID | None = None
+    performed_at: datetime | None = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime

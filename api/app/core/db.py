@@ -2680,6 +2680,96 @@ async def fetch_examinations(sub: UUID, encounter_id: UUID) -> list[dict[str, ob
     return await _run_authed(sub, _op)
 
 
+# ── 처치 오더(treatment_orders, Story 5.4 / FR-070) — 검사 미러, 단 더 단순 ──────────
+# 처치는 간호 단일 라우팅(검사의 exam_type 분류 축 없음)·equipment_id/completed_* 컬럼 없음.
+# ⚠️ SQL 별칭 = tr (to 는 Postgres 예약어). fee_schedules 조인으로 행위명·금액 합성.
+_TREATMENT_ORDER_COLUMNS = (
+    "tr.id, tr.encounter_id, tr.fee_schedule_id, "
+    "fs.code as fee_code, fs.name as fee_name, fs.category as fee_category, fs.amount_krw, "
+    "tr.status, tr.ordered_by, tr.ordered_at, tr.performed_by, tr.performed_at, "
+    "tr.is_active, tr.created_at, tr.updated_at"
+)
+_TREATMENT_ORDER_FROM = (
+    "from public.treatment_orders tr join public.fee_schedules fs on fs.id = tr.fee_schedule_id"
+)
+
+
+async def _require_treatment_order(conn: asyncpg.Connection) -> None:
+    """쓰기 직전 동일 txn 에서 treatment.order 재평가(평가↔쓰기 TOCTOU). 미보유 → 403."""
+    if not bool(await conn.fetchval("select public.has_permission('treatment.order')")):
+        raise ForbiddenError(detail={"required_permission": "treatment.order"})
+
+
+async def insert_treatment_order(
+    sub: UUID,
+    *,
+    encounter_id: UUID,
+    fee_schedule_id: UUID,
+    ordered_by: UUID,
+) -> dict[str, object]:
+    """처치 오더 생성 — treatment_orders 단건 INSERT(자동 감사). ordered_by=지시 의사.
+
+    내원 존재 선검사(미존재 404). fee_schedule_id(EDI 처치 행위 마스터 FK)만 입력 — status 는
+    DB 기본값 'ordered'(0015 전이 트리거 강제). 잘못된 fee_schedule_id(23503) → 422 백스톱
+    (insert_examination 선례). 권한은 INSERT 직전 재평가(TOCTOU). 반환 = fee 조인 dict.
+    ⚠️ 검사와 달리 exam_type·equipment_id·completed_* 없음(처치=간호 단일 라우팅).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        await _require_treatment_order(conn)
+        exists = await conn.fetchval(
+            "select true from public.encounters where id = $1", encounter_id
+        )
+        if exists is None:
+            raise NotFoundError(
+                "내원을 찾을 수 없습니다.", detail={"encounter_id": str(encounter_id)}
+            )
+        try:
+            row = await conn.fetchrow(
+                "insert into public.treatment_orders "
+                "(encounter_id, fee_schedule_id, ordered_by) "
+                "values ($1, $2, $3) returning id",
+                encounter_id,
+                fee_schedule_id,
+                ordered_by,
+            )
+        except asyncpg.ForeignKeyViolationError as exc:
+            # 잘못된 fee_schedule_id(또는 동시삭제 레이스) 23503 → 입력 오류 422(미매핑 시 503).
+            raise AppError(
+                "참조 대상이 올바르지 않습니다(처치 행위).",
+                code="invalid_reference",
+                status_code=422,
+            ) from exc
+        assert row is not None  # RETURNING 은 항상 1행
+        full = await conn.fetchrow(
+            f"select {_TREATMENT_ORDER_COLUMNS} {_TREATMENT_ORDER_FROM} where tr.id = $1",
+            row["id"],
+        )
+        assert full is not None
+        return dict(full)
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_treatment_orders(sub: UUID, encounter_id: UUID) -> list[dict[str, object]]:
+    """한 내원의 처치 오더 목록(최신순, fee_schedules 조인, 활성만). 게이트=라우터(order.read).
+
+    service_role 경로라 RLS 우회 — 조회 권위는 라우터 require_permission(읽기 TOCTOU 저위험,
+    fetch_examinations 동형). 반환 = [fee 조인 dict] (서비스가 매핑).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[dict[str, object]]:
+        rows = await conn.fetch(
+            f"select {_TREATMENT_ORDER_COLUMNS} {_TREATMENT_ORDER_FROM} "
+            f"where tr.encounter_id = $1 and tr.is_active = true "
+            f"order by tr.created_at desc, tr.id desc",
+            encounter_id,
+        )
+        return [dict(r) for r in rows]
+
+    return await _run_authed(sub, _op)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 예약 생성 · 캘린더 (Story 6.3 — 0032) — service_role 직접 INSERT(walk-in 패턴)
 # 더블부킹 EXCLUDE(0031, 23P01) → 409 double_booking(서비스 catch, schedule_overlap 동형).
