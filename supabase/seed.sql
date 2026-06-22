@@ -201,6 +201,21 @@ join public.permissions p on p.code in ('prescription.create')
 where r.code = 'doctor'
 on conflict (role_id, permission_id) do nothing;
 
+-- ── (DEV/데모) 의사(doctor) 역할 → 검사·영상 오더 권한 grant (Story 5.3) ──────────────────────────
+-- 검사·영상 오더(`examination.order`)는 의사 핵심 직무. ⚠️ examination.order 는 **0002 기존 권한**
+-- (0015 신규 아님 — 0002:94) — admin 은 0002 cross-join 으로 이미 보유하므로 **admin 부트 grant 재실행 불요**
+-- (5.1 의 "신규권한(order.read/examination.perform/complete)→admin 재grant" 함정 비해당, 회귀 0).
+-- 검사·영상 조회는 order.read(doctor 가 5.1 에서 이미 보유) → 여기선 오더 권한만. ★ 프로덕션 런타임 grant 는
+-- 1.7 매트릭스 UI 소유 — 이 시드는 로컬 db reset 전용. 멱등.
+-- ⚠️ 검사·영상 오더 403 baseline = reception(오더 권한 0) + nurse(order.read 보유·examination.order
+--    미보유 = read-yes/order-no). nurse 의 encounter/patient baseline 은 비중첩이라 무영향.
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code in ('examination.order')
+where r.code = 'doctor'
+on conflict (role_id, permission_id) do nothing;
+
 -- ── (DEV/데모) 원무(reception) 역할 → 예약 슬롯 조회 권한 grant (Story 6.2) ──────────────────────
 -- 가용 슬롯 조회·예약 피커(appointment.read)는 원무 직무 본질(전화·방문 예약 흐름 6.4 가동). appointment.read
 -- 는 0031 신규 — 여기선 역할 매핑만. ★ 프로덕션 런타임 grant 는 1.7 매트릭스 UI 소유 — 이 시드는 로컬
