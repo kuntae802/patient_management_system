@@ -9,6 +9,7 @@ import { PatientBanner } from "@/components/encounters/patient-banner";
 import { PatientContextPanel } from "@/components/encounters/patient-context-panel";
 import { PrescriptionPanel } from "@/components/encounters/prescription-panel";
 import { StatusBadge } from "@/components/encounters/status-badge";
+import { TreatmentPanel } from "@/components/encounters/treatment-panel";
 import { useActiveEncounter } from "@/hooks/use-active-encounter";
 import { ApiError } from "@/lib/api/client";
 import {
@@ -164,10 +165,11 @@ export function EncounterHub({ encounterId, today }: { encounterId: string; toda
             />
             {/* 중앙 작성 = 진단 블록(4.7) + SOAP ledger(4.6) + 진료 완료 액션(4.7). */}
             <ConsultationWorkspace encounter={encounter} today={today} />
-            {/* 우 오더 pane = 처방(5.2)·검사·영상(5.3) 섹션 스택. 처치 탭·전체 UX-DR13 통합은 5.4/5.5. */}
+            {/* 우 오더 pane = 처방(5.2)·검사·영상(5.3)·처치(5.4) 섹션 스택. 전체 UX-DR13 통합은 5.5. */}
             <div className="space-y-3">
               <PrescriptionPanel encounter={encounter} today={today} />
               <ExaminationPanel encounter={encounter} today={today} />
+              <TreatmentPanel encounter={encounter} today={today} />
             </div>
           </div>
         </div>
