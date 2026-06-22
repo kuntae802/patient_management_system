@@ -5,6 +5,7 @@ import {
   CALENDAR_STATUS_META,
   createAppointment,
   fetchDayCalendar,
+  fetchNoShowStatus,
 } from "@/lib/scheduling/appointments";
 
 vi.mock("@/lib/api/client", () => ({ apiFetch: vi.fn() }));
@@ -44,6 +45,21 @@ describe("fetchDayCalendar", () => {
     expect(mockApiFetch).toHaveBeenCalledWith(
       "/v1/scheduling/calendar?department_id=d1&date=2030-06-03",
     );
+  });
+});
+
+describe("fetchNoShowStatus", () => {
+  it("patient_id 쿼리로 /no-show-status 호출 + 응답 매핑(snake_case 유지)", async () => {
+    mockApiFetch.mockResolvedValue({
+      patient_id: "p1",
+      no_show_count: 3,
+      threshold: 2,
+      blocked: true,
+    });
+    const res = await fetchNoShowStatus("p1");
+    expect(mockApiFetch).toHaveBeenCalledWith("/v1/scheduling/no-show-status?patient_id=p1");
+    expect(res.no_show_count).toBe(3);
+    expect(res.blocked).toBe(true);
   });
 });
 

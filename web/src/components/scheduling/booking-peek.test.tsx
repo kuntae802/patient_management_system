@@ -11,13 +11,17 @@ vi.mock("@/lib/reception/patients", () => ({
   maskPhone: (p: string | null) => p ?? "—",
   sexLabel: (s: string) => (s === "male" ? "남" : "여"),
 }));
-vi.mock("@/lib/scheduling/appointments", () => ({ createAppointment: vi.fn() }));
+vi.mock("@/lib/scheduling/appointments", () => ({
+  createAppointment: vi.fn(),
+  fetchNoShowStatus: vi.fn(),
+}));
 
 import { searchPatients } from "@/lib/reception/patients";
-import { createAppointment } from "@/lib/scheduling/appointments";
+import { createAppointment, fetchNoShowStatus } from "@/lib/scheduling/appointments";
 
 const mockSearch = searchPatients as unknown as ReturnType<typeof vi.fn>;
 const mockCreate = createAppointment as unknown as ReturnType<typeof vi.fn>;
+const mockNoShow = fetchNoShowStatus as unknown as ReturnType<typeof vi.fn>;
 
 const PATIENT: PatientListItem = {
   id: "p1",
@@ -66,6 +70,9 @@ beforeAll(() => {
 beforeEach(() => {
   mockSearch.mockReset();
   mockCreate.mockReset();
+  mockNoShow.mockReset();
+  // 기본 = 노쇼 0(차단 안 됨) — 노쇼 테스트가 개별 override.
+  mockNoShow.mockResolvedValue({ patient_id: "p1", no_show_count: 0, threshold: 2, blocked: false });
   PROPS.onCreated.mockReset();
 });
 
@@ -111,5 +118,43 @@ describe("BookingPeek", () => {
   it("환자 미선택 시 저장 버튼 비활성", () => {
     render(<BookingPeek {...PROPS} />);
     expect(screen.getByRole("button", { name: "예약 저장" })).toBeDisabled();
+  });
+
+  it("노쇼 임계 초과 환자 선택 → 프로액티브 경고 + 저장 버튼 비활성(6.7 AC4)", async () => {
+    const user = userEvent.setup();
+    mockSearch.mockResolvedValue([PATIENT]);
+    mockNoShow.mockResolvedValue({
+      patient_id: "p1",
+      no_show_count: 3,
+      threshold: 2,
+      blocked: true,
+    });
+    render(<BookingPeek {...PROPS} />);
+
+    await user.type(screen.getByPlaceholderText("이름·차트번호·연락처 검색"), "홍");
+    await user.click(await screen.findByText("홍길동 · 00000001"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("신규 예약이");
+    expect(screen.getByRole("button", { name: "예약 저장" })).toBeDisabled();
+  });
+
+  it("저장 시 노쇼 임계 409 → 경고 칩, 저장 안 됨(onCreated 미호출)", async () => {
+    const user = userEvent.setup();
+    mockSearch.mockResolvedValue([PATIENT]);
+    // 프로액티브는 통과(blocked=false·기본) → 저장 클릭 시 서버 409 로 차단.
+    mockCreate.mockRejectedValue(
+      new ApiError("no_show_threshold_exceeded", "노쇼 제한", 409, {
+        no_show_count: 3,
+        threshold: 2,
+      }),
+    );
+    render(<BookingPeek {...PROPS} />);
+
+    await user.type(screen.getByPlaceholderText("이름·차트번호·연락처 검색"), "홍");
+    await user.click(await screen.findByText("홍길동 · 00000001"));
+    await user.click(screen.getByRole("button", { name: "예약 저장" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("신규 예약이");
+    expect(PROPS.onCreated).not.toHaveBeenCalled();
   });
 });

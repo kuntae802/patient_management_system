@@ -111,6 +111,19 @@ describe("PatientBooking", () => {
     expect(screen.queryByText("예약이 완료되었어요")).not.toBeInTheDocument();
   });
 
+  it("노쇼 임계 409 → 쉬운 말 안내, 완료 화면 미표시(6.7)", async () => {
+    const user = userEvent.setup();
+    mockCreate.mockRejectedValue(new ApiError("no_show_threshold_exceeded", "노쇼 제한", 409));
+    render(<PatientBooking />);
+
+    await reachSlots(user);
+    await user.click(await screen.findByText(/(오전|AM) 11:00/));
+    await user.click(screen.getByRole("button", { name: "예약 확정하기" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("병원으로 문의해 주세요");
+    expect(screen.queryByText("예약이 완료되었어요")).not.toBeInTheDocument();
+  });
+
   it("가용 슬롯 0 → 빈-상태 메시지", async () => {
     const user = userEvent.setup();
     mockSlots.mockResolvedValue({
