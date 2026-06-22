@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-23T00:30:00+0000
+last_updated: 2026-06-23T08:45:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -112,7 +112,7 @@ development_status:
   6-4-원무-대리-예약-생성-변경-취소: done
   6-5-환자-앱-예약: done
   6-6-sms-리마인더-시뮬-로그: done
-  6-7-노쇼-카운트-임계치-제한: backlog
+  6-7-노쇼-카운트-임계치-제한: done
   6-8-휴진-시-영향-예약-재배정: backlog
   epic-6-retrospective: optional
 

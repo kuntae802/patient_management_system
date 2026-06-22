@@ -509,3 +509,21 @@
 | `(staff)/reception/reminders`·`ReminderLog`·`reminders.ts` | 웹(`app/(staff)/`·`components/scheduling/`·`lib/scheduling/`) | 원무 리마인더 화면 — 실행 패널(as_of·이중제출 락·`notification.send` PermissionGate) + 로그 표(시각·종류[3일 전/1일 전]·수신처[마스킹·"(연락처 없음)"]·상태[발송/스킵]·음영 비의존). nav "리마인더"(원무 운영 본질·역할 노출) |
 
 > **SMS 리마인더 경계(Story 6.6 확정):** 트리거=명시적 디스패치(cron 이음매)·발송=시뮬/로그(`simulate_sms` 게이트웨이 교체 지점)·동의 게이트=`sms_opt_in=true` 만(연락처 없으면 skipped·opt-in false 대상 외)·수신처=마스킹 스냅샷(원시 PII 로그·감사 미유입→`_SENSITIVE_KEY` 무변경)·멱등=`UNIQUE(appointment_id,reminder_kind)`. **실 SMS 게이트웨이·cron 자동 = 범위 밖 / 환자 수신함 UI·self SELECT = Epic 8 / 노쇼 카운트 = 6.7 / 휴진 재배정 통지 = 6.8 / 재-리마인더·다채널·재시도·발송 큐·D-N 설정 UI = 이월.**
+
+## 노쇼 카운트 · 임계치 제한 (Story 6.7, `0036_no_show_policy.sql`)
+
+> ⚠️ **마이그 번호 0036**: Epic 6 블록 0030~ 의 일곱 번째(6.1=0030·6.2=0031·6.3=0032·6.4=0033·6.5=0034·6.6=0035). **카운트 = 파생(derived)**: `patients.no_show_count` 같은 비정규화 컬럼 없음 — `appointments.status='no_show'` 가 단일 진실(Option A). AC1 "기록"은 6.4 `mark_appointment_no_show`(booked→no_show·no_show_at) 가 이미 충족 → 6.7 은 **집계·강제**. 0442("no_show_at … 6.7 노쇼 카운트")·0401("no_show 진실원 … =6.3/6.4/6.7") 이월 청산.
+
+| 용어/식별자 | 종류 | 정의 |
+|---|---|---|
+| **노쇼 임계치 모델(파생 카운트·앱 상수 임계)** | 설계 결정 | 노쇼 횟수 = `appointments.status='no_show'` 집계(파생·드리프트 차단). 임계치는 **DB 가 모름** — 앱 상수 `NO_SHOW_THRESHOLD`(db.py·기본 2) 가 소유(클리닉 설정 테이블 미생성). 차단 = 엄격 `count > threshold`("초과" 문자 해석 → 0·1·2 허용·3회째 차단). `encounters.no_show` 미집계(예약 슬롯 낭비만·walk-in 비-예약 혼입 방지). |
+| `patient_no_show_count(uuid)` | 함수(0036·sql stable) | 환자 노쇼 예약 수 단일 진실(`count(*)::int where status='no_show'`). security invoker(service_role=전체·환자=RLS self). EXECUTE = authenticated·service_role(public 회수 후 명시 grant). 쓰기 가드·read 엔드포인트가 공유(카운트 정의 단일화) |
+| `NO_SHOW_THRESHOLD` | 상수(`core/db.py`·기본 2) | 노쇼 임계치(튜너블). 가드가 트랜잭션 내부에서 에러 detail 을 만들므로 db.py 소유(`SLOT_MINUTES` 가 service 소유인 것과 레이어 정합). web 은 하드코딩 금지 → `/no-show-status` 의 `threshold`/`blocked` 사용 |
+| `_assert_no_show_under_threshold` | db 가드(`core/db.py`) | 신규 예약 직전 동일 txn 검사(TOCTOU·`_require_appointment_create` 사상). `count > NO_SHOW_THRESHOLD` → 409 `no_show_threshold_exceeded`(detail `{patient_id, no_show_count, threshold}`). `insert_appointment`(환자 active 검사 직후)·`insert_self_appointment`(patient_id 도출 직후) 에 삽입. ⚠️ **reschedule/check-in 비대상**(신규 예약 아님) |
+| `no_show_threshold_exceeded` | 에러 코드(409) | 노쇼 임계 초과 신규 예약 차단(상태 충돌 — `double_booking`·`no_self_patient` 동류·에러봉투 `_map_pg_sqlstate` 무변경·AppError status_code 직접). 차단된 시도 = DML 0 → audit 행 0(더블부킹 거부 posture) |
+| `fetch_patient_no_show_count`·`get_patient_no_show_status` | db·service(`core/db.py`·`services/scheduling.py`) | 카운트 읽기(service_role·존재하지 않는 환자도 0·404 불요) / `NoShowStatus` 조립(count·threshold·blocked=count>threshold·생성 가드와 동일 판정) |
+| `GET …/scheduling/no-show-status?patient_id=` | 엔드포인트(읽기) | 게이트 `appointment.read` → 403(nurse baseline). booking-peek 프로액티브 배지용. 응답=`NoShowStatus`(PII 미반환·카운트 정수만). 정적 세그먼트(동적 라우트 충돌 없음) |
+| `NoShowStatus` | 스키마(`schemas/scheduling.py`·web 거울) | `patient_id`·`no_show_count`·`threshold`·`blocked`. web 이 임계치 하드코딩 회피하게 서버 권위 |
+| `fetchNoShowStatus`·booking-peek 배지·patient-booking 안내 | 웹(`lib/scheduling/appointments.ts`·`components/scheduling/`) | 직원 booking-peek = 환자 선택 시 사전 조회 → `blocked` 면 노쇼 색(`status-received`) 경고 칩 + 저장 버튼 disable + 저장 409 인라인 표면화(음영 비의존) / 환자 앱 = 확정 시 409 → 쉬운 말 안내("병원으로 문의해 주세요") |
+
+> **노쇼 임계 제한 경계(Story 6.7 확정):** 카운트=파생 SQL 함수(`patient_no_show_count`·비정규화 컬럼 없음)·임계=앱 상수(`NO_SHOW_THRESHOLD=2`·`count>threshold`)·강제=db.py 가드(동일 txn·TOCTOU)·코드=409 `no_show_threshold_exceeded`. **차단 = 신규 예약 2경로만**(원무 대리 `POST /appointments` + 환자 본인 `POST /me/appointments`)·**reschedule·check-in 비대상**. 신규 권한·테이블 0(기존 `appointment.read`/`create` 재사용 → admin grant 재실행 불요). **원무 오버라이드(강제 예약)·롤링 윈도우(최근 N개월)·환자 앱 사전 차단(self no-show 엔드포인트) = 의도적 범위 밖(이월).**
