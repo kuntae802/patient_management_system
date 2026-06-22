@@ -352,6 +352,23 @@
 
 > **처치 오더 경계(Story 5.4 확정):** **신규 마이그/신규 권한/admin 부트 grant/SQLSTATE/감사 마스킹 변경 = 전부 0** — `treatment.order`(0002 기존·admin 보유)·`order.read`(doctor 5.1 기보유) 소비만 + doctor `treatment.order` 시드 grant 1건(5.3 `examination.order` 동형·admin 재grant 불요·회귀 0). **403 baseline = reception(오더 0) + nurse(order.read·treatment.perform 有/treatment.order 無 = read-yes/order-no)**. **처치는 간호 단일 라우팅**(검사의 `exam_type` 분기 없음) — 수행 perform·재수행 차단·일상 간호기록=5.7(`nursing_record` 별도)·`complete_treatment_order` RPC·completed=이월(deferred-work)·전체 탭 패널·누락0 디텍터·수가 프리뷰=5.5·수가 자동발생=5.10·오더 취소/내원상태 게이트=이월.
 
+### 오더 패널 통합 · 알레르기 교차검증 · 누락 0 디텍터 (Story 5.5, `0016_order_coverage_allergy.sql`)
+
+| 식별자 | 종류 | 의미·계약 |
+|---|---|---|
+| `coverage_type` | 컬럼(0016, `fee_schedules`·`drugs`) | 급여 `covered` / 비급여 `non_covered`(영문 enum·default `covered`·CHECK 2상태). UX-DR13 pay-chip·수가 프리뷰 분류 소스. **급여 분류 flag만** — 본인부담률·산정특례·선별급여=Epic7(0007 주석 화해: 분류=5.5/산정=Epic7) |
+| `allergy_override_reason` | 컬럼(0016, `prescription_details`) | 알레르기 오버라이드 사유(자유텍스트·nullable·conflict 라인만). `prescription_details` 는 0015 감사 트리거(`trg_prescription_details_audit`) 보유 → after_data 자동 캡처(append-only). **감사 마스킹 대상**(`_SENSITIVE_KEY` 서버+웹 거울 추가) |
+| `_allergy_conflicts(allergies_text, drugs_by_id)` | 함수(`core/db`·순수) | 알레르기↔약품명 토큰 부분일치 휴리스틱(구분자 토큰화·길이≥2·소문자). 반환 `{drug_id:토큰}`. ⚠️ 클래스 매칭 불가(페니실린 ⊄ 아목시실린)·구조화 알레르겐 없음(0009 자유텍스트). 웹 `order-safety.ts allergyMatch` 거울 |
+| `insert_prescription` 알레르기 체크 | 함수(`core/db` 확장) | 발행 시 환자 allergies 조회 + drug 배열 대조 → conflict 라인에 사유 없으면 `AppError(409, allergy_conflict, detail.conflicts)`, 있으면 통과 + 사유 INSERT(감사). 서버=권위·재검증(클라 1차선) |
+| `POST /encounters/{id}/prescriptions` 409 | 계약 | `allergy_conflict`(409) = 알레르기 매칭 + `allergy_override_reason` 미입력. 사유 입력 시 발행+감사. 동일성분 중복(FR-052)은 별도 클라 비차단 경고 |
+| `coverage_type`·`ordered_by_name`·`performed_by_name` | 응답 필드 | 오더 3종 응답에 `coverage_type`(pay-chip)·users 조인 이름(추적 라인). 처방=`ordered_by_name`만(수행자 컬럼 없음). ⚠️ `allergy_override_reason` 은 응답 미노출(쓰기·감사 전용) |
+| `order-panel.tsx` | 웹(신규·오케스트레이터) | UX-DR13 탭 통합(처방/검사/영상/처치+카운트). 4종 데이터 **리프트**(병렬 로드·단일 진실) → controlled 자식 패널에 주입. 수가 자동 산정 프리뷰("자동 산정" 마커·급여/비급여 소계)·누락 0 디텍터 배너. 검사·영상=한 테이블 두 탭(`exam_type` 분할) |
+| `order-item-meta.tsx` | 웹(신규) | 공유 표시 조각 — `PayChip`(급여/비급여 색+라벨)·`TrackingLine`(지시자·수행자, UX-DR21⑦)·`OverdueBadge`(지연 N분, UX-DR21⑥). 음영 비의존(UX-DR20) |
+| `order-safety.ts` | 웹(신규·순수) | `allergyMatch`/`allergyTokens`(서버 거울)·`isOverdue`/`elapsedMinutes`(임계 `OVERDUE_THRESHOLD_MIN=30`·ordered 상태만)·`feePreview`(급여/비급여 소계·**처방 제외**=약가 없음)·`coverageLabel` |
+| `prescription/examination/treatment-panel.tsx` | 웹(리팩터) | self-load → **controlled**(데이터+reload prop). 처방 패널=알레르기 오버라이드 UI(danger 경고+사유 입력·발행 게이트). 검사 패널=`exam_type` 토글 제거(탭이 examType 결정) |
+
+> **오더 패널 통합 경계(Story 5.5 확정):** **신규 마이그 1건(0016=컬럼 2개)·신규 권한 0**(알레르기 오버라이드도 `prescription.create` 범위). **정직한 한계**: 알레르기=자유텍스트 → 직접 토큰 매칭만(클래스 매칭 불가)·실제 약물상호작용 DB 없음("활성 투약 상호작용"=FR-052 동일성분 surface)·약가 없음(처방 pay-chip 분류만·프리뷰 금액 제외). **표시 전용**: 수가 프리뷰·pay-chip = 분류·근사 표시, **수가 자동발생(수납상세 적재)·본인부담 산정=5.10/Epic7**. **누락 0 디텍터**=진료 허브 오더 패널만(워크리스트 측 인디케이터=5.7 간호/5.8 방사선·UI 미존재). 알레르기 체크=약품 처방만(검사·영상·처치 act 알레르겐 데이터 없음).
+
 ## 근무표 · 휴진 (Story 6.1, `0030_doctor_schedules.sql`)
 
 > ⚠️ **마이그 번호 0030**: Epic 6 = 병렬 worktree → 마이그 블록 0030~(main 0014/Epic5 0015~0029 와 충돌 회피). 에픽/아키 묶음 계획 `0011_scheduling.sql`(3테이블)을 **스토리별 분리**(4.6/4.7 선례) → 6.1 = 근무표·휴진 2테이블만, **예약(appointments)·예약 생성·`encounters.reservation_id` FK·더블부킹은 booking 스토리(6.2/6.3)** 소유.

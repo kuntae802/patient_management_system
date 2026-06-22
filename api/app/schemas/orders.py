@@ -32,8 +32,10 @@ class PrescriptionDetailWrite(BaseModel):
     frequency: _Stripped | None = Field(default=None, max_length=50)
     duration_days: int | None = Field(default=None, gt=0)
     usage_instruction: _Stripped | None = Field(default=None, max_length=200)
+    # 알레르기 오버라이드 사유(UX-DR21②, 5.5) — conflict 라인에만 적용. 자유텍스트(감사 마스킹).
+    allergy_override_reason: _Stripped | None = Field(default=None, max_length=500)
 
-    @field_validator("frequency", "usage_instruction", mode="after")
+    @field_validator("frequency", "usage_instruction", "allergy_override_reason", mode="after")
     @classmethod
     def _empty_to_none(cls, v: str | None) -> str | None:
         """빈 옵셔널을 None 으로 정규화(직접 API 호출의 "" 적재 방지, NULL=값없음 일관)."""
@@ -54,7 +56,8 @@ class PrescriptionDetailResponse(BaseModel):
     """처방상세 응답(0015 prescription_details + drugs 마스터 조인). snake_case 유지.
 
     drug_code·drug_name·ingredient_code 는 약품 마스터 조인 합성(읽기시점). ingredient_code 는 웹의
-    동일 성분 중복 경고(FR-052) 비교 키(비차단·클라 측). 행 자체엔 자유텍스트 없음(drug_id=FK).
+    동일 성분 중복 경고(FR-052) 비교 키(비차단·클라 측). coverage_type(급여/비급여, 5.5) = pay-chip.
+    행 자체엔 자유텍스트 없음(drug_id=FK). ⚠️ allergy_override_reason 은 응답 미노출(쓰기·감사 전용).
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -65,6 +68,7 @@ class PrescriptionDetailResponse(BaseModel):
     drug_code: str
     drug_name: str
     ingredient_code: str | None = None
+    coverage_type: str
     dose: float | None = None
     frequency: str | None = None
     duration_days: int | None = None
@@ -88,6 +92,7 @@ class PrescriptionResponse(BaseModel):
     encounter_diagnosis_id: UUID | None = None
     status: str
     ordered_by: UUID
+    ordered_by_name: str | None = None  # users 조인(추적 라인 지시자, 5.5)
     ordered_at: datetime
     dispensed_at: datetime | None = None
     is_active: bool
@@ -111,8 +116,9 @@ class ExaminationCreate(BaseModel):
 class ExaminationResponse(BaseModel):
     """검사·영상 오더 응답(0015 examinations + fee_schedules 마스터 조인). snake_case 유지.
 
-    fee_code·fee_name·fee_category·amount_krw 는 행위 마스터 조인 합성(읽기시점). status='ordered'
-    (지시). 수행/판독(performed/completed)·equipment_id 는 5.7/5.8/5.9 가 세팅(본 스토리는 NULL).
+    fee_code·fee_name·fee_category·amount_krw·coverage_type 는 행위 마스터 조인 합성(읽기시점·5.5
+    coverage_type pay-chip). ordered_by_name·performed_by_name 은 users 조인(추적 라인, 5.5).
+    status='ordered'(지시). 수행/판독(performed/completed)·equipment_id 는 5.7/5.8/5.9 가 세팅.
     행 자체엔 자유텍스트 없음(FK·짧은 구조화 텍스트 — 감사 마스킹 불요).
     """
 
@@ -126,11 +132,14 @@ class ExaminationResponse(BaseModel):
     fee_name: str
     fee_category: str | None = None
     amount_krw: int
+    coverage_type: str
     status: str
     ordered_by: UUID
+    ordered_by_name: str | None = None
     ordered_at: datetime
     equipment_id: UUID | None = None
     performed_by: UUID | None = None
+    performed_by_name: str | None = None
     performed_at: datetime | None = None
     completed_by: UUID | None = None
     completed_at: datetime | None = None
@@ -151,9 +160,10 @@ class TreatmentOrderCreate(BaseModel):
 class TreatmentOrderResponse(BaseModel):
     """처치 오더 응답(0015 treatment_orders + fee_schedules 마스터 조인). snake_case 유지.
 
-    fee_code·fee_name·fee_category·amount_krw 는 행위 마스터 조인 합성(읽기시점). status='ordered'
-    (지시). 수행(performed)은 5.7 이 세팅(본 스토리는 NULL). ⚠️ 검사와 달리 exam_type·equipment_id·
-    completed_* 없음(treatment_orders 미보유). 행 자체엔 자유텍스트 없음(감사 마스킹 불요).
+    fee_code·fee_name·fee_category·amount_krw·coverage_type 는 행위 마스터 조인 합성(5.5 pay-chip).
+    ordered_by_name·performed_by_name 은 users 조인(추적 라인, 5.5). status='ordered'(지시). 수행
+    (performed)은 5.7 이 세팅(본 스토리는 NULL). ⚠️ 검사와 달리 exam_type·equipment_id·completed_*
+    없음(treatment_orders 미보유). 행 자체엔 자유텍스트 없음(감사 마스킹 불요).
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -165,10 +175,13 @@ class TreatmentOrderResponse(BaseModel):
     fee_name: str
     fee_category: str | None = None
     amount_krw: int
+    coverage_type: str
     status: str
     ordered_by: UUID
+    ordered_by_name: str | None = None
     ordered_at: datetime
     performed_by: UUID | None = None
+    performed_by_name: str | None = None
     performed_at: datetime | None = None
     is_active: bool
     created_at: datetime

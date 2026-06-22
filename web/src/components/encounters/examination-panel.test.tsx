@@ -2,16 +2,16 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ExaminationPanel } from "@/components/encounters/examination-panel";
-import type { Examination } from "@/lib/encounters/examinations";
+import type { Examination, ExamType } from "@/lib/encounters/examinations";
 import type { Encounter } from "@/lib/reception/encounters";
 
-// 검사·영상 패널(Story 5.3) — examinations lib·MasterSearchPicker(스텁)·sonner 모킹.
-// 검증: 빈 상태·exam_type 토글(기본 lab)·행위 선택→현재 exam_type 으로 createExamination→reload·목록 렌더.
+// 검사·영상 패널(Story 5.3·5.5, controlled) — createExamination·MasterSearchPicker(스텁)·sonner 모킹.
+// ⚠️ exam_type 토글 제거(탭이 examType prop 결정). 검증: 빈 상태·examType 으로 create+onReload·목록(pay-chip).
 vi.mock("@/lib/encounters/examinations", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/encounters/examinations")>();
-  return { ...actual, fetchExaminations: vi.fn(), createExamination: vi.fn() };
+  const actual =
+    await importOriginal<typeof import("@/lib/encounters/examinations")>();
+  return { ...actual, createExamination: vi.fn() };
 });
-// MasterSearchPicker 는 Supabase 직접조회 → 스텁. onChange 값 = fee_schedule_id.
 vi.mock("@/components/ui/master-search-picker", () => ({
   MasterSearchPicker: ({
     id,
@@ -44,22 +44,14 @@ vi.mock("@/components/ui/master-search-picker", () => ({
 }));
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
-import { createExamination, fetchExaminations } from "@/lib/encounters/examinations";
+import { createExamination } from "@/lib/encounters/examinations";
 
-const mockFetch = vi.mocked(fetchExaminations);
 const mockCreate = vi.mocked(createExamination);
 
 afterEach(() => vi.clearAllMocks());
 
 const ENC = { id: "e1" } as Encounter;
-
-function renderPanel() {
-  return render(<ExaminationPanel encounter={ENC} today="2026-06-22" />);
-}
-
-function pickFee(id: string) {
-  fireEvent.change(screen.getByTestId("exam-picker"), { target: { value: id } });
-}
+const NOW = Date.parse("2026-06-22T00:00:00Z");
 
 function makeExam(over: Partial<Examination> = {}): Examination {
   return {
@@ -71,11 +63,14 @@ function makeExam(over: Partial<Examination> = {}): Examination {
     fee_name: "흉부 단순촬영(1매)",
     fee_category: "영상료",
     amount_krw: 9030,
+    coverage_type: "covered",
     status: "ordered",
     ordered_by: "d1",
+    ordered_by_name: "김의사",
     ordered_at: "2026-06-22T00:00:00Z",
     equipment_id: null,
     performed_by: null,
+    performed_by_name: null,
     performed_at: null,
     completed_by: null,
     completed_at: null,
@@ -86,30 +81,52 @@ function makeExam(over: Partial<Examination> = {}): Examination {
   };
 }
 
-describe("ExaminationPanel", () => {
-  it("오더된 검사·영상이 없으면 빈 상태를 표시한다", async () => {
-    mockFetch.mockResolvedValue([]);
-    renderPanel();
-    expect(await screen.findByText("오더된 검사·영상 없음")).toBeInTheDocument();
+function renderPanel(
+  examType: ExamType,
+  examinations: Examination[] | null,
+  nowMs = NOW,
+) {
+  const onReload = vi.fn().mockResolvedValue(undefined);
+  render(
+    <ExaminationPanel
+      encounter={ENC}
+      today="2026-06-22"
+      examType={examType}
+      examinations={examinations}
+      nowMs={nowMs}
+      onReload={onReload}
+    />,
+  );
+  return { onReload };
+}
+
+function pickFee(id: string) {
+  fireEvent.change(screen.getByTestId("exam-picker"), {
+    target: { value: id },
+  });
+}
+
+describe("ExaminationPanel (controlled)", () => {
+  it("빈 상태는 탭 유형 라벨로 표시한다(진단검사)", () => {
+    renderPanel("lab", []);
+    expect(screen.getByText("오더된 진단검사 없음")).toBeInTheDocument();
   });
 
-  it("행위 선택 시 현재 exam_type(기본 lab)으로 createExamination 을 호출하고 재조회한다", async () => {
-    mockFetch.mockResolvedValue([]);
+  it("lab 탭에서 선택하면 exam_type=lab 으로 오더하고 onReload 한다", async () => {
     mockCreate.mockResolvedValue(makeExam({ exam_type: "lab" }));
-    renderPanel();
-    await screen.findByText("오더된 검사·영상 없음");
+    const { onReload } = renderPanel("lab", []);
     pickFee("C3800");
     await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
-    expect(mockCreate).toHaveBeenCalledWith("e1", { exam_type: "lab", fee_schedule_id: "C3800" });
-    expect(mockFetch).toHaveBeenCalledTimes(2); // 초기 로드 + 오더 후 reload
+    expect(mockCreate).toHaveBeenCalledWith("e1", {
+      exam_type: "lab",
+      fee_schedule_id: "C3800",
+    });
+    await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
   });
 
-  it("영상검사 토글 후 선택하면 exam_type=imaging 으로 오더한다(FR-061 라우팅 분류)", async () => {
-    mockFetch.mockResolvedValue([]);
+  it("imaging 탭에서 선택하면 exam_type=imaging 으로 오더한다(FR-061 라우팅)", async () => {
     mockCreate.mockResolvedValue(makeExam());
-    renderPanel();
-    await screen.findByText("오더된 검사·영상 없음");
-    fireEvent.click(screen.getByRole("button", { name: "영상검사" }));
+    renderPanel("imaging", []);
     pickFee("HA201");
     await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
     expect(mockCreate).toHaveBeenCalledWith("e1", {
@@ -118,10 +135,16 @@ describe("ExaminationPanel", () => {
     });
   });
 
-  it("오더된 검사·영상 목록을 렌더한다(행위 코드·명칭)", async () => {
-    mockFetch.mockResolvedValue([makeExam()]);
-    renderPanel();
-    expect(await screen.findByText("HA201")).toBeInTheDocument();
+  it("오더된 목록을 렌더한다(행위·pay-chip 급여·추적 라인)", () => {
+    renderPanel("imaging", [makeExam()]);
+    expect(screen.getByText("HA201")).toBeInTheDocument();
     expect(screen.getByText("흉부 단순촬영(1매)")).toBeInTheDocument();
+    expect(screen.getByText("급여")).toBeInTheDocument(); // pay-chip
+    expect(screen.getByText("김의사")).toBeInTheDocument(); // 추적 라인
+  });
+
+  it("지시 후 임계치 초과 미수행이면 지연 배지를 표시한다", () => {
+    renderPanel("lab", [makeExam({ exam_type: "lab" })], NOW + 35 * 60_000);
+    expect(screen.getByText(/지연 35분/)).toBeInTheDocument();
   });
 });

@@ -2436,16 +2436,47 @@ async def fetch_bookable_doctors(sub: UUID, department_id: UUID | None) -> list[
 # 처방전 = 헤더(prescriptions) + 1:N 상세(prescription_details). 발행 = service_role 직접 INSERT
 # (전이 RPC 아님 — 자유 CRUD, medical_records/diagnoses 선례). 권한은 쓰기 직전 동일 txn 재평가.
 # 0015 전이 트리거가 INSERT status='issued' 강제(5.2 는 전이 미발생 — dispense=Epic 7). 응답 =
-# drugs 조인(drug_code·drug_name·ingredient_code — ingredient_code 는 FR-052 중복 비교 키).
-# 감사 = 0015 트리거 자동. diagnosis_id/drug_id = FK → _SENSITIVE_KEY 무변경.
+# drugs 조인(drug_code·drug_name·ingredient_code — ingredient_code 는 FR-052 중복 비교 키 +
+# coverage_type 5.5 pay-chip) + users 조인(ordered_by_name 추적 라인, 5.5). 감사 = 0015 트리거 자동.
+# ⚠️ 5.5: allergy_override_reason(자유텍스트) 은 _SENSITIVE_KEY 마스킹 대상(audit.py/audit.ts) — 단
+#    응답엔 미노출(쓰기·감사 전용, PII 표면 최소). diagnosis_id/drug_id = FK → 무변경.
+
+
+def _allergy_conflicts(allergies_text: str | None, drugs_by_id: dict[str, str]) -> dict[str, str]:
+    """알레르기↔약품 교차검증(UX-DR21②) — 환자 기록 알레르기(자유텍스트) ↔ 약품명 토큰 부분일치.
+
+    allergies 는 자유텍스트(구조화 알레르겐·중증도 없음, 0009) → 구분자(`,`·`、`·`·`·`/`·`;`·공백)로
+    토큰화 후 길이 ≥2 토큰이 약품명 정규화 문자열에 부분 포함되면 conflict. ⚠️ 클래스 매칭 불가
+    (페니실린 ⊄ 아목시실린) — 직접 토큰 일치만(정직한 한계, 구조화 알레르겐 부재). 실제 약물상호작용
+    DB 없음(동일성분 = FR-052 클라 경고 별도). 인자·반환 키 = drug_id 문자열. 반환 = {drug_id:토큰}.
+    """
+    if not allergies_text or not allergies_text.strip():
+        return {}
+    tokens = {
+        t.strip().lower() for t in re.split(r"[,、·/;\s]+", allergies_text) if len(t.strip()) >= 2
+    }
+    conflicts: dict[str, str] = {}
+    for drug_id, name in drugs_by_id.items():
+        name_norm = (name or "").lower()
+        for tok in tokens:
+            if tok and tok in name_norm:
+                conflicts[drug_id] = tok
+                break
+    return conflicts
+
+
 _PRESCRIPTION_COLUMNS = (
     "pr.id, pr.encounter_id, pr.encounter_diagnosis_id, pr.status, pr.ordered_by, "
+    "ub.name as ordered_by_name, "
     "pr.ordered_at, pr.dispensed_at, pr.is_active, pr.created_at, pr.updated_at"
+)
+_PRESCRIPTION_FROM = (
+    "from public.prescriptions pr left join public.users ub on ub.id = pr.ordered_by"
 )
 _PRESCRIPTION_DETAIL_COLUMNS = (
     "pd.id, pd.prescription_id, pd.drug_id, dr.code as drug_code, dr.name as drug_name, "
-    "dr.ingredient_code, pd.dose, pd.frequency, pd.duration_days, pd.usage_instruction, "
-    "pd.is_active, pd.created_at, pd.updated_at"
+    "dr.ingredient_code, dr.coverage_type, pd.dose, pd.frequency, pd.duration_days, "
+    "pd.usage_instruction, pd.is_active, pd.created_at, pd.updated_at"
 )
 _PRESCRIPTION_DETAIL_FROM = (
     "from public.prescription_details pd join public.drugs dr on dr.id = pd.drug_id"
@@ -2511,6 +2542,38 @@ async def insert_prescription(
                     status_code=422,
                     detail={"encounter_diagnosis_id": str(encounter_diagnosis_id)},
                 )
+        # 알레르기 교차검증(UX-DR21②, 5.5) — 환자 기록 알레르기 ↔ 약품명 토큰 대조(서버 권위).
+        # 매칭 라인에 오버라이드 사유 없으면 409 차단; 사유 있으면 통과(사유는 상세 기록 → 감사).
+        # 잘못된 drug_id 는 drugs_by_id 미포함 → conflict 없음(아래 INSERT FK 위반 422, 순서 무해).
+        drug_ids = [UUID(str(line["drug_id"])) for line in details]
+        drug_rows = await conn.fetch(
+            "select id, name from public.drugs where id = any($1::uuid[])", drug_ids
+        )
+        drugs_by_id = {str(r["id"]): r["name"] for r in drug_rows}
+        allergies_text = await conn.fetchval(
+            "select p.allergies from public.patients p "
+            "join public.encounters e on e.patient_id = p.id where e.id = $1",
+            encounter_id,
+        )
+        conflicts = _allergy_conflicts(allergies_text, drugs_by_id)
+        if conflicts:
+            unresolved = [
+                {
+                    "drug_id": str(line["drug_id"]),
+                    "drug_name": drugs_by_id.get(str(line["drug_id"]), ""),
+                    "allergen": conflicts[str(line["drug_id"])],
+                }
+                for line in details
+                if str(line["drug_id"]) in conflicts
+                and not str(line.get("allergy_override_reason") or "").strip()
+            ]
+            if unresolved:
+                raise AppError(
+                    "환자 알레르기 약품입니다. 발행 사유를 입력하세요.",
+                    code="allergy_conflict",
+                    status_code=409,
+                    detail={"conflicts": unresolved},
+                )
         try:
             header = await conn.fetchrow(
                 "insert into public.prescriptions "
@@ -2524,16 +2587,24 @@ async def insert_prescription(
             prescription_id = header["id"]
             for line in details:
                 dose = line.get("dose")
+                # 오버라이드 사유는 conflict 라인만 저장(비-conflict 는 NULL — 데이터 정합).
+                override = (
+                    line.get("allergy_override_reason")
+                    if str(line["drug_id"]) in conflicts
+                    else None
+                )
                 await conn.execute(
                     "insert into public.prescription_details "
-                    "(prescription_id, drug_id, dose, frequency, duration_days, usage_instruction) "
-                    "values ($1, $2, $3, $4, $5, $6)",
+                    "(prescription_id, drug_id, dose, frequency, duration_days, "
+                    "usage_instruction, allergy_override_reason) "
+                    "values ($1, $2, $3, $4, $5, $6, $7)",
                     prescription_id,
                     line["drug_id"],
                     Decimal(str(dose)) if dose is not None else None,  # numeric=Decimal 필수
                     line.get("frequency"),
                     line.get("duration_days"),
                     line.get("usage_instruction"),
+                    override,
                 )
         except asyncpg.ForeignKeyViolationError as exc:
             # 잘못된 drug_id(또는 동시 삭제 레이스의 진단) 23503 → 입력 오류 422(미매핑 시 503).
@@ -2543,7 +2614,7 @@ async def insert_prescription(
                 status_code=422,
             ) from exc
         header_full = await conn.fetchrow(
-            f"select {_PRESCRIPTION_COLUMNS} from public.prescriptions pr where pr.id = $1",
+            f"select {_PRESCRIPTION_COLUMNS} {_PRESCRIPTION_FROM} where pr.id = $1",
             prescription_id,
         )
         assert header_full is not None
@@ -2562,7 +2633,7 @@ async def fetch_prescriptions(sub: UUID, encounter_id: UUID) -> list[dict[str, o
 
     async def _op(conn: asyncpg.Connection) -> list[dict[str, object]]:
         headers = await conn.fetch(
-            f"select {_PRESCRIPTION_COLUMNS} from public.prescriptions pr "
+            f"select {_PRESCRIPTION_COLUMNS} {_PRESCRIPTION_FROM} "
             f"where pr.encounter_id = $1 and pr.is_active = true "
             f"order by pr.created_at desc, pr.id desc",
             encounter_id,
@@ -2594,12 +2665,16 @@ async def fetch_prescriptions(sub: UUID, encounter_id: UUID) -> list[dict[str, o
 _EXAMINATION_COLUMNS = (
     "ex.id, ex.encounter_id, ex.exam_type, ex.fee_schedule_id, "
     "fs.code as fee_code, fs.name as fee_name, fs.category as fee_category, fs.amount_krw, "
-    "ex.status, ex.ordered_by, ex.ordered_at, ex.equipment_id, "
-    "ex.performed_by, ex.performed_at, ex.completed_by, ex.completed_at, "
+    "fs.coverage_type, "
+    "ex.status, ex.ordered_by, ub.name as ordered_by_name, ex.ordered_at, ex.equipment_id, "
+    "ex.performed_by, up.name as performed_by_name, ex.performed_at, "
+    "ex.completed_by, ex.completed_at, "
     "ex.is_active, ex.created_at, ex.updated_at"
 )
 _EXAMINATION_FROM = (
-    "from public.examinations ex join public.fee_schedules fs on fs.id = ex.fee_schedule_id"
+    "from public.examinations ex join public.fee_schedules fs on fs.id = ex.fee_schedule_id "
+    "left join public.users ub on ub.id = ex.ordered_by "
+    "left join public.users up on up.id = ex.performed_by"
 )
 
 
@@ -2686,11 +2761,15 @@ async def fetch_examinations(sub: UUID, encounter_id: UUID) -> list[dict[str, ob
 _TREATMENT_ORDER_COLUMNS = (
     "tr.id, tr.encounter_id, tr.fee_schedule_id, "
     "fs.code as fee_code, fs.name as fee_name, fs.category as fee_category, fs.amount_krw, "
-    "tr.status, tr.ordered_by, tr.ordered_at, tr.performed_by, tr.performed_at, "
+    "fs.coverage_type, "
+    "tr.status, tr.ordered_by, ub.name as ordered_by_name, tr.ordered_at, "
+    "tr.performed_by, up.name as performed_by_name, tr.performed_at, "
     "tr.is_active, tr.created_at, tr.updated_at"
 )
 _TREATMENT_ORDER_FROM = (
-    "from public.treatment_orders tr join public.fee_schedules fs on fs.id = tr.fee_schedule_id"
+    "from public.treatment_orders tr join public.fee_schedules fs on fs.id = tr.fee_schedule_id "
+    "left join public.users ub on ub.id = tr.ordered_by "
+    "left join public.users up on up.id = tr.performed_by"
 )
 
 

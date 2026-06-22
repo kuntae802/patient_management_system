@@ -4,12 +4,10 @@ import { AlertTriangle, ArrowLeft } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { ConsultationWorkspace } from "@/components/encounters/consultation-workspace";
-import { ExaminationPanel } from "@/components/encounters/examination-panel";
+import { OrderPanel } from "@/components/encounters/order-panel";
 import { PatientBanner } from "@/components/encounters/patient-banner";
 import { PatientContextPanel } from "@/components/encounters/patient-context-panel";
-import { PrescriptionPanel } from "@/components/encounters/prescription-panel";
 import { StatusBadge } from "@/components/encounters/status-badge";
-import { TreatmentPanel } from "@/components/encounters/treatment-panel";
 import { useActiveEncounter } from "@/hooks/use-active-encounter";
 import { ApiError } from "@/lib/api/client";
 import {
@@ -17,6 +15,7 @@ import {
   ENCOUNTER_STATUS_META,
   fetchEncounter,
 } from "@/lib/reception/encounters";
+import { fetchPatient, type Patient } from "@/lib/reception/patients";
 
 // 진료 허브 셸(Story 4.4) + 환자 배너·좌 컨텍스트(Story 4.5). 진찰 시작(start_consult) 후 진입.
 // 세션당 활성 내원 1개 가드(UX-DR21⑨). 상시 환자 배너(신원·민감정보 reveal·알레르기 can't-miss)는
@@ -33,8 +32,15 @@ function timeHmKST(iso: string | null): string {
   });
 }
 
-export function EncounterHub({ encounterId, today }: { encounterId: string; today: string }) {
+export function EncounterHub({
+  encounterId,
+  today,
+}: {
+  encounterId: string;
+  today: string;
+}) {
   const [encounter, setEncounter] = useState<Encounter | null>(null);
+  const [patient, setPatient] = useState<Patient | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -42,8 +48,15 @@ export function EncounterHub({ encounterId, today }: { encounterId: string; toda
       const enc = await fetchEncounter(encounterId);
       setEncounter(enc);
       setError(null);
+      // 오더 패널 알레르기 교차검증용 환자 로드(UX-DR21②, 5.5). 비중요 — 실패 시 null(교차검증만 degrade).
+      const p = await fetchPatient(enc.patient_id).catch(() => null);
+      setPatient(p);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "진료 정보를 불러오지 못했습니다.");
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : "진료 정보를 불러오지 못했습니다.",
+      );
     }
   }, [encounterId]);
 
@@ -89,9 +102,12 @@ export function EncounterHub({ encounterId, today }: { encounterId: string; toda
           className="flex flex-wrap items-center gap-3 rounded-lg border border-status-cancelled/40 bg-status-cancelled/10 px-4 py-2.5 text-[12.5px] text-status-cancelled"
         >
           <AlertTriangle className="size-4 shrink-0" aria-hidden />
-          <span className="font-medium">이 진료는 다른 탭에서 활성화되어 보류되었습니다.</span>
+          <span className="font-medium">
+            이 진료는 다른 탭에서 활성화되어 보류되었습니다.
+          </span>
           <span className="text-muted-foreground">
-            잘못된 환자에 작업이 새는 것을 막기 위해 한 세션에 진료 1개만 활성화됩니다.
+            잘못된 환자에 작업이 새는 것을 막기 위해 한 세션에 진료 1개만
+            활성화됩니다.
           </span>
           <button
             type="button"
@@ -105,7 +121,8 @@ export function EncounterHub({ encounterId, today }: { encounterId: string; toda
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-status-received/40 bg-status-received/10 px-4 py-2.5 text-[12.5px] text-status-received-ink">
           <AlertTriangle className="size-4 shrink-0" aria-hidden />
           <span className="font-medium">
-            다른 진료가 이미 열려 있습니다{active ? ` (내원 ${active.encounter_no})` : ""}.
+            다른 진료가 이미 열려 있습니다
+            {active ? ` (내원 ${active.encounter_no})` : ""}.
           </span>
           <span className="text-muted-foreground">
             이 진료를 활성화하면 기존 진료 탭은 보류됩니다.
@@ -133,7 +150,11 @@ export function EncounterHub({ encounterId, today }: { encounterId: string; toda
           </button>
         </div>
       ) : encounter === null ? (
-        <div className="space-y-2 rounded-xl border border-border bg-card p-4" aria-busy="true" aria-label="진료 정보 불러오는 중">
+        <div
+          className="space-y-2 rounded-xl border border-border bg-card p-4"
+          aria-busy="true"
+          aria-label="진료 정보 불러오는 중"
+        >
           {[0, 1, 2].map((i) => (
             <div key={i} className="h-10 animate-pulse rounded-md bg-muted" />
           ))}
@@ -142,8 +163,9 @@ export function EncounterHub({ encounterId, today }: { encounterId: string; toda
         // 진행중이 아닌 내원(종결/예약 — 직접 URL·북마크 진입) → 진료 화면 대신 안내(오표시 방지, Patch P3).
         <div className="flex flex-col items-center gap-3 rounded-xl border border-border bg-card px-4 py-10 text-center">
           <p className="text-[13px] text-muted-foreground">
-            이 내원은 진행중이 아닙니다(현재 {ENCOUNTER_STATUS_META[encounter.status].label}). 진료 화면은
-            진찰을 시작한 진행중 내원에서만 열립니다.
+            이 내원은 진행중이 아닙니다(현재{" "}
+            {ENCOUNTER_STATUS_META[encounter.status].label}). 진료 화면은 진찰을
+            시작한 진행중 내원에서만 열립니다.
           </p>
           <a
             href="/doctor/waiting"
@@ -165,12 +187,9 @@ export function EncounterHub({ encounterId, today }: { encounterId: string; toda
             />
             {/* 중앙 작성 = 진단 블록(4.7) + SOAP ledger(4.6) + 진료 완료 액션(4.7). */}
             <ConsultationWorkspace encounter={encounter} today={today} />
-            {/* 우 오더 pane = 처방(5.2)·검사·영상(5.3)·처치(5.4) 섹션 스택. 전체 UX-DR13 통합은 5.5. */}
-            <div className="space-y-3">
-              <PrescriptionPanel encounter={encounter} today={today} />
-              <ExaminationPanel encounter={encounter} today={today} />
-              <TreatmentPanel encounter={encounter} today={today} />
-            </div>
+            {/* 우 오더 pane = UX-DR13 탭 통합 오더 패널(처방/검사/영상/처치 + 추적·pay-chip·수가 프리뷰·
+                알레르기 교차검증·누락 0 디텍터, Story 5.5). */}
+            <OrderPanel encounter={encounter} patient={patient} today={today} />
           </div>
         </div>
       )}

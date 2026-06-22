@@ -37,26 +37,36 @@ export const ACTION_META: Record<
   read: {
     label: "조회",
     glyph: "◉",
-    badgeClass: "border-status-inprogress/40 bg-status-inprogress/12 text-status-inprogress",
+    badgeClass:
+      "border-status-inprogress/40 bg-status-inprogress/12 text-status-inprogress",
   },
   update: {
     label: "수정",
     glyph: "~",
-    badgeClass: "border-status-received/40 bg-status-received/15 text-status-received-ink",
+    badgeClass:
+      "border-status-received/40 bg-status-received/15 text-status-received-ink",
   },
   delete: {
     label: "삭제",
     glyph: "✕",
-    badgeClass: "border-status-cancelled/40 bg-status-cancelled/12 text-status-cancelled",
+    badgeClass:
+      "border-status-cancelled/40 bg-status-cancelled/12 text-status-cancelled",
   },
   login: {
     label: "로그인",
     glyph: "→",
-    badgeClass: "border-status-scheduled/40 bg-status-scheduled/12 text-status-scheduled",
+    badgeClass:
+      "border-status-scheduled/40 bg-status-scheduled/12 text-status-scheduled",
   },
 };
 
-export const ACTION_ORDER: AuditAction[] = ["create", "read", "update", "delete", "login"];
+export const ACTION_ORDER: AuditAction[] = [
+  "create",
+  "read",
+  "update",
+  "delete",
+  "login",
+];
 
 // 현재 트리거·reveal 이 기록하는 대상 테이블(0004/0005). 미래 도메인 테이블은 raw 값 폴백으로 표시.
 export const TARGET_TABLE_LABELS: Record<string, string> = {
@@ -85,10 +95,11 @@ export function actorLabel(entry: AuditLogEntry): string {
 
 // 항상-민감 키(table-agnostic) — 연락처·건강민감(임상 프로필·SOAP)·암호/비밀. 스냅샷 표시 단 차단(UX-DR22, Story 3.6).
 // SOAP(subjective/objective/assessment/plan) = medical_records 자유텍스트(Story 4.6).
+// allergy_override_reason = prescription_details 알레르기 오버라이드 사유 자유텍스트(Story 5.5).
 // 서버측 마스킹(services/audit.py `_SENSITIVE_KEY`)이 1차 권위 — 이 정규식은 방어심층이며 **동일 키
 // 집합으로 유지**(한쪽만 바꾸면 드리프트).
 const SENSITIVE_KEY =
-  /(resident_no|rrn|ssn|password|passwd|secret|token|email|phone|address|guardian|allergies|chronic_diseases|medications|notes|insurance_no|subjective|objective|assessment|plan|_enc$|_hash$|_blind_index$|ciphertext)/i;
+  /(resident_no|rrn|ssn|password|passwd|secret|token|email|phone|address|guardian|allergies|chronic_diseases|medications|notes|insurance_no|subjective|objective|assessment|plan|allergy_override_reason|_enc$|_hash$|_blind_index$|ciphertext)/i;
 
 // `name` 은 테이블 의존 — 환자/보호자만 PII(masters 진료과명·roles 라벨은 비-PII). 서버 거울.
 export const PII_NAME_TABLES = new Set(["patients", "guardians"]);
@@ -116,10 +127,14 @@ export function maskSnapshotValue(
   value: unknown,
   opts?: { maskName?: boolean },
 ): { masked: boolean; display: string } {
-  const sensitive = SENSITIVE_KEY.test(key) || (opts?.maskName === true && key.toLowerCase() === "name");
+  const sensitive =
+    SENSITIVE_KEY.test(key) ||
+    (opts?.maskName === true && key.toLowerCase() === "name");
   if (sensitive) return { masked: true, display: MASK_DISPLAY };
-  if (value === null || value === undefined) return { masked: false, display: "—" };
-  if (typeof value === "object") return { masked: false, display: JSON.stringify(maskDeep(value)) };
+  if (value === null || value === undefined)
+    return { masked: false, display: "—" };
+  if (typeof value === "object")
+    return { masked: false, display: JSON.stringify(maskDeep(value)) };
   return { masked: false, display: String(value) };
 }
 
@@ -147,19 +162,22 @@ export function diffSnapshot(
     let kind: DiffKind;
     if (inB && !inA) kind = "removed";
     else if (!inB && inA) kind = "added";
-    else kind = JSON.stringify(b) === JSON.stringify(a) ? "unchanged" : "changed";
+    else
+      kind = JSON.stringify(b) === JSON.stringify(a) ? "unchanged" : "changed";
     return { key, before: b, after: a, kind };
   });
 }
 
 /** diff 행 종류 표시 메타 — 색 + 글리프 중복 인코딩(색 단독 금지, UX-DR20). */
-export const DIFF_KIND_META: Record<DiffKind, { glyph: string; className: string; label: string }> =
-  {
-    added: { glyph: "+", className: "text-status-done-ink", label: "추가" },
-    removed: { glyph: "−", className: "text-status-cancelled", label: "삭제" },
-    changed: { glyph: "~", className: "text-status-received-ink", label: "변경" },
-    unchanged: { glyph: "·", className: "text-muted-foreground", label: "유지" },
-  };
+export const DIFF_KIND_META: Record<
+  DiffKind,
+  { glyph: string; className: string; label: string }
+> = {
+  added: { glyph: "+", className: "text-status-done-ink", label: "추가" },
+  removed: { glyph: "−", className: "text-status-cancelled", label: "삭제" },
+  changed: { glyph: "~", className: "text-status-received-ink", label: "변경" },
+  unchanged: { glyph: "·", className: "text-muted-foreground", label: "유지" },
+};
 
 // KST(Asia/Seoul) 표시 — timestamptz(UTC 저장)를 Intl ko-KR 로 변환(날짜 규칙, project-context).
 const TIME_FMT = new Intl.DateTimeFormat("ko-KR", {

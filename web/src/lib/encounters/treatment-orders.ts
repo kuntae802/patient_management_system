@@ -13,10 +13,13 @@ export type TreatmentOrder = {
   fee_name: string;
   fee_category: string | null;
   amount_krw: number;
+  coverage_type: string; // 급여 covered / 비급여 non_covered (5.5 pay-chip)
   status: string;
   ordered_by: string;
+  ordered_by_name: string | null; // users 조인(추적 라인 지시자, 5.5)
   ordered_at: string;
   performed_by: string | null;
+  performed_by_name: string | null; // users 조인(추적 라인 수행자, 5.5)
   performed_at: string | null;
   is_active: boolean;
   created_at: string;
@@ -33,7 +36,9 @@ function treatmentOrdersUrl(encounterId: string): string {
 }
 
 /** 한 내원의 처치 오더 목록(최신순, GET). 게이트 order.read. */
-export async function fetchTreatmentOrders(encounterId: string): Promise<TreatmentOrder[]> {
+export async function fetchTreatmentOrders(
+  encounterId: string,
+): Promise<TreatmentOrder[]> {
   return apiFetch<TreatmentOrder[]>(treatmentOrdersUrl(encounterId));
 }
 

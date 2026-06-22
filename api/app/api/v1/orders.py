@@ -52,7 +52,9 @@ async def create_prescription(
 
     약품 마스터 검색(drug_id FK)으로만 — free-text 차단. 헤더 + 상세 라인 원자적 생성. 진단 근거
     연결 선택(같은 내원). 미존재 내원 → 404, 타 내원/잘못된 진단·약품 → 422, 권한 미보유 → 403.
-    ⚠️ 동일 성분 중복 경고(FR-052)는 클라 측 비차단 인라인(하드 블록=알레르기 5.5)."""
+    ⚠️ 알레르기 교차검증(UX-DR21②, 5.5): 환자 기록 알레르기와 약품명 매칭 시 오버라이드 사유
+    (allergy_override_reason) 미입력이면 → 409 allergy_conflict(사유 입력 시 발행+감사). 동일 성분
+    중복 경고(FR-052)는 클라 측 비차단 인라인(별도)."""
     return await orders_service.create_prescription(user.sub, encounter_id, payload)
 
 

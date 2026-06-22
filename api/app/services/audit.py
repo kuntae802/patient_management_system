@@ -24,10 +24,11 @@ from app.schemas.audit import AuditLogEntry, AuditLogPage, AuditPageMeta
 # ⚠️ 이 키 집합은 web `audit.ts SENSITIVE_KEY` 와 **동일 유지**(한쪽만 바꾸면 드리프트).
 # 항상-민감 키(table-agnostic) — 연락처·건강민감(프로필·SOAP)·암호/비밀. 어느 테이블이든 마스킹.
 # SOAP(subjective/objective/assessment/plan) = medical_records 자유텍스트(Story 4.6).
+# allergy_override_reason = prescription_details 알레르기 오버라이드 사유 자유텍스트(Story 5.5).
 _SENSITIVE_KEY = re.compile(
     r"(resident_no|rrn|ssn|password|passwd|secret|token|email|phone|address|guardian"
     r"|allergies|chronic_diseases|medications|notes|insurance_no"
-    r"|subjective|objective|assessment|plan"
+    r"|subjective|objective|assessment|plan|allergy_override_reason"
     r"|_enc$|_hash$|_blind_index$|ciphertext)",
     re.IGNORECASE,
 )

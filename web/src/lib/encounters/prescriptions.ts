@@ -4,7 +4,7 @@ import { apiFetch } from "@/lib/api/client";
 // 발행=FastAPI(prescription.create)·조회=FastAPI(order.read). 약품=마스터 FK(free-text 차단).
 // 권한·감사·불변식(상태머신)은 DB/서버 소유. FastAPI Prescription(Detail)Response 의 거울(수동 정의).
 
-/** FastAPI PrescriptionDetailResponse 의 거울. drug_*·ingredient_code 는 약품 마스터 조인. */
+/** FastAPI PrescriptionDetailResponse 의 거울. drug_*·ingredient_code·coverage_type 는 약품 마스터 조인. */
 export type PrescriptionDetail = {
   id: string;
   prescription_id: string;
@@ -12,6 +12,7 @@ export type PrescriptionDetail = {
   drug_code: string;
   drug_name: string;
   ingredient_code: string | null;
+  coverage_type: string; // 급여 covered / 비급여 non_covered (5.5 pay-chip)
   dose: number | null;
   frequency: string | null;
   duration_days: number | null;
@@ -28,6 +29,7 @@ export type Prescription = {
   encounter_diagnosis_id: string | null;
   status: string;
   ordered_by: string;
+  ordered_by_name: string | null; // users 조인(추적 라인 지시자, 5.5)
   ordered_at: string;
   dispensed_at: string | null;
   is_active: boolean;
@@ -43,6 +45,7 @@ export type PrescriptionDetailInput = {
   frequency?: string | null;
   duration_days?: number | null;
   usage_instruction?: string | null;
+  allergy_override_reason?: string | null; // 알레르기 오버라이드 사유(UX-DR21②, 5.5)
 };
 
 /** 발행 요청 바디. encounter_diagnosis_id=근거 진단(선택)·details=최소 1줄. */
@@ -56,7 +59,9 @@ function prescriptionsUrl(encounterId: string): string {
 }
 
 /** 한 내원의 발행 처방전 목록(헤더 최신순 + 상세, GET). 게이트 order.read. */
-export async function fetchPrescriptions(encounterId: string): Promise<Prescription[]> {
+export async function fetchPrescriptions(
+  encounterId: string,
+): Promise<Prescription[]> {
   return apiFetch<Prescription[]>(prescriptionsUrl(encounterId));
 }
 
@@ -75,7 +80,9 @@ export async function createPrescription(
  * 이미 처방된 성분(ingredient_code, 비-null) 집합 — 동일 성분 중복 경고(FR-052)의 기준.
  * 발행된(활성) 처방의 활성 상세 라인만 집계. 클라 측 비차단 경고 — 서버는 차단하지 않는다.
  */
-export function issuedIngredientCodes(prescriptions: Prescription[]): Set<string> {
+export function issuedIngredientCodes(
+  prescriptions: Prescription[],
+): Set<string> {
   const codes = new Set<string>();
   for (const p of prescriptions) {
     if (!p.is_active) continue;

@@ -20,6 +20,7 @@ function makeRx(over: Partial<Prescription> = {}): Prescription {
     encounter_diagnosis_id: null,
     status: "issued",
     ordered_by: "d1",
+    ordered_by_name: "김의사",
     ordered_at: "2026-06-22T00:00:00Z",
     dispensed_at: null,
     is_active: true,
@@ -34,7 +35,9 @@ describe("prescriptions lib", () => {
   it("fetchPrescriptions — GET sub-resource", async () => {
     mockApiFetch.mockResolvedValueOnce([makeRx()]);
     const out = await fetchPrescriptions("e1");
-    expect(mockApiFetch).toHaveBeenCalledWith("/v1/encounters/e1/prescriptions");
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      "/v1/encounters/e1/prescriptions",
+    );
     expect(out).toHaveLength(1);
   });
 
@@ -45,10 +48,13 @@ describe("prescriptions lib", () => {
       details: [{ drug_id: "dr1", dose: 0.5, frequency: "TID" }],
     };
     await createPrescription("e1", body);
-    expect(mockApiFetch).toHaveBeenCalledWith("/v1/encounters/e1/prescriptions", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      "/v1/encounters/e1/prescriptions",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    );
   });
 
   it("issuedIngredientCodes — 활성 처방의 활성 상세 성분(비-null)만 집계", () => {
@@ -61,6 +67,7 @@ describe("prescriptions lib", () => {
           drug_code: "645100250",
           drug_name: "타이레놀",
           ingredient_code: "153002ATB",
+          coverage_type: "covered",
           dose: null,
           frequency: null,
           duration_days: null,
@@ -76,6 +83,7 @@ describe("prescriptions lib", () => {
           drug_code: "x",
           drug_name: "성분미상",
           ingredient_code: null, // null 은 집계 제외
+          coverage_type: "covered",
           dose: null,
           frequency: null,
           duration_days: null,
@@ -102,6 +110,7 @@ describe("prescriptions lib", () => {
           drug_code: "x",
           drug_name: "x",
           ingredient_code: "AAA",
+          coverage_type: "covered",
           dose: null,
           frequency: null,
           duration_days: null,

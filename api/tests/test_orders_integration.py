@@ -757,3 +757,156 @@ def test_list_treatment_orders_nurse_can_read(client, admin_token, nurse_token, 
     eid = _walk_in(client, admin_token, dept_id)
     res = client.get(_treatment_orders_url(eid), headers=_bearer(nurse_token))
     assert res.status_code == 200, res.text
+
+
+# ══ Story 5.5: 알레르기 교차검증 · pay-chip(coverage) · 추적 라인 이름 ════════════
+# UX-DR21② 알레르기↔오더 교차검증(서버 강제 사유 오버라이드+감사)·UX-DR13 coverage_type pay-chip·
+# 지시자 이름 추적 라인(users 조인). 0016 마이그(coverage_type·allergy_override_reason) 소비.
+
+
+def _walk_in_with_allergies(
+    client: TestClient, admin_token: str, dept_id: str, psql: Psql, allergies: str
+) -> str:
+    """환자 + walk-in 내원 + 알레르기 설정(psql 직접) → 내원 id. allergies=자유텍스트(0009)."""
+    pid = _create_patient(client, admin_token)
+    proc = psql.run(
+        f"update public.patients set allergies = $tok${allergies}$tok$ where id = '{pid}'"
+    )
+    assert proc.returncode == 0, proc.stderr
+    res = client.post(
+        _ENCOUNTERS_URL,
+        json={"patient_id": pid, "department_id": dept_id},
+        headers=_bearer(admin_token),
+    )
+    assert res.status_code == 201, res.text
+    return res.json()["id"]
+
+
+def test_prescription_allergy_conflict_blocks_without_reason(
+    client, admin_token, doctor_token, dept_id, drug_ids, psql
+):
+    """기록 알레르기(타이레놀)와 약품명 매칭 + 오버라이드 사유 미입력 → 409 allergy_conflict."""
+    eid = _walk_in_with_allergies(client, admin_token, dept_id, psql, "타이레놀")
+    res = client.post(
+        _prescriptions_url(eid),
+        json={"details": [{"drug_id": drug_ids["tylenol"]}]},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 409, res.text
+    err = res.json()["error"]
+    assert err["code"] == "allergy_conflict"
+    conflicts = err["detail"]["conflicts"]
+    assert any(c["drug_id"] == drug_ids["tylenol"] for c in conflicts)
+    assert conflicts[0]["allergen"]  # 매칭 토큰(타이레놀)
+
+
+def test_prescription_allergy_override_with_reason_succeeds(
+    client, admin_token, doctor_token, dept_id, drug_ids, psql
+):
+    """매칭 + 오버라이드 사유 입력 → 201 + 사유가 상세에 기록(감사 트리거 캡처 — append-only)."""
+    eid = _walk_in_with_allergies(client, admin_token, dept_id, psql, "타이레놀")
+    res = client.post(
+        _prescriptions_url(eid),
+        json={
+            "details": [
+                {
+                    "drug_id": drug_ids["tylenol"],
+                    "allergy_override_reason": "환자 재확인 결과 경미·투여 가능 판단",
+                }
+            ]
+        },
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 201, res.text
+    pres_id = res.json()["id"]
+    # 사유가 DB 에 기록(응답엔 미노출 — 쓰기·감사 전용).
+    stored = psql.scalar(
+        "select allergy_override_reason from public.prescription_details "
+        f"where prescription_id = '{pres_id}' limit 1"
+    )
+    assert "투여 가능" in stored
+    # 감사 트리거가 prescription_details INSERT 의 사유를 append-only 캡처(after_data).
+    audited = psql.scalar(
+        "select count(*) from public.audit_logs where target_table = 'prescription_details' "
+        "and after_data->>'allergy_override_reason' is not null"
+    )
+    assert int(audited) >= 1
+
+
+def test_prescription_unrelated_allergy_proceeds(
+    client, admin_token, doctor_token, dept_id, drug_ids, psql
+):
+    """기록 알레르기가 약품명과 무관(꽃가루) → 매칭 없음 → 정상 201(false-positive 회피)."""
+    eid = _walk_in_with_allergies(client, admin_token, dept_id, psql, "꽃가루, 집먼지진드기")
+    res = client.post(
+        _prescriptions_url(eid),
+        json={"details": [{"drug_id": drug_ids["tylenol"]}]},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 201, res.text
+
+
+def test_prescription_response_has_coverage_and_orderer_name(
+    client, admin_token, doctor_token, dept_id, drug_ids
+):
+    """처방 응답: 상세 coverage_type(pay-chip) + 헤더 ordered_by_name(추적 라인 지시자)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _prescriptions_url(eid),
+        json={"details": [{"drug_id": drug_ids["tylenol"]}]},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["ordered_by_name"]  # users 조인 의사 이름
+    assert body["details"][0]["coverage_type"] == "covered"  # 타이레놀=급여(시드)
+
+
+def test_examination_response_has_coverage_and_orderer_name(
+    client, admin_token, doctor_token, dept_id, fee_schedule_ids
+):
+    """검사 응답: coverage_type(pay-chip) + ordered_by_name + performed_by_name(미수행=None)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _examinations_url(eid),
+        json={"exam_type": "lab", "fee_schedule_id": fee_schedule_ids["lab"]},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["coverage_type"] == "covered"  # CBC C3800=급여
+    assert body["ordered_by_name"]
+    assert body["performed_by_name"] is None  # 미수행(수행=5.7/5.8)
+
+
+def test_treatment_response_has_coverage_and_orderer_name(
+    client, admin_token, doctor_token, dept_id, treatment_fee_ids
+):
+    """처치 응답: coverage_type 비급여(MM070 핫팩) + ordered_by_name + performed_by_name=None."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _treatment_orders_url(eid),
+        json={"fee_schedule_id": treatment_fee_ids["hotpack"]},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["coverage_type"] == "non_covered"  # 핫팩 MM070=비급여(시드)
+    assert body["ordered_by_name"]
+    assert body["performed_by_name"] is None
+
+
+def test_coverage_seed_has_both_classes(psql):
+    """0016 coverage_type 시드: 급여/비급여 각 1+ 존재(pay-chip 양색 데모·테스트 고정 코드)."""
+    assert psql.scalar("select coverage_type from public.fee_schedules where code = 'AA154'") == (
+        "covered"
+    )
+    assert psql.scalar("select coverage_type from public.fee_schedules where code = 'MM151'") == (
+        "non_covered"
+    )
+    assert psql.scalar("select coverage_type from public.drugs where code = '645100250'") == (
+        "covered"
+    )
+    assert psql.scalar("select coverage_type from public.drugs where code = '653700110'") == (
+        "non_covered"
+    )

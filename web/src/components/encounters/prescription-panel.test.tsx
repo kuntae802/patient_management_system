@@ -2,17 +2,21 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { PrescriptionPanel } from "@/components/encounters/prescription-panel";
+import type { Prescription } from "@/lib/encounters/prescriptions";
 import type { Encounter } from "@/lib/reception/encounters";
+import type { Patient } from "@/lib/reception/patients";
 
-// 처방 패널(Story 5.2) — prescriptions/diagnoses lib·MasterSearchPicker(스텁)·sonner 모킹.
-// 검증: 약품 선택→드래프트 라인 추가·동일 성분 재추가→중복 경고(비차단)·발행→createPrescription·빈 드래프트→발행 disable.
-// issuedIngredientCodes(순수 함수)는 실제 구현 유지(importOriginal).
+// 처방 패널(Story 5.2·5.5, controlled) — createPrescription·diagnoses·MasterSearchPicker(스텁)·sonner 모킹.
+// prescriptions/patient 는 prop 주입(order-panel 소유), diagnoses 는 자체 로드. 검증: 드래프트·FR-052 중복
+// (비차단)·발행(allergy_override_reason 포함)·UX-DR21② 알레르기 매칭→경고+사유→발행 게이트.
 vi.mock("@/lib/encounters/prescriptions", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/encounters/prescriptions")>();
-  return { ...actual, fetchPrescriptions: vi.fn(), createPrescription: vi.fn() };
+  const actual =
+    await importOriginal<typeof import("@/lib/encounters/prescriptions")>();
+  return { ...actual, createPrescription: vi.fn() };
 });
-vi.mock("@/lib/encounters/diagnoses", () => ({ fetchEncounterDiagnoses: vi.fn() }));
-// MasterSearchPicker 는 Supabase 직접조회 → 스텁. ingredient_code = 입력값(테스트가 동일/상이 성분 제어).
+vi.mock("@/lib/encounters/diagnoses", () => ({
+  fetchEncounterDiagnoses: vi.fn(),
+}));
 vi.mock("@/components/ui/master-search-picker", () => ({
   MasterSearchPicker: ({
     id,
@@ -46,9 +50,8 @@ vi.mock("@/components/ui/master-search-picker", () => ({
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 import { fetchEncounterDiagnoses } from "@/lib/encounters/diagnoses";
-import { createPrescription, fetchPrescriptions } from "@/lib/encounters/prescriptions";
+import { createPrescription } from "@/lib/encounters/prescriptions";
 
-const mockFetch = vi.mocked(fetchPrescriptions);
 const mockCreate = vi.mocked(createPrescription);
 const mockDx = vi.mocked(fetchEncounterDiagnoses);
 
@@ -56,60 +59,74 @@ afterEach(() => vi.clearAllMocks());
 
 const ENC = { id: "e1" } as Encounter;
 
-function renderPanel() {
+function renderPanel(
+  opts: {
+    prescriptions?: Prescription[] | null;
+    patient?: Patient | null;
+  } = {},
+) {
   mockDx.mockResolvedValue([]);
-  return render(<PrescriptionPanel encounter={ENC} today="2026-06-22" />);
+  const onReload = vi.fn().mockResolvedValue(undefined);
+  render(
+    <PrescriptionPanel
+      encounter={ENC}
+      today="2026-06-22"
+      patient={opts.patient ?? null}
+      prescriptions={opts.prescriptions ?? []}
+      onReload={onReload}
+    />,
+  );
+  return { onReload };
 }
 
-function addDrug(ingredient: string) {
-  fireEvent.change(screen.getByTestId("rx-picker"), { target: { value: ingredient } });
+function addDrug(value: string) {
+  fireEvent.change(screen.getByTestId("rx-picker"), { target: { value } });
 }
 
-describe("PrescriptionPanel", () => {
-  it("발행된 처방이 없으면 '발행된 처방 없음'을 표시한다", async () => {
-    mockFetch.mockResolvedValue([]);
-    renderPanel();
-    expect(await screen.findByText("발행된 처방 없음")).toBeInTheDocument();
+function issueButton() {
+  return screen.getByRole("button", {
+    name: /처방 발행|알레르기 사유 입력 필요|발행 중/,
+  });
+}
+
+describe("PrescriptionPanel (controlled)", () => {
+  it("발행된 처방이 없으면 빈 상태를 표시한다", () => {
+    renderPanel({ prescriptions: [] });
+    expect(screen.getByText("발행된 처방 없음")).toBeInTheDocument();
   });
 
   it("약품 선택 시 드래프트 라인을 추가한다", async () => {
-    mockFetch.mockResolvedValue([]);
     renderPanel();
-    await screen.findByText("발행된 처방 없음");
     addDrug("ING1");
     expect(await screen.findByText("D-ING1")).toBeInTheDocument();
     expect(screen.getByText("약품-ING1")).toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument(); // 1줄 — 중복 아님
   });
 
-  it("동일 성분을 다시 추가하면 비차단 중복 경고를 표시한다(FR-052)", async () => {
-    mockFetch.mockResolvedValue([]);
+  it("동일 성분 재추가 시 비차단 중복 경고(FR-052)", async () => {
     renderPanel();
-    await screen.findByText("발행된 처방 없음");
     addDrug("ING1#a");
-    addDrug("ING1#b"); // 다른 약품이지만 같은 성분(ING1) 재추가
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("동일 성분 중복");
-    // 비차단: 발행 버튼은 여전히 활성
-    expect(screen.getByRole("button", { name: /처방 발행/ })).not.toBeDisabled();
+    addDrug("ING1#b"); // 다른 약품·같은 성분(ING1)
+    expect(
+      await screen.findByText("동일 성분 중복 — 확인 후 발행"),
+    ).toBeInTheDocument();
+    expect(issueButton()).not.toBeDisabled(); // 비차단
   });
 
   it("서로 다른 성분은 중복 경고를 띄우지 않는다", async () => {
-    mockFetch.mockResolvedValue([]);
     renderPanel();
-    await screen.findByText("발행된 처방 없음");
     addDrug("ING1#a");
     addDrug("ING2#a");
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("동일 성분 중복 — 확인 후 발행"),
+    ).not.toBeInTheDocument();
+    await waitFor(() => expect(mockDx).toHaveBeenCalled()); // diagnoses 비동기 로드 flush
   });
 
-  it("처방 발행 버튼은 createPrescription 을 호출하고 목록을 재조회한다", async () => {
-    mockFetch.mockResolvedValue([]);
+  it("발행은 createPrescription(allergy_override_reason 포함)를 호출하고 onReload 한다", async () => {
     mockCreate.mockResolvedValue({ id: "rx1" } as never);
-    renderPanel();
-    await screen.findByText("발행된 처방 없음");
+    const { onReload } = renderPanel();
     addDrug("ING1");
-    fireEvent.click(screen.getByRole("button", { name: /처방 발행/ }));
+    fireEvent.click(issueButton());
     await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
     expect(mockCreate).toHaveBeenCalledWith("e1", {
       encounter_diagnosis_id: null,
@@ -120,16 +137,50 @@ describe("PrescriptionPanel", () => {
           frequency: null,
           duration_days: null,
           usage_instruction: null,
+          allergy_override_reason: null,
         },
       ],
     });
-    expect(mockFetch).toHaveBeenCalledTimes(2); // 초기 로드 + 발행 후 reload
+    await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
   });
 
-  it("빈 드래프트에서는 처방 발행 버튼이 비활성이다", async () => {
-    mockFetch.mockResolvedValue([]);
+  it("빈 드래프트에서는 발행 버튼이 비활성이다", async () => {
     renderPanel();
-    await screen.findByText("발행된 처방 없음");
-    expect(screen.getByRole("button", { name: /처방 발행/ })).toBeDisabled();
+    expect(issueButton()).toBeDisabled();
+    await waitFor(() => expect(mockDx).toHaveBeenCalled()); // diagnoses 비동기 로드 flush
+  });
+
+  it("기록 알레르기와 약품명 매칭 시 경고+사유 입력, 사유 없으면 발행 차단(UX-DR21②)", async () => {
+    // 약품명 '약품-ING1' 에 알레르기 토큰 'ing1' 부분포함 → 매칭.
+    renderPanel({ patient: { allergies: "ING1" } as Patient });
+    addDrug("ING1");
+    expect(await screen.findByText(/환자 알레르기 약품/)).toBeInTheDocument();
+    expect(issueButton()).toBeDisabled(); // 사유 미입력 → 차단
+  });
+
+  it("알레르기 사유 입력 후 발행하면 override_reason 을 실어 호출한다", async () => {
+    mockCreate.mockResolvedValue({ id: "rx1" } as never);
+    renderPanel({ patient: { allergies: "ING1" } as Patient });
+    addDrug("ING1");
+    await screen.findByText(/환자 알레르기 약품/);
+    fireEvent.change(screen.getByLabelText("알레르기 오버라이드 사유"), {
+      target: { value: "재확인 결과 투여 가능" },
+    });
+    await waitFor(() => expect(issueButton()).not.toBeDisabled());
+    fireEvent.click(issueButton());
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
+    expect(mockCreate).toHaveBeenCalledWith("e1", {
+      encounter_diagnosis_id: null,
+      details: [
+        {
+          drug_id: "ING1",
+          dose: null,
+          frequency: null,
+          duration_days: null,
+          usage_instruction: null,
+          allergy_override_reason: "재확인 결과 투여 가능",
+        },
+      ],
+    });
   });
 });
