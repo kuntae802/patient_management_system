@@ -4,10 +4,15 @@ import { CalendarClock, CalendarOff, Plus } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import { AffectedAppointmentsPanel } from "@/components/admin/affected-appointments-panel";
 import { ConfirmDialog } from "@/components/admin/confirm-dialog";
 import { DoctorScheduleForm } from "@/components/admin/doctor-schedule-form";
 import { DoctorTimeOffForm } from "@/components/admin/doctor-time-off-form";
 import { apiFetch, ApiError } from "@/lib/api/client";
+import {
+  fetchAffectedAppointments,
+  type AffectedAppointment,
+} from "@/lib/scheduling/appointments";
 import { activeMeta, departmentLabel, type Department, type Room } from "@/lib/admin/masters";
 import {
   doctorLabel,
@@ -77,6 +82,31 @@ export function ScheduleManager({
   });
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
   const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
+  // 휴진 영향 예약 패널(Story 6.8) — 휴진 등록 후 자동 또는 행 "영향 예약" 액션으로 오픈. key 로 매 오픈 remount.
+  const [affected, setAffected] = useState<{ doctorName: string; items: AffectedAppointment[] } | null>(
+    null,
+  );
+  const [affectedKey, setAffectedKey] = useState(0);
+
+  // 휴진의 영향 예약(그 의사·booked·기간 겹침)을 조회해 패널 오픈. openWhenEmpty=false 면 0건 시 조용히
+  // (등록 토스트만·UX-DR15 "영향 예약 있으면 표시"). 비활성 휴진은 슬롯 차단 안 함 → 호출부가 거른다.
+  const loadAffected = useCallback(
+    async (timeOff: DoctorTimeOff, openWhenEmpty: boolean) => {
+      try {
+        const rows = await fetchAffectedAppointments(
+          timeOff.doctor_id,
+          timeOff.start_at,
+          timeOff.end_at,
+        );
+        if (rows.length === 0 && !openWhenEmpty) return;
+        setAffectedKey((k) => k + 1);
+        setAffected({ doctorName: doctorLabel(doctors, timeOff.doctor_id), items: rows });
+      } catch (err) {
+        toast.error(err instanceof ApiError ? err.message : "영향 예약을 불러오지 못했습니다.");
+      }
+    },
+    [doctors],
+  );
 
   // 의사 목록은 users RLS(본인행, 0003)라 RSC 직접조회 불가 → 마운트 시 FastAPI(service_role) 조회.
   const loadDoctors = useCallback(async () => {
@@ -227,6 +257,7 @@ export function ScheduleManager({
           pendingIds={pendingIds}
           onEdit={(t) => setTimeOffForm({ open: true, editing: t })}
           onToggleActive={onToggleTimeOff}
+          onShowAffected={(t) => void loadAffected(t, true)}
         />
       )}
 
@@ -244,8 +275,24 @@ export function ScheduleManager({
         editing={timeOffForm.editing}
         doctors={doctors}
         onOpenChange={(open) => setTimeOffForm((s) => ({ ...s, open }))}
-        onSaved={(t) => setTimeOffs((prev) => upsertTimeOff(prev, t))}
+        onSaved={(t) => {
+          setTimeOffs((prev) => upsertTimeOff(prev, t));
+          // 활성 휴진 등록·수정 시 영향 예약이 있으면 재배정 패널을 띄운다(UX-DR15·AC2). 0건이면 조용히.
+          if (t.is_active) void loadAffected(t, false);
+        }}
       />
+
+      {affected && (
+        <AffectedAppointmentsPanel
+          key={affectedKey}
+          open
+          onOpenChange={(open) => {
+            if (!open) setAffected(null);
+          }}
+          doctorName={affected.doctorName}
+          initial={affected.items}
+        />
+      )}
 
       <ConfirmDialog
         open={confirm !== null}
@@ -445,12 +492,14 @@ function TimeOffTable({
   pendingIds,
   onEdit,
   onToggleActive,
+  onShowAffected,
 }: {
   timeOffs: DoctorTimeOff[];
   doctors: SchedulingDoctor[];
   pendingIds: Set<string>;
   onEdit: (t: DoctorTimeOff) => void;
   onToggleActive: (t: DoctorTimeOff) => void;
+  onShowAffected: (t: DoctorTimeOff) => void;
 }) {
   return (
     <TableShell
@@ -482,12 +531,21 @@ function TimeOffTable({
               <ActiveBadge isActive={t.is_active} />
             </td>
             <td className={TD}>
-              <RowActions
-                isActive={t.is_active}
-                pending={pendingIds.has(t.id)}
-                onEdit={() => onEdit(t)}
-                onToggleActive={() => onToggleActive(t)}
-              />
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => onShowAffected(t)}
+                  className="rounded-md border border-primary/45 bg-primary/8 px-2 py-1 text-[12px] text-foreground hover:bg-primary/15"
+                >
+                  영향 예약
+                </button>
+                <RowActions
+                  isActive={t.is_active}
+                  pending={pendingIds.has(t.id)}
+                  onEdit={() => onEdit(t)}
+                  onToggleActive={() => onToggleActive(t)}
+                />
+              </div>
             </td>
           </tr>
         ))}
