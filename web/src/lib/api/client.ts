@@ -45,7 +45,11 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   // 헤더 정규화: 호출자 헤더(Headers/튜플배열/객체 어떤 형태든) 흡수 후 Authorization 을 **마지막에**
   // set → 인증 헤더가 실수로 덮어써지거나 형태 차이로 소실되지 않게 한다. Content-Type 은 미지정 시만.
   const headers = new Headers(init?.headers);
-  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  // FormData(멀티파트 업로드, Story 5.8 영상)는 브라우저가 boundary 포함 Content-Type 을 직접
+  // 설정하므로 JSON 강제를 건너뛴다 — 강제 시 boundary 누락으로 서버 파싱이 실패한다.
+  if (!(init?.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   headers.set("Authorization", `Bearer ${token}`);
 
   let res: Response;
