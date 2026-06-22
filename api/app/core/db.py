@@ -2429,3 +2429,118 @@ async def fetch_bookable_doctors(sub: UUID, department_id: UUID | None) -> list[
         )
 
     return await _run_authed(sub, _op)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 예약 생성 · 캘린더 (Story 6.3 — 0032) — service_role 직접 INSERT(walk-in 패턴)
+# 더블부킹 EXCLUDE(0031, 23P01) → 409 double_booking(서비스 catch, schedule_overlap 동형).
+# 전이/변경/취소·reservation_id 배선 = 6.4(본 스토리는 생성=초기상태 booked 만).
+# ══════════════════════════════════════════════════════════════════════════════
+
+_APPOINTMENT_COLUMNS = (
+    "id, patient_id, doctor_id, department_id, room_id, scheduled_start, scheduled_end, "
+    "status, note, sms_opt_in, created_by, created_at, updated_at"
+)
+
+
+async def _require_appointment_create(conn: asyncpg.Connection) -> None:
+    """쓰기 직전 동일 트랜잭션에서 appointment.create 재평가(TOCTOU 차단). 미보유 → 403."""
+    if not bool(await conn.fetchval("select public.has_permission('appointment.create')")):
+        raise ForbiddenError(detail={"required_permission": "appointment.create"})
+
+
+def _double_booking_error() -> ConflictError:
+    """더블부킹 EXCLUDE(23P01) → 409 double_booking(0030 _schedule_overlap_error 패턴)."""
+    return ConflictError("같은 의사·시간대에 이미 예약이 있습니다.", code="double_booking")
+
+
+async def insert_appointment(
+    sub: UUID,
+    *,
+    patient_id: UUID,
+    doctor_id: UUID,
+    department_id: UUID,
+    room_id: UUID | None,
+    scheduled_start: datetime,
+    scheduled_end: datetime,
+    note: str | None,
+    sms_opt_in: bool,
+    created_by: UUID,
+) -> asyncpg.Record:
+    """예약 INSERT(status='booked'·자동 감사). service_role 직접(insert_walk_in_encounter 패턴):
+    권한·환자/의사/진료과 active 동일-txn 선검사 → INSERT. 더블부킹 EXCLUDE(0031, 23P01) → 409
+    double_booking·FK(23503) → 422 백스톱·미존재 환자 404·비활성 422."""
+
+    async def _op(conn: asyncpg.Connection) -> asyncpg.Record:
+        await _require_appointment_create(conn)
+        # 환자 존재+활성(비활성 환자 예약 차단).
+        patient_active = await conn.fetchval(
+            "select is_active from public.patients where id = $1", patient_id
+        )
+        if patient_active is None:
+            raise NotFoundError("환자를 찾을 수 없습니다.", detail={"patient_id": str(patient_id)})
+        if not patient_active:
+            raise AppError(
+                "비활성 환자는 예약할 수 없습니다.",
+                code="patient_inactive",
+                status_code=422,
+                detail={"patient_id": str(patient_id)},
+            )
+        # 의사(role=doctor·active)·진료과·진료실 배정 가능 검증(6.1 헬퍼 재사용).
+        await _assert_doctor_assignable(conn, doctor_id)
+        await _assert_department_assignable(conn, department_id)
+        if room_id is not None:
+            await _assert_room_assignable(conn, room_id)
+        try:
+            row = await conn.fetchrow(
+                f"insert into public.appointments "
+                f"(patient_id, doctor_id, department_id, room_id, scheduled_start, "
+                f"scheduled_end, note, sms_opt_in, created_by) "
+                f"values ($1, $2, $3, $4, $5, $6, $7, $8, $9) "
+                f"returning {_APPOINTMENT_COLUMNS}",
+                patient_id,
+                doctor_id,
+                department_id,
+                room_id,
+                scheduled_start,
+                scheduled_end,
+                note,
+                sms_opt_in,
+                created_by,
+            )
+        except asyncpg.ExclusionViolationError as exc:
+            raise _double_booking_error() from exc
+        except asyncpg.ForeignKeyViolationError as exc:  # room 등 동시삭제 레이스 백스톱
+            raise AppError(
+                "참조 대상이 올바르지 않습니다(진료실 등).",
+                code="invalid_reference",
+                status_code=422,
+            ) from exc
+        assert row is not None
+        return row
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_appointments_for_date(
+    sub: UUID, doctor_ids: list[UUID], range_start: datetime, range_end: datetime
+) -> list[asyncpg.Record]:
+    """캘린더 overlay 용 — 의사들의 해당 날짜(UTC 범위) 예약 + 환자명. staff 캘린더
+    (appointment.read)라 환자명 반환 OK(대기 현황판 4.3 선례). booked·cancelled·no_show·
+    completed 전부(상태별 렌더). service_role(RLS 우회)."""
+
+    async def _op(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+        return await conn.fetch(
+            "select a.id, a.doctor_id, a.scheduled_start, a.scheduled_end, a.status, "
+            "  p.name as patient_name "
+            "from public.appointments a "
+            "join public.patients p on p.id = a.patient_id "
+            "where a.doctor_id = any($1::uuid[]) "
+            "  and a.scheduled_start < $3 and a.scheduled_end > $2 "
+            "order by a.scheduled_start",
+            doctor_ids,
+            range_start,
+            range_end,
+        )
+
+    return await _run_authed(sub, _op)

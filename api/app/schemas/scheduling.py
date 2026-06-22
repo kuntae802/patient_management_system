@@ -123,3 +123,65 @@ class SlotGridResponse(BaseModel):
     date: date
     slot_minutes: int
     slots: list[Slot]
+
+
+# ── 예약 생성 · 캘린더 (Story 6.3) ─────────────────────────────────────────────
+
+
+class AppointmentCreate(BaseModel):
+    """booking-peek 예약 생성 요청. scheduled_end 는 서버가 +SLOT_MINUTES 로 계산(클라 미신뢰)."""
+
+    department_id: UUID
+    doctor_id: UUID
+    patient_id: UUID
+    scheduled_start: datetime
+    note: _Stripped | None = Field(default=None, max_length=500)
+    sms_opt_in: bool = False
+
+
+class AppointmentResponse(BaseModel):
+    """예약 응답(생성 공용)."""
+
+    id: UUID
+    patient_id: UUID
+    doctor_id: UUID
+    department_id: UUID
+    room_id: UUID | None = None
+    scheduled_start: datetime
+    scheduled_end: datetime
+    status: str
+    note: str | None = None
+    sms_opt_in: bool
+    created_at: datetime
+
+
+# 캘린더 슬롯 상태 = 가용(available/time_off/past) + 예약 overlay(confirmed/완료/노쇼/취소).
+CalendarSlotStatus = Literal[
+    "available", "confirmed", "completed", "no_show", "cancelled", "time_off", "past"
+]
+
+
+class CalendarSlot(BaseModel):
+    """캘린더 1슬롯 — 가용/예약 합성. patient_name·appointment_id 는 예약 overlay 시에만."""
+
+    start: datetime
+    end: datetime
+    status: CalendarSlotStatus
+    patient_name: str | None = None
+    appointment_id: UUID | None = None
+
+
+class DoctorColumn(BaseModel):
+    """캘린더 의사 열 — 의사 1명의 하루 슬롯."""
+
+    doctor_id: UUID
+    doctor_name: str
+    slots: list[CalendarSlot]
+
+
+class CalendarResponse(BaseModel):
+    """진료과·날짜(KST)의 예약 캘린더(시간레일 × 의사 열·일 보기)."""
+
+    date: date
+    slot_minutes: int
+    doctors: list[DoctorColumn]
