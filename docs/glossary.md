@@ -316,6 +316,18 @@
 
 > **오더 도메인 경계(Story 5.1 확정):** 유형별 per-table 상태머신(통합 orders 테이블 없음 — `order`=총칭 추상, 우 오더 패널 5.5 가 query/UI union). **오더 생성(처방 발행 5.2·검사/처치 지시 5.3/5.4) INSERT = service_role 직접**(walk-in/medical_records 선례·RPC 아님·API TOCTOU 권한 재평가) — 본 스토리는 스키마 + 초기상태 트리거 가드 + 전진 RPC만. 감사 스냅샷 = FK·플래그·숫자·짧은 구조화 텍스트(약품=`drug_id` FK 불투명·dose/frequency 는 조인 없이 무의미) → **`_SENSITIVE_KEY` 마스킹 집합 무변경**(encounter_diagnoses 동일 FK posture). 자유 임상 서사(판독 소견 5.9·처치 수행 내용 5.7)는 소유 스토리가 컬럼+마스킹 동반 추가(본 파일은 자유 서사 컬럼 0). **마이그 번호 0015**(에픽/아키 stale `0009_orders` — 실제 0015·Epic 5 블록 0015~0029 고정·Epic 6 워크트리 0030~ 비침범). 적용된 마이그레이션은 0001~0015. **수가 자동발생 트리거·`fee_mappings`=5.10·알레르기 교차검증=5.5·영상 업로드=5.8·dispense/order-cancel·내원상태 게이트·앱 낙관적 잠금=이월**.
 
+### 처방 오더 발행·조회 API (Story 5.2)
+
+| 식별자 | 종류 | 의미·계약 |
+|---|---|---|
+| `POST /encounters/{id}/prescriptions` | 경로(api·`orders`·`tags=orders`) | 처방전 발행(FR-050·051) — 헤더 + N 상세 라인 **원자적 1 POST**(처방전=함께 발행되는 단위·1:N). 게이트 `prescription.create`(의사). 약품=`drug_id` 마스터 FK(free-text 차단). 근거 진단 `encounter_diagnosis_id` 선택(같은 내원·활성 검증 → 422 `invalid_diagnosis_reference`). 미존재 내원 404·잘못된 약품 422 `invalid_reference`·빈 details 422(Pydantic min_length) |
+| `GET /encounters/{id}/prescriptions` | 경로(api·`orders`) | 발행 처방전 목록(헤더 최신순 + 상세 `drugs` 조인 `drug_code`·`drug_name`·`ingredient_code`). 게이트 `order.read`(의사·간호·방사선·원무 제외) → reception 403·nurse 200. 직접 배열(`{data,meta}` 봉투 아님) |
+| `insert_prescription` / `fetch_prescriptions` / `_require_prescription_create` | 함수(`core/db`) | service_role 직접 INSERT(헤더+상세 단일 txn·`attach_diagnosis` 미러)·TOCTOU 재평가. ⚠️ `dose`=numeric → `Decimal(str(dose))` 변환(asyncpg float 거부). 응답=순수 dict 트리(`{**dict(header),"details":[dict(d)…]}` — 중첩 Record 직접 model_validate 불가) |
+| `schemas/orders.py` · `services/orders.py` · `api/v1/orders.py` | 모듈(신규) | 오더 도메인 모듈(router.py 가 선언한 orders — 후속 5.3/5.4 합류). `PrescriptionCreate`(details min_length=1)·`PrescriptionResponse`(nested details). db.py 는 단일 유지(오더 섹션 append) |
+| `prescription-panel.tsx` · `lib/encounters/prescriptions.ts` · `issuedIngredientCodes` | 웹(신규) | 진료 허브 우 오더 pane(encounter-hub placeholder 교체·처방만=5.2). MasterSearchPicker `kind=drug` 단일 어더로 드래프트 라인 누적 → 발행. 근거 진단=`fetchEncounterDiagnoses` 재사용. **FR-052 동일 성분 중복 경고 = 클라 측 `ingredient_code` 비교(비차단 인라인)** = (발행 처방 활성 상세 ∪ 현 드래프트). 데모 약품 17종 성분 고유 → 같은 약 재추가로 데모 |
+
+> **처방 발행 경계(Story 5.2 확정):** **신규 마이그/신규 권한/admin 부트 grant/감사 마스킹 변경 = 전부 0** — `prescription.create`(0002 기존·admin 보유)·`order.read`(doctor 5.1 기보유) 소비만 → 4.6/4.7/5.1 의 "신규권한→admin 재grant" 함정 비해당, `test_admin_role_has_all_permissions` 회귀 0. **403 baseline = reception(오더 0) + nurse(order.read 有/prescription.create 無 = read-yes/create-no)**. nurse 이관 0건(비중첩 권한). **처방 취소/정정/dispense=Epic 7(7.7)·알레르기 교차검증 하드블록=5.5·신원확인 다이얼로그=Epic 7·오더-by-내원상태 게이트·앱 낙관적 잠금=이월**.
+
 ## 근무표 · 휴진 (Story 6.1, `0030_doctor_schedules.sql`)
 
 > ⚠️ **마이그 번호 0030**: Epic 6 = 병렬 worktree → 마이그 블록 0030~(main 0014/Epic5 0015~0029 와 충돌 회피). 에픽/아키 묶음 계획 `0011_scheduling.sql`(3테이블)을 **스토리별 분리**(4.6/4.7 선례) → 6.1 = 근무표·휴진 2테이블만, **예약(appointments)·예약 생성·`encounters.reservation_id` FK·더블부킹은 booking 스토리(6.2/6.3)** 소유.

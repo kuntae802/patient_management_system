@@ -270,3 +270,7 @@
 - **completed·in_progress 예약이 자기 슬롯 미차단** [supabase/migrations/0031_appointments.sql EXCLUDE·db.py `fetch_booked_appointments_in_range`] — 더블부킹 EXCLUDE·슬롯 차감 모두 `status='booked'` 만 본다. `completed`(도착·진료완료)/향후 `in_progress` 예약은 슬롯을 비우고 EXCLUDE 도 막지 않는다. 6.2 엔 예약 전이 경로 부재로 `completed` 도달 불가(전이 RPC=6.3/6.4)·완료 예약 슬롯은 과거→`past` → 실무 영향 미미. 6.3/6.4 가 booking→completed 전이 추가 시 "점유 슬롯=booked∪completed(∪in_progress)" 차감/EXCLUDE 확장 여부 결정(특히 당일 조기 완료된 미래 슬롯 재예약 방지).
 
 - **부분 진료과 로드 실패 UX** [web/src/components/scheduling/slot-availability.tsx `loadRefs`] — `Promise.all` 의 Supabase 진료과 조회 실패 시 에러 배너 + 빈 진료과 picker 가 공존하고 재시도 affordance 가 없다(`allDoctors` 는 정상 로드 가능 → 어느 호출 실패인지 불명확). 엣지·저영향. 해소: 자원별 부분 강등 + 재시도 버튼(masters fetchMasters 부분 강등 패턴).
+
+## Deferred from: code review of 5-2-처방-오더-발행-중복-경고 (2026-06-22)
+
+- **오더 발행 시 마스터·내원 상태 미검증** [api/app/core/db.py `insert_prescription`] — 처방 발행은 `drug_id` FK 존재만 검사(23503→422)하고 약품 `is_active`/effective 윈도우, 내원 `status`(완료/취소), 내원 `is_active`(soft-delete)를 재검증하지 않는다. 웹 `MasterSearchPicker` 는 currently-valid drug 만 노출하고 허브는 `in_progress` 에서만 렌더(UI 1차선)하나, 직접 API·stale 탭은 우회 가능. 기존 sibling posture(`attach_diagnosis`·`insert_medical_record` 동형) + "FK active/effective DB 미강제"(5.1 defer③·walk-in is_active TOCTOU 묶음) + "오더-by-내원상태 게이트 이월"(4.6 §결정4) 자세 계승 → 5.2 가 drug 에 대해 새로 노출하는 동일 갭. 해소: 발행 직전 동일 txn 에서 drug active/effective·내원 status/is_active 재검증(`insert_walk_in_encounter` 의 patient/dept active 가드 미러) → 422/409. 마스터 불변식 일관 정책 스토리에서 일괄 처리 권장.
