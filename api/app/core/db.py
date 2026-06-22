@@ -24,6 +24,7 @@ import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time
+from decimal import Decimal
 from uuid import UUID
 
 import asyncpg
@@ -2427,5 +2428,157 @@ async def fetch_bookable_doctors(sub: UUID, department_id: UUID | None) -> list[
             "order by u.name",
             department_id,
         )
+
+    return await _run_authed(sub, _op)
+
+
+# ── 오더(orders, Story 5.2~) — 처방 발행·조회 (service_role 직접 INSERT, 0015) ────────────
+# 처방전 = 헤더(prescriptions) + 1:N 상세(prescription_details). 발행 = service_role 직접 INSERT
+# (전이 RPC 아님 — 자유 CRUD, medical_records/diagnoses 선례). 권한은 쓰기 직전 동일 txn 재평가.
+# 0015 전이 트리거가 INSERT status='issued' 강제(5.2 는 전이 미발생 — dispense=Epic 7). 응답 =
+# drugs 조인(drug_code·drug_name·ingredient_code — ingredient_code 는 FR-052 중복 비교 키).
+# 감사 = 0015 트리거 자동. diagnosis_id/drug_id = FK → _SENSITIVE_KEY 무변경.
+_PRESCRIPTION_COLUMNS = (
+    "pr.id, pr.encounter_id, pr.encounter_diagnosis_id, pr.status, pr.ordered_by, "
+    "pr.ordered_at, pr.dispensed_at, pr.is_active, pr.created_at, pr.updated_at"
+)
+_PRESCRIPTION_DETAIL_COLUMNS = (
+    "pd.id, pd.prescription_id, pd.drug_id, dr.code as drug_code, dr.name as drug_name, "
+    "dr.ingredient_code, pd.dose, pd.frequency, pd.duration_days, pd.usage_instruction, "
+    "pd.is_active, pd.created_at, pd.updated_at"
+)
+_PRESCRIPTION_DETAIL_FROM = (
+    "from public.prescription_details pd join public.drugs dr on dr.id = pd.drug_id"
+)
+
+
+async def _require_prescription_create(conn: asyncpg.Connection) -> None:
+    """쓰기 직전 동일 txn 에서 prescription.create 재평가(평가↔쓰기 TOCTOU). 미보유 → 403."""
+    if not bool(await conn.fetchval("select public.has_permission('prescription.create')")):
+        raise ForbiddenError(detail={"required_permission": "prescription.create"})
+
+
+async def _fetch_prescription_details(
+    conn: asyncpg.Connection, prescription_id: UUID
+) -> list[asyncpg.Record]:
+    """한 처방전의 상세 라인(drugs 조인·활성만·부착순) — 쓰기 후 응답·조회 공용."""
+    return await conn.fetch(
+        f"select {_PRESCRIPTION_DETAIL_COLUMNS} {_PRESCRIPTION_DETAIL_FROM} "
+        f"where pd.prescription_id = $1 and pd.is_active = true "
+        f"order by pd.created_at asc, pd.id asc",
+        prescription_id,
+    )
+
+
+async def insert_prescription(
+    sub: UUID,
+    *,
+    encounter_id: UUID,
+    ordered_by: UUID,
+    encounter_diagnosis_id: UUID | None,
+    details: list[dict[str, object]],
+) -> dict[str, object]:
+    """처방전 발행 — 헤더 1 + 상세 N 을 단일 txn 에 INSERT(자동 감사). ordered_by=발행 의사.
+
+    내원 존재 선검사(미존재 404). encounter_diagnosis_id 제공 시 그 내원 소속·활성 검증(타 내원/
+    비활성 진단 연결 차단 → 422 — FK 만으론 소속 미보증, FR-051). 헤더 status 는 DB 기본값 'issued'
+    (0015 전이 트리거 강제). 상세 drug_id 는 마스터 FK — 잘못된 drug_id(23503) → 422 백스톱
+    (attach_diagnosis 선례). dose 는 numeric → Decimal 변환(asyncpg 가 float 거부). 권한은 INSERT
+    직전 재평가(TOCTOU). 반환 = {헤더..., "details": [상세 조인 dict...]} (서비스가 매핑).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        await _require_prescription_create(conn)
+        exists = await conn.fetchval(
+            "select true from public.encounters where id = $1", encounter_id
+        )
+        if exists is None:
+            raise NotFoundError(
+                "내원을 찾을 수 없습니다.", detail={"encounter_id": str(encounter_id)}
+            )
+        if encounter_diagnosis_id is not None:
+            # 근거 진단은 같은 내원의 활성 부착 진단이어야 한다(FR-051). FK 는 존재만 보증.
+            belongs = await conn.fetchval(
+                "select true from public.encounter_diagnoses "
+                "where id = $1 and encounter_id = $2 and is_active = true",
+                encounter_diagnosis_id,
+                encounter_id,
+            )
+            if belongs is None:
+                raise AppError(
+                    "이 내원의 진단이 아닙니다(처방 근거).",
+                    code="invalid_diagnosis_reference",
+                    status_code=422,
+                    detail={"encounter_diagnosis_id": str(encounter_diagnosis_id)},
+                )
+        try:
+            header = await conn.fetchrow(
+                "insert into public.prescriptions "
+                "(encounter_id, encounter_diagnosis_id, ordered_by) "
+                "values ($1, $2, $3) returning id",
+                encounter_id,
+                encounter_diagnosis_id,
+                ordered_by,
+            )
+            assert header is not None  # RETURNING 은 항상 1행
+            prescription_id = header["id"]
+            for line in details:
+                dose = line.get("dose")
+                await conn.execute(
+                    "insert into public.prescription_details "
+                    "(prescription_id, drug_id, dose, frequency, duration_days, usage_instruction) "
+                    "values ($1, $2, $3, $4, $5, $6)",
+                    prescription_id,
+                    line["drug_id"],
+                    Decimal(str(dose)) if dose is not None else None,  # numeric=Decimal 필수
+                    line.get("frequency"),
+                    line.get("duration_days"),
+                    line.get("usage_instruction"),
+                )
+        except asyncpg.ForeignKeyViolationError as exc:
+            # 잘못된 drug_id(또는 동시 삭제 레이스의 진단) 23503 → 입력 오류 422(미매핑 시 503).
+            raise AppError(
+                "참조 대상이 올바르지 않습니다(약품·진단).",
+                code="invalid_reference",
+                status_code=422,
+            ) from exc
+        header_full = await conn.fetchrow(
+            f"select {_PRESCRIPTION_COLUMNS} from public.prescriptions pr where pr.id = $1",
+            prescription_id,
+        )
+        assert header_full is not None
+        detail_rows = await _fetch_prescription_details(conn, prescription_id)
+        return {**dict(header_full), "details": [dict(r) for r in detail_rows]}
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_prescriptions(sub: UUID, encounter_id: UUID) -> list[dict[str, object]]:
+    """한 내원의 발행 처방전 목록(헤더 최신순 + 상세 drugs 조인, 활성만). 게이트=라우터(order.read).
+
+    service_role 경로라 RLS 우회 — 조회 권위는 라우터 require_permission(읽기 TOCTOU 저위험,
+    fetch_encounter_diagnoses 동형). 반환 = [{헤더..., "details":[...]}] (서비스가 매핑).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[dict[str, object]]:
+        headers = await conn.fetch(
+            f"select {_PRESCRIPTION_COLUMNS} from public.prescriptions pr "
+            f"where pr.encounter_id = $1 and pr.is_active = true "
+            f"order by pr.created_at desc, pr.id desc",
+            encounter_id,
+        )
+        if not headers:
+            return []
+        # 상세는 헤더 전체를 한 번에 조회(N+1 회피) 후 prescription_id 로 그룹핑.
+        detail_rows = await conn.fetch(
+            f"select {_PRESCRIPTION_DETAIL_COLUMNS} {_PRESCRIPTION_DETAIL_FROM} "
+            f"where pd.prescription_id = any($1::uuid[]) and pd.is_active = true "
+            f"order by pd.created_at asc, pd.id asc",
+            [h["id"] for h in headers],
+        )
+        grouped: dict[object, list[dict[str, object]]] = {}
+        for r in detail_rows:
+            grouped.setdefault(r["prescription_id"], []).append(dict(r))
+        return [{**dict(h), "details": grouped.get(h["id"], [])} for h in headers]
 
     return await _run_authed(sub, _op)
