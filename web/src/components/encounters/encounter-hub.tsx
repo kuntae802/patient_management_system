@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ConsultationWorkspace } from "@/components/encounters/consultation-workspace";
 import { PatientBanner } from "@/components/encounters/patient-banner";
 import { PatientContextPanel } from "@/components/encounters/patient-context-panel";
+import { PrescriptionPanel } from "@/components/encounters/prescription-panel";
 import { StatusBadge } from "@/components/encounters/status-badge";
 import { useActiveEncounter } from "@/hooks/use-active-encounter";
 import { ApiError } from "@/lib/api/client";
@@ -162,10 +163,8 @@ export function EncounterHub({ encounterId, today }: { encounterId: string; toda
             />
             {/* 중앙 작성 = 진단 블록(4.7) + SOAP ledger(4.6) + 진료 완료 액션(4.7). */}
             <ConsultationWorkspace encounter={encounter} today={today} />
-            <section className="rounded-xl border border-dashed border-border bg-card/60 px-4 py-6">
-              <h2 className="text-[13px] font-semibold text-foreground">오더</h2>
-              <p className="mt-1.5 text-[12px] text-muted-foreground">처방·검사·영상·처치 (Epic 5)</p>
-            </section>
+            {/* 우 오더 pane = 처방(5.2). 검사/영상/처치 탭·전체 UX-DR13 통합은 5.3/5.4/5.5. */}
+            <PrescriptionPanel encounter={encounter} today={today} />
           </div>
         </div>
       )}
