@@ -96,3 +96,83 @@ class VitalsWorklistItem(BaseModel):
     status: str
     created_at: datetime
     latest_vital_recorded_at: datetime | None = None
+
+
+# ── 처치 수행·일상 간호기록(Story 5.7 / FR-090·FR-092·FR-093·FR-094) ──────────────────
+# 처치 수행 = perform_treatment_order RPC(ordered→performed·재수행 차단). 수행 시 처치기록
+# 내용(content) 첨부 = 선택(연결 nursing_record). 일상 간호기록 = 오더 없음(treatment_order_id
+# NULL). content = 자유 임상 서사(감사 마스킹) — 빈/공백 차단(클라·Pydantic·DB CHECK 3중).
+
+# 간호기록 본문 — 빈/공백 차단(strip 후 1자 이상) + 상한(자유 서사 합리적 한도, max_length).
+_NursingContent = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)
+]
+
+
+class TreatmentPerformBody(BaseModel):
+    """처치 오더 수행 요청(Story 5.7 AC1, FR-092). content = 처치기록 내용(선택).
+
+    수행자·시각은 RPC 가 항상 기록(performed_by/performed_at). content 입력 시 해당 오더에 연결된
+    nursing_record(treatment_order_id 부착)를 같은 액션에서 생성(사용자 확정: content 선택 입력).
+    빈/공백 content 는 None 정규화(연결 기록 미생성).
+    """
+
+    content: _Stripped | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def _empty_content_to_none(self) -> TreatmentPerformBody:
+        """빈/공백 content 를 None 으로 정규화(연결 nursing_record 미생성 — 수행만)."""
+        if not self.content:
+            self.content = None
+        return self
+
+
+class NursingRecordCreate(BaseModel):
+    """일상 간호기록 생성 요청(Story 5.7 AC3, FR-094). 오더 없음 — content 만(필수·빈값 차단).
+
+    treatment_order_id 는 클라 미수용(일상 기록 = NULL 고정 — 오더 연결은 처치 수행 액션이 소유).
+    content 는 strip 후 min_length=1(빈/공백 422). DB CHECK(content_not_blank) 최종선.
+    """
+
+    content: _NursingContent
+
+
+class NursingRecordResponse(BaseModel):
+    """간호기록 응답(0018 nursing_record + users 조인). snake_case 유지 — camelCase 변환 금지.
+
+    treatment_order_id = 처치 수행 연결(있으면) / 일상 기록(None). content = 자유 임상 서사(마스킹).
+    recorded_by_name = users 조인(기록자 표시).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    encounter_id: UUID
+    treatment_order_id: UUID | None = None
+    content: str
+    recorded_by: UUID
+    recorded_by_name: str | None = None  # users 조인(기록자)
+    recorded_at: datetime
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class NursingWorklistItem(BaseModel):
+    """간호 워크리스트 1행(Story 5.7) — 오늘 활성 내원 + patients·dept 조인 + 처치·간호기록 건수.
+
+    게이트 require_any(treatment.perform ∨ nursing.record). 비-PII 투영. /nurse/worklist=
+    pending_treatment_count>0 강조 · /nurse/notes=전체.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    encounter_id: UUID
+    chart_no: str
+    patient_name: str
+    department_name: str
+    status: str
+    created_at: datetime
+    pending_treatment_count: int
+    oldest_pending_ordered_at: datetime | None = None  # 지연 디텍터(UX-DR21 ⑥)
+    nursing_record_count: int

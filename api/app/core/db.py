@@ -2989,6 +2989,198 @@ async def fetch_vitals_worklist(sub: UUID, on_date: date) -> list[dict[str, obje
     return await _run_authed(sub, _op)
 
 
+# ── 간호 처치 수행·일상 간호기록(Story 5.7 / FR-090·FR-092·FR-093·FR-094) — 0018 nursing_record ──
+# 처치 수행 = perform_treatment_order RPC(0015 — ordered→performed·소스상태 precondition=재수행 차단
+# FR-093·performed_by/at 세팅·자가 게이트). 래퍼=call_start_consult 동형(RPC SQLSTATE →
+# _map_pg_sqlstate 자동 매핑·try/except 불요). 간호기록 = service_role 직접 INSERT(자유텍스트·
+# insert_vital_signs 자세). content=자유 임상 서사(감사 마스킹). users 조인=기록자명.
+_NURSING_RECORD_COLUMNS = (
+    "nr.id, nr.encounter_id, nr.treatment_order_id, nr.content, "
+    "nr.recorded_by, ur.name as recorded_by_name, nr.recorded_at, "
+    "nr.is_active, nr.created_at, nr.updated_at"
+)
+_NURSING_RECORD_FROM = (
+    "from public.nursing_record nr left join public.users ur on ur.id = nr.recorded_by"
+)
+
+
+async def _require_nursing_record(conn: asyncpg.Connection) -> None:
+    """쓰기 직전 동일 txn 에서 nursing.record 재평가(평가↔쓰기 TOCTOU). 미보유 → 403.
+
+    라우터 게이트는 방어심층 — 진짜 권위는 이 동일 txn 재평가(_require_vital_record 선례).
+    """
+    if not bool(await conn.fetchval("select public.has_permission('nursing.record')")):
+        raise ForbiddenError(detail={"required_permission": "nursing.record"})
+
+
+async def call_perform_treatment_order(
+    sub: UUID, *, encounter_id: UUID, order_id: UUID, content: str | None
+) -> dict[str, object]:
+    """처치 오더 수행(FR-090·FR-092·FR-093) — perform_treatment_order RPC(ordered→performed).
+
+    경로 정합 선검사(order 가 해당 내원·활성 — 미존재/불일치 404, RPC PT404 보다 친절). RPC 가 권한
+    (42501→403)·재수행 차단(PT409→409 invalid_transition) raise → _map_pg_sqlstate 자동 매핑
+    (call_start_consult 동형). content 입력 시 같은 txn 에서 연결 nursing_record 생성
+    (treatment_order_id 부착·recorded_by=수행 간호사). 반환 = fee/users 조인 dict.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        belongs = await conn.fetchval(
+            "select true from public.treatment_orders "
+            "where id = $1 and encounter_id = $2 and is_active = true",
+            order_id,
+            encounter_id,
+        )
+        if belongs is None:
+            raise NotFoundError("처치 오더를 찾을 수 없습니다.", detail={"order_id": str(order_id)})
+        # 전이 RPC(SECURITY DEFINER·재수행 차단). SQLSTATE → _run_authed 매핑(여기 try/except 불요).
+        await conn.fetchrow("select * from public.perform_treatment_order($1)", order_id)
+        if content is not None:
+            # 처치기록 내용(선택) → 연결 nursing_record(동일 txn). content=Pydantic 비-blank 보장.
+            # 선검사로 입력 유효(encounter/order 존재·content 비-blank)라 도달 불가하나,
+            # insert_nursing_record 와 동일 422 계약 유지(방어심층 — FK/CHECK 미매핑 500 회피).
+            try:
+                await conn.execute(
+                    "insert into public.nursing_record "
+                    "(encounter_id, treatment_order_id, content, recorded_by) "
+                    "values ($1, $2, $3, $4)",
+                    encounter_id,
+                    order_id,
+                    content,
+                    sub,
+                )
+            except asyncpg.ForeignKeyViolationError as exc:
+                raise AppError(
+                    "참조 대상이 올바르지 않습니다(내원/처치 오더).",
+                    code="invalid_reference",
+                    status_code=422,
+                ) from exc
+            except asyncpg.CheckViolationError as exc:
+                raise AppError(
+                    "간호기록 내용이 올바르지 않습니다.",
+                    code="invalid_nursing_record",
+                    status_code=422,
+                ) from exc
+        full = await conn.fetchrow(
+            f"select {_TREATMENT_ORDER_COLUMNS} {_TREATMENT_ORDER_FROM} where tr.id = $1",
+            order_id,
+        )
+        assert full is not None  # 선검사로 행 존재 확정
+        return dict(full)
+
+    return await _run_authed(sub, _op)
+
+
+async def insert_nursing_record(
+    sub: UUID,
+    *,
+    encounter_id: UUID,
+    treatment_order_id: UUID | None,
+    content: str,
+    recorded_by: UUID,
+) -> dict[str, object]:
+    """일상 간호기록 생성(FR-094) — nursing_record 단건 INSERT(자동 감사). recorded_by=기록 간호사.
+
+    내원 존재 선검사(미존재 404). 권한은 INSERT 직전 nursing.record 재평가(TOCTOU). 잘못된 FK(23503)
+    → 422, 빈/공백 content(CHECK 23514·직접 API) → 422 백스톱(Pydantic 1차·DB 최종선). 일상 기록은
+    treatment_order_id=None(오더 연결은 처치 수행 액션 소유). 반환 = users 조인 dict.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        await _require_nursing_record(conn)
+        exists = await conn.fetchval(
+            "select true from public.encounters where id = $1", encounter_id
+        )
+        if exists is None:
+            raise NotFoundError(
+                "내원을 찾을 수 없습니다.", detail={"encounter_id": str(encounter_id)}
+            )
+        try:
+            row = await conn.fetchrow(
+                "insert into public.nursing_record "
+                "(encounter_id, treatment_order_id, content, recorded_by) "
+                "values ($1, $2, $3, $4) returning id",
+                encounter_id,
+                treatment_order_id,
+                content,
+                recorded_by,
+            )
+        except asyncpg.ForeignKeyViolationError as exc:
+            # 잘못된 내원/처치 오더 FK(또는 동시삭제 레이스) 23503 → 입력 오류 422.
+            raise AppError(
+                "참조 대상이 올바르지 않습니다(내원/처치 오더).",
+                code="invalid_reference",
+                status_code=422,
+            ) from exc
+        except asyncpg.CheckViolationError as exc:
+            # 빈/공백 content CHECK(직접 API 우회) → 422(서버 Pydantic 1차 차단·DB 최종선).
+            raise AppError(
+                "간호기록 내용이 올바르지 않습니다.",
+                code="invalid_nursing_record",
+                status_code=422,
+            ) from exc
+        assert row is not None  # RETURNING 은 항상 1행
+        full = await conn.fetchrow(
+            f"select {_NURSING_RECORD_COLUMNS} {_NURSING_RECORD_FROM} where nr.id = $1", row["id"]
+        )
+        assert full is not None
+        return dict(full)
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_nursing_records(sub: UUID, encounter_id: UUID) -> list[dict[str, object]]:
+    """한 내원의 간호기록 목록(최신순·활성만, users 조인). 게이트=order.read ∨ nursing.record.
+
+    service_role 경로라 RLS 우회 — 권위는 라우터 require_any_permission(읽기 TOCTOU 저위험,
+    fetch_vital_signs 동형). 처치 수행 연결(treatment_order_id) + 일상 기록(None) 포함.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[dict[str, object]]:
+        rows = await conn.fetch(
+            f"select {_NURSING_RECORD_COLUMNS} {_NURSING_RECORD_FROM} "
+            f"where nr.encounter_id = $1 and nr.is_active = true "
+            f"order by nr.recorded_at desc, nr.id desc",
+            encounter_id,
+        )
+        return [dict(r) for r in rows]
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_nursing_worklist(sub: UUID, on_date: date) -> list[dict[str, object]]:
+    """간호 워크리스트(Story 5.7) — 오늘(KST) 활성 내원 + 처치·간호기록 건수.
+
+    게이트=라우터(require_any treatment.perform ∨ nursing.record). service_role 경로라 RLS 우회.
+    patients·departments 조인=비-PII 투영(fetch_vitals_worklist 자세). pending_treatment_count=
+    'ordered' 처치(수행 대상)·nursing_record_count=기록 누적(상관 서브쿼리). pending>0=처치 우선.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> list[dict[str, object]]:
+        rows = await conn.fetch(
+            "select e.id as encounter_id, p.chart_no, p.name as patient_name, "
+            "d.name as department_name, e.status, e.created_at, "
+            "(select count(*) from public.treatment_orders tr "
+            " where tr.encounter_id = e.id and tr.status = 'ordered' and tr.is_active = true) "
+            " as pending_treatment_count, "
+            "(select min(tr.ordered_at) from public.treatment_orders tr "
+            " where tr.encounter_id = e.id and tr.status = 'ordered' and tr.is_active = true) "
+            " as oldest_pending_ordered_at, "
+            "(select count(*) from public.nursing_record nr "
+            " where nr.encounter_id = e.id and nr.is_active = true) as nursing_record_count "
+            "from public.encounters e "
+            "join public.patients p on p.id = e.patient_id "
+            "join public.departments d on d.id = e.department_id "
+            "where e.is_active = true and e.status in ('registered', 'in_progress') "
+            "and (e.created_at at time zone 'Asia/Seoul')::date = $1 "
+            "order by e.created_at asc",
+            on_date,
+        )
+        return [dict(r) for r in rows]
+
+    return await _run_authed(sub, _op)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 예약 생성 · 캘린더 (Story 6.3 — 0032) — service_role 직접 INSERT(walk-in 패턴)
 # 더블부킹 EXCLUDE(0031, 23P01) → 409 double_booking(서비스 catch, schedule_overlap 동형).

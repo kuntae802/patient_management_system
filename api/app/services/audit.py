@@ -25,10 +25,11 @@ from app.schemas.audit import AuditLogEntry, AuditLogPage, AuditPageMeta
 # 항상-민감 키(table-agnostic) — 연락처·건강민감(프로필·SOAP)·암호/비밀. 어느 테이블이든 마스킹.
 # SOAP(subjective/objective/assessment/plan) = medical_records 자유텍스트(Story 4.6).
 # allergy_override_reason = prescription_details 알레르기 오버라이드 사유 자유텍스트(Story 5.5).
+# content = nursing_record 간호기록/처치 수행 내용 자유 임상 서사(Story 5.7).
 _SENSITIVE_KEY = re.compile(
     r"(resident_no|rrn|ssn|password|passwd|secret|token|email|phone|address|guardian"
     r"|allergies|chronic_diseases|medications|notes|insurance_no"
-    r"|subjective|objective|assessment|plan|allergy_override_reason"
+    r"|subjective|objective|assessment|plan|allergy_override_reason|content"
     r"|_enc$|_hash$|_blind_index$|ciphertext)",
     re.IGNORECASE,
 )

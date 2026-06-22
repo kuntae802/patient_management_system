@@ -15,7 +15,16 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from app.core import db
-from app.schemas.nursing import VitalSignsCreate, VitalSignsResponse, VitalsWorklistItem
+from app.schemas.nursing import (
+    NursingRecordCreate,
+    NursingRecordResponse,
+    NursingWorklistItem,
+    TreatmentPerformBody,
+    VitalSignsCreate,
+    VitalSignsResponse,
+    VitalsWorklistItem,
+)
+from app.schemas.orders import TreatmentOrderResponse
 
 _KST = ZoneInfo("Asia/Seoul")
 
@@ -59,3 +68,53 @@ async def list_vitals_worklist(sub: UUID) -> list[VitalsWorklistItem]:
     today = datetime.now(_KST).date()
     rows = await db.fetch_vitals_worklist(sub, today)
     return [VitalsWorklistItem.model_validate(r) for r in rows]
+
+
+# ── 처치 수행·일상 간호기록(Story 5.7 / FR-090·FR-092·FR-093·FR-094) ──────────────────
+
+
+async def perform_treatment_order(
+    sub: UUID, encounter_id: UUID, order_id: UUID, payload: TreatmentPerformBody
+) -> TreatmentOrderResponse:
+    """처치 오더 수행(FR-090·FR-092·FR-093) — perform_treatment_order RPC(ordered→performed).
+
+    재수행(이미 performed) → 409 invalid_transition, 미존재 → 404, 권한 → 403(db/RPC raise).
+    content 입력 시 연결 nursing_record 생성. 응답 = 갱신된 처치 오더(performed_by/at 반영).
+    """
+    row = await db.call_perform_treatment_order(
+        sub, encounter_id=encounter_id, order_id=order_id, content=payload.content
+    )
+    return TreatmentOrderResponse.model_validate(row)
+
+
+async def create_nursing_record(
+    sub: UUID, encounter_id: UUID, payload: NursingRecordCreate
+) -> NursingRecordResponse:
+    """일상 간호기록 생성(FR-094) — 오더 없음(treatment_order_id=None). recorded_by=기록 간호사.
+
+    미존재 내원 → 404, 빈/공백 content → 422(Pydantic 1차·DB CHECK 백스톱), 권한 → 403.
+    """
+    row = await db.insert_nursing_record(
+        sub,
+        encounter_id=encounter_id,
+        treatment_order_id=None,
+        content=payload.content,
+        recorded_by=sub,
+    )
+    return NursingRecordResponse.model_validate(row)
+
+
+async def list_nursing_records(sub: UUID, encounter_id: UUID) -> list[NursingRecordResponse]:
+    """한 내원의 간호기록 목록(최신순). 게이트=라우터(order.read ∨ nursing.record)."""
+    rows = await db.fetch_nursing_records(sub, encounter_id)
+    return [NursingRecordResponse.model_validate(r) for r in rows]
+
+
+async def list_nursing_worklist(sub: UUID) -> list[NursingWorklistItem]:
+    """간호 워크리스트(Story 5.7) — 오늘(KST) 활성 내원 + 미수행 처치·간호기록 건수.
+
+    게이트=라우터(require_any treatment.perform ∨ nursing.record). 일자=KST today.
+    """
+    today = datetime.now(_KST).date()
+    rows = await db.fetch_nursing_worklist(sub, today)
+    return [NursingWorklistItem.model_validate(r) for r in rows]

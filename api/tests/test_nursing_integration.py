@@ -1,15 +1,18 @@
-"""간호 활력징후 기록·조회·워크리스트(Story 5.6 AC1~3) 통합 테스트 — FastAPI TestClient + 0017.
+"""간호 활력징후·처치 수행·간호기록·워크리스트(Story 5.6·5.7) 통합 테스트 — TestClient + 0017·0018.
 
-실 Supabase 토큰 + 0017 스키마. 로컬 스택/부트스트랩 없으면 skip. 검증:
-  · AC1(FR-091): 간호사가 활력(혈압·맥박·체온·호흡·SpO2) 기록 → 201 + recorded_by=nurse + 내원 연결.
-         항목별 선택(부분 측정 201) + 최소 1개 강제(전부 빈 값 422) + 범위(Pydantic 422). body_temp
-         numeric → float 라운드트립. 미존재 내원 404. 감사(create).
-  · AC2(FR-032): 기록된 활력 조회 — doctor(encounter.read) 200·nurse(vital.record) 200(require_any).
-  · AC3: 활력 워크리스트(오늘 활성 내원) — nurse 200(walk-in 노출·latest_vital 갱신).
-  · 권한: 기록 403 baseline = reception(권한 0) + doctor(encounter.read 有·vital.record 無 =
-         read-yes/record-no). 워크리스트 403 = reception + doctor(vital.record 無).
+실 Supabase 토큰 + 0017/0018 스키마. 로컬 스택/부트스트랩 없으면 skip. 검증:
+  · 5.6 AC1(FR-091): 활력 기록 201 + recorded_by=nurse + 부분/최소1개/범위/404/감사.
+  · 5.6 AC2(FR-032): 활력 조회 — doctor(encounter.read) 200·nurse(vital.record) 200(require_any).
+  · 5.6 AC3: 활력 워크리스트 — nurse 200(walk-in 노출·latest_vital 갱신).
+  · 5.7 AC1(FR-090·FR-092): 처치 수행 — doctor 오더 → nurse perform 200(status=performed·
+         performed_by=nurse·performed_at). content 첨부 → 연결 nursing_record. 미존재 404.
+  · 5.7 AC2(FR-093): 재수행 → 409 invalid_transition(상태머신 최종선).
+  · 5.7 AC3(FR-094): 일상 간호기록 — nurse 201(treatment_order_id None)·빈값 422·조회·감사.
+  · 권한: 활력 기록 403 = reception + doctor(read-yes/record-no). 처치 수행 403 = reception +
+         doctor(treatment.order 有·treatment.perform 無). 간호기록 403 = reception + doctor.
+         워크리스트 403 = reception + doctor(treatment.perform·nursing.record 無).
 
-⚠️ 생성행은 잔존(db reset 이 초기화). 주민번호는 매 실행 고유값.
+⚠️ 생성행 잔존(db reset 초기화)·주민번호 매 실행 고유. ⚠️ DB 검증='db reset && pytest' 원자 실행.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ _PUBLISHABLE = os.getenv(
 _ENCOUNTERS_URL = "/v1/encounters"
 _PATIENTS_URL = "/v1/patients"
 _WORKLIST_URL = "/v1/nursing/vitals-worklist"
+_NURSING_WORKLIST_URL = "/v1/nursing/worklist"
 
 _FULL_VITALS = {
     "systolic": 120,
@@ -116,6 +120,12 @@ def dept_id(psql: Psql) -> str:
     return psql.scalar("select id::text from public.departments where lower(code) = 'im' limit 1")
 
 
+@pytest.fixture(scope="module")
+def treatment_fee_id(psql: Psql) -> str:
+    """시드 EDI 처치 행위(드레싱 M0030) id — 처치 오더 생성 fee_schedule_id."""
+    return psql.scalar("select id::text from public.fee_schedules where code = 'M0030' limit 1")
+
+
 def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -158,6 +168,29 @@ def _walk_in(client: TestClient, admin_token: str, dept_id: str) -> str:
 
 def _vitals_url(eid: str) -> str:
     return f"{_ENCOUNTERS_URL}/{eid}/vitals"
+
+
+def _treatment_orders_url(eid: str) -> str:
+    return f"{_ENCOUNTERS_URL}/{eid}/treatment-orders"
+
+
+def _perform_url(eid: str, oid: str) -> str:
+    return f"{_ENCOUNTERS_URL}/{eid}/treatment-orders/{oid}/perform"
+
+
+def _nursing_records_url(eid: str) -> str:
+    return f"{_ENCOUNTERS_URL}/{eid}/nursing-records"
+
+
+def _create_treatment_order(client: TestClient, doctor_token: str, eid: str, fee_id: str) -> str:
+    """doctor 가 처치 오더 생성(treatment.order) → order id(status='ordered')."""
+    res = client.post(
+        _treatment_orders_url(eid),
+        json={"fee_schedule_id": fee_id},
+        headers=_bearer(doctor_token),
+    )
+    assert res.status_code == 201, res.text
+    return res.json()["id"]
 
 
 # ── AC1: 활력징후 기록(전체·부분·최소1개·범위·미존재) ──────────────────────────
@@ -322,5 +355,263 @@ def test_create_vitals_audit(client, admin_token, nurse_token, dept_id, psql: Ps
     count = psql.scalar(
         "select count(*) from public.audit_logs "
         f"where target_table='vital_signs' and target_id='{vsid}' and action='create';"
+    )
+    assert int(count) == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Story 5.7 — 처치 수행 · 재수행 차단 · 일상 간호기록
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ── AC1(FR-090·FR-092): 처치 오더 수행(ordered→performed) ───────────────────────
+
+
+def test_perform_treatment_golden_path(
+    client, admin_token, doctor_token, nurse_token, nurse_id, dept_id, treatment_fee_id
+):
+    """doctor 오더 → nurse 수행 200 + status=performed + performed_by=nurse + performed_at."""
+    eid = _walk_in(client, admin_token, dept_id)
+    oid = _create_treatment_order(client, doctor_token, eid, treatment_fee_id)
+    res = client.post(_perform_url(eid, oid), json={}, headers=_bearer(nurse_token))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["id"] == oid
+    assert body["status"] == "performed"
+    assert body["performed_by"] == nurse_id
+    assert body["performed_by_name"]  # users 조인(수행자명)
+    assert body["performed_at"] is not None
+
+
+def test_perform_treatment_with_content_creates_nursing_record(
+    client, admin_token, doctor_token, nurse_token, nurse_id, dept_id, treatment_fee_id
+):
+    """수행 시 content 첨부 → 연결 nursing_record(treatment_order_id·내용·기록자=수행 nurse)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    oid = _create_treatment_order(client, doctor_token, eid, treatment_fee_id)
+    res = client.post(
+        _perform_url(eid, oid),
+        json={"content": "드레싱 교환 완료, 삼출물 소량"},
+        headers=_bearer(nurse_token),
+    )
+    assert res.status_code == 200, res.text
+    recs = client.get(_nursing_records_url(eid), headers=_bearer(nurse_token))
+    assert recs.status_code == 200, recs.text
+    linked = [r for r in recs.json() if r["treatment_order_id"] == oid]
+    assert len(linked) == 1  # 정확히 1건(중복 누출 없음)
+    assert linked[0]["content"] == "드레싱 교환 완료, 삼출물 소량"
+    assert linked[0]["recorded_by"] == nurse_id  # attribution=수행 간호사(별도 insert 경로 검증)
+
+
+def test_perform_treatment_reperform_409(
+    client, admin_token, doctor_token, nurse_token, dept_id, treatment_fee_id
+):
+    """이미 수행된 오더 재수행 → 409 invalid_transition(FR-093 상태머신 최종선)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    oid = _create_treatment_order(client, doctor_token, eid, treatment_fee_id)
+    first = client.post(_perform_url(eid, oid), json={}, headers=_bearer(nurse_token))
+    assert first.status_code == 200, first.text
+    again = client.post(_perform_url(eid, oid), json={}, headers=_bearer(nurse_token))
+    assert again.status_code == 409, again.text
+    assert again.json()["error"]["code"] == "invalid_transition"
+
+
+def test_perform_treatment_nonexistent_404(client, admin_token, nurse_token, dept_id):
+    """미존재 처치 오더 수행 → 404."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(_perform_url(eid, str(uuid.uuid4())), json={}, headers=_bearer(nurse_token))
+    assert res.status_code == 404, res.text
+
+
+def test_perform_treatment_forbidden_reception_403(
+    client, admin_token, doctor_token, reception_token, dept_id, treatment_fee_id
+):
+    """reception(treatment.perform 미보유) → 수행 403."""
+    eid = _walk_in(client, admin_token, dept_id)
+    oid = _create_treatment_order(client, doctor_token, eid, treatment_fee_id)
+    res = client.post(_perform_url(eid, oid), json={}, headers=_bearer(reception_token))
+    assert res.status_code == 403, res.text
+
+
+def test_perform_treatment_forbidden_doctor_403(
+    client, admin_token, doctor_token, dept_id, treatment_fee_id
+):
+    """doctor(treatment.order 보유·treatment.perform 미보유 = order-yes/perform-no) → 수행 403."""
+    eid = _walk_in(client, admin_token, dept_id)
+    oid = _create_treatment_order(client, doctor_token, eid, treatment_fee_id)
+    res = client.post(_perform_url(eid, oid), json={}, headers=_bearer(doctor_token))
+    assert res.status_code == 403, res.text
+
+
+# ── AC3(FR-094): 일상 간호기록(오더 연결 없음) ────────────────────────────────
+
+
+def test_create_nursing_record_golden_path(client, admin_token, nurse_token, nurse_id, dept_id):
+    """nurse → 201 + treatment_order_id None(일상 기록) + recorded_by=nurse + 내용 echo."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _nursing_records_url(eid),
+        json={"content": "오전 라운딩 — 활력 안정, 통증 호소 없음"},
+        headers=_bearer(nurse_token),
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["encounter_id"] == eid
+    assert body["treatment_order_id"] is None
+    assert body["content"] == "오전 라운딩 — 활력 안정, 통증 호소 없음"
+    assert body["recorded_by"] == nurse_id
+    assert body["recorded_by_name"]
+    assert body["is_active"] is True
+
+
+def test_create_nursing_record_blank_422(client, admin_token, nurse_token, dept_id):
+    """빈/공백 content → 422(Pydantic min_length 후 strip)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _nursing_records_url(eid), json={"content": "   "}, headers=_bearer(nurse_token)
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_create_nursing_record_nonexistent_404(client, nurse_token):
+    """미존재 내원에 간호기록 → 404."""
+    res = client.post(
+        _nursing_records_url(str(uuid.uuid4())),
+        json={"content": "기록"},
+        headers=_bearer(nurse_token),
+    )
+    assert res.status_code == 404, res.text
+
+
+def test_create_nursing_record_forbidden_reception_403(
+    client, admin_token, reception_token, dept_id
+):
+    """reception(nursing.record 미보유) → 간호기록 403."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _nursing_records_url(eid), json={"content": "기록"}, headers=_bearer(reception_token)
+    )
+    assert res.status_code == 403, res.text
+
+
+def test_create_nursing_record_forbidden_doctor_403(client, admin_token, doctor_token, dept_id):
+    """doctor(nursing.record 미보유) → 간호기록 403."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _nursing_records_url(eid), json={"content": "기록"}, headers=_bearer(doctor_token)
+    )
+    assert res.status_code == 403, res.text
+
+
+# ── 간호기록 조회(order.read ∨ nursing.record — require_any) ───────────────────
+
+
+def test_list_nursing_records_nurse_can_read(client, admin_token, nurse_token, dept_id):
+    """nurse(nursing.record) → 조회 200 + 방금 작성한 기록 노출."""
+    eid = _walk_in(client, admin_token, dept_id)
+    client.post(
+        _nursing_records_url(eid), json={"content": "간호기록 A"}, headers=_bearer(nurse_token)
+    )
+    res = client.get(_nursing_records_url(eid), headers=_bearer(nurse_token))
+    assert res.status_code == 200, res.text
+    assert res.json()[0]["content"] == "간호기록 A"
+
+
+def test_list_nursing_records_doctor_can_read(
+    client, admin_token, nurse_token, doctor_token, dept_id
+):
+    """doctor(order.read) → 조회 200(require_any 의 다른 분기)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    client.post(
+        _nursing_records_url(eid), json={"content": "간호기록 B"}, headers=_bearer(nurse_token)
+    )
+    res = client.get(_nursing_records_url(eid), headers=_bearer(doctor_token))
+    assert res.status_code == 200, res.text
+    assert res.json()[0]["content"] == "간호기록 B"
+
+
+def test_list_nursing_records_forbidden_reception_403(
+    client, admin_token, reception_token, dept_id
+):
+    """reception(order.read·nursing.record 둘 다 미보유) → 조회 403."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.get(_nursing_records_url(eid), headers=_bearer(reception_token))
+    assert res.status_code == 403, res.text
+
+
+# ── AC1(FR-090): 간호 워크리스트(미수행 처치·간호기록 건수) ──────────────────
+
+
+def test_nursing_worklist_nurse_lists_pending(
+    client, admin_token, doctor_token, nurse_token, dept_id, treatment_fee_id
+):
+    """nurse → 200 + 미수행 처치 보유 내원 노출(pending_treatment_count≥1·oldest 지시시각)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    _create_treatment_order(client, doctor_token, eid, treatment_fee_id)
+    res = client.get(_NURSING_WORKLIST_URL, headers=_bearer(nurse_token))
+    assert res.status_code == 200, res.text
+    item = next((r for r in res.json() if r["encounter_id"] == eid), None)
+    assert item is not None, "미수행 처치 보유 내원이 워크리스트에 없음"
+    assert item["pending_treatment_count"] >= 1
+    assert item["oldest_pending_ordered_at"] is not None
+    assert item["patient_name"] and item["chart_no"] and item["department_name"]
+
+
+def test_nursing_worklist_count_decrements_after_perform(
+    client, admin_token, doctor_token, nurse_token, dept_id, treatment_fee_id
+):
+    """수행 후 pending_treatment_count 감소·nursing_record_count 증가(content 첨부)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    oid = _create_treatment_order(client, doctor_token, eid, treatment_fee_id)
+    client.post(_perform_url(eid, oid), json={"content": "수행 메모"}, headers=_bearer(nurse_token))
+    res = client.get(_NURSING_WORKLIST_URL, headers=_bearer(nurse_token))
+    item = next((r for r in res.json() if r["encounter_id"] == eid), None)
+    # 워크리스트는 전체 활성 내원 반환(pending>0 필터=클라) → 수행 후도 내원 노출(pending 0·기록 1).
+    assert item is not None, "활성 내원이 워크리스트에서 사라짐"
+    assert item["pending_treatment_count"] == 0  # 유일 처치 수행 → 미수행 0
+    assert item["nursing_record_count"] >= 1  # content 첨부 기록 누적
+
+
+def test_nursing_worklist_forbidden_reception_403(client, reception_token):
+    """reception(treatment.perform·nursing.record 미보유) → 워크리스트 403."""
+    res = client.get(_NURSING_WORKLIST_URL, headers=_bearer(reception_token))
+    assert res.status_code == 403, res.text
+
+
+def test_nursing_worklist_forbidden_doctor_403(client, doctor_token):
+    """doctor(treatment.order 보유·treatment.perform·nursing.record 미보유) → 워크리스트 403."""
+    res = client.get(_NURSING_WORKLIST_URL, headers=_bearer(doctor_token))
+    assert res.status_code == 403, res.text
+
+
+# ── 감사: 수행 → audit_logs update 행 · 간호기록 → create 행(0018 트리거) ────────
+
+
+def test_perform_treatment_audit_update(
+    client, admin_token, doctor_token, nurse_token, dept_id, treatment_fee_id, psql: Psql
+):
+    """수행(ordered→performed) → audit_logs action='update' 행(treatment_orders)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    oid = _create_treatment_order(client, doctor_token, eid, treatment_fee_id)
+    res = client.post(_perform_url(eid, oid), json={}, headers=_bearer(nurse_token))
+    assert res.status_code == 200, res.text
+    count = psql.scalar(
+        "select count(*) from public.audit_logs "
+        f"where target_table='treatment_orders' and target_id='{oid}' and action='update';"
+    )
+    assert int(count) >= 1
+
+
+def test_create_nursing_record_audit(client, admin_token, nurse_token, dept_id, psql: Psql):
+    """간호기록 작성 → audit_logs action='create' 행(nursing_record, 0018 트리거)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _nursing_records_url(eid), json={"content": "감사 검증 기록"}, headers=_bearer(nurse_token)
+    )
+    assert res.status_code == 201, res.text
+    nrid = res.json()["id"]
+    count = psql.scalar(
+        "select count(*) from public.audit_logs "
+        f"where target_table='nursing_record' and target_id='{nrid}' and action='create';"
     )
     assert int(count) == 1
