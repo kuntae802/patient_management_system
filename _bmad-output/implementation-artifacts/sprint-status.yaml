@@ -100,7 +100,7 @@ development_status:
   5-6-간호-활력징후-기록: done
   5-7-간호-처치-수행-재수행-차단-일상-간호기록: done
   5-8-방사선-촬영-영상-업로드-장비: done
-  5-9-영상-판독-검사-오더-완료: backlog
+  5-9-영상-판독-검사-오더-완료: done
   5-10-수가-자동발생-트리거-가동: backlog
   epic-5-retrospective: optional
 

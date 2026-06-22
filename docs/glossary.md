@@ -306,7 +306,7 @@
 | 식별자 | 종류 | 의미·계약 |
 |---|---|---|
 | `prescriptions` / `prescription_details` | 테이블(0015) | 처방전 헤더(1:N·`encounter_id`·`encounter_diagnosis_id` 근거 진단 FR-051 nullable·`status` issued→dispensed·`ordered_by` 발행의사) + 처방상세 라인(`drug_id` 약품 마스터 FK·`dose`·`frequency`·`duration_days`·`usage_instruction` — free-text 약품 차단의 구조적 강제) |
-| `examinations` | 테이블(0015) | 검사·영상 오더(`exam_type` lab/imaging 워크리스트 라우팅 FR-061·`fee_schedule_id` EDI 행위 FK·`status` ordered→performed→completed·지시/수행/판독 `*_by`+`*_at`·`equipment_id` 촬영 배정 nullable). 판독 소견 텍스트 컬럼은 5.9 추가 |
+| `examinations` | 테이블(0015·0020) | 검사·영상 오더(`exam_type` lab/imaging 워크리스트 라우팅 FR-061·`fee_schedule_id` EDI 행위 FK·`status` ordered→performed→completed·지시/수행/판독 `*_by`+`*_at`·`equipment_id` 촬영 배정 nullable). 판독 소견 = `findings`·`reading_conclusion`(0020·5.9·자유텍스트·감사 마스킹) |
 | `treatment_orders` | 테이블(0015) | 처치 오더(`fee_schedule_id` 행위 FK·`status` ordered→performed→completed·지시/수행 추적). 수행 내용·간호기록은 5.7 `nursing_record` 별도 |
 | `equipment` | 테이블(0015) | 검사장비 마스터(`code`·`name`·`modality`·`status` available/in_use/maintenance — 상태머신 아님). 전역 참조 RLS(rooms 미러). 5.8 목록·상태 FR-103 |
 | `enforce_prescription_transition` / `enforce_act_order_transition` | 트리거 함수(0015) | 전이 매트릭스 강제(INSERT 초기상태 가드 + UPDATE 매트릭스). 검사·처치 공용(act 함수). 위반 `PT409`. 0010 `enforce_encounter_transition` 패턴 |
@@ -435,6 +435,22 @@
 | EMP0005 radiologist 데모 | seed(`seed.sql`) | `radiologist@pms.local`(Staff1234)·`order.read`·`examination.perform` 보유 → 촬영 골든 패스. **촬영 수행 403 baseline = reception(권한 0) + doctor(examination.order 有·examination.perform 無)** |
 
 > **방사선 촬영 경계(Story 5.8 확정):** **신규 마이그 1건(0019=examination_images + Storage 버킷)·신규 권한 0**(examination.perform·order.read 모두 0015 기존·radiologist 5.1 grant). **결정 3건**: ① 영상=1:N `examination_images`(단일 컬럼 아님·검사당 N장) ② 장비=표시+촬영 배정만(상태 변경·`equipment.manage` 권한 없음 — AC3=표시) ③ 수행 전제=활성 영상≥1(422 image_required·누락 0 디텍터 정신). Storage=비공개 버킷+서버 서명 URL·DB 경로만·🔒 객체 경로 PII 금지. perform_examination RPC 재정의 안 함(equipment_id=same-status UPDATE). **배포**: `SUPABASE_URL` = api 환경(.env.example·docker-compose) 보강 완료(클라우드 서명 URL 호스트). **이월**: 판독 소견 컬럼·`complete_examination`·검사 오더 완료 전이=5.9 / 수가 자동발생(영상 수행 완료→수가)=5.10 / 장비 상태 변경·영상 삭제·환자 포털 영상 조회(RLS self 미연결)=이월.
+
+## 영상 판독 · 검사 오더 완료 (Story 5.9, `0020_examination_reading.sql`)
+
+> ⚠️ **마이그 번호 0020**: Epic 5 블록 0015~0029 의 여섯 번째(5.8=0019 다음). **판독·완료 엔진은 0015 가 완비**(`complete_examination` RPC·전이 트리거 `performed→completed`·`examinations.completed_*` 컬럼·`examination.complete` 권한·doctor seed grant) → 0020 = 판독 소견 텍스트 컬럼(`findings`·`reading_conclusion`) 추가만. **신규 권한·RPC·CHECK·시드 계정 0**. `complete_examination` 은 `returns public.examinations`(행타입) → 컬럼 추가 자동 반영(재정의 안 함). 소견은 wrapper `call_complete_examination` 의 same-status UPDATE 후 RPC(5.8 equipment_id 패턴 미러).
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `findings` / `reading_conclusion` | 컬럼(0020·`examinations`) | 영상 판독 소견(필수·non-blank, 완료 시·서비스 강제)·판독 결론/임프레션(선택). 자유 임상 서사 → **감사 마스킹**(`_SENSITIVE_KEY`/`SENSITIVE_KEY` 양쪽 등록·0018 content 선례). ordered/performed 동안 NULL. **DB CHECK 아님**(소견 강제=서비스 wrapper 422 findings_required — `complete_examination` RPC 공유 계약 보존·5.8 image_required 자세) |
+| `complete_examination(uuid)` | RPC(0015·소비) | 판독 전진 전이(performed→completed) — 권한 자가 게이트(`examination.complete`)·`for update`·**소스상태 precondition(재완료 차단 FR-093)**·completed_by/at=auth.uid()/now(). 소견 미사용(공유 단독 계약·5.1 테스트). `call_complete_examination`(db) 가 검사 선검사(404/422 not_imaging/409 invalid_transition)+소견·결론 same-status UPDATE+RPC 를 동일 txn 원자(전이 거부 시 소견 롤백). **RPC 재정의 안 함** |
+| `examination.complete` | 권한(0015 기존) | 판독 워크리스트·완료=examination.complete(의사 판독의 겸임). **신규 0·admin 재grant 불요**. doctor seed grant(`order.read`·`examination.complete`)=기보유. 영상 조회는 order.read(5.8 재사용) |
+| `GET …/radiology/reading-worklist` | 엔드포인트(api·`radiology`) | 판독 워크리스트(FR-102) — 오늘(KST) 활성 내원의 `exam_type='imaging' AND status='performed'` + `fee_name`·`image_count`·지시자/수행자/시각. 게이트 `examination.complete`. FIFO(performed_at asc)·비-PII·`/radiology/*` 네임스페이스 |
+| `POST …/examinations/{id}/complete` | 엔드포인트(api·`radiology`) | 판독 완료(FR-102·FR-093). 게이트 `examination.complete`. body `CompleteExaminationBody`(findings 필수·reading_conclusion 선택). 소견 빈/공백→422 findings_required·미수행/재완료→409 invalid_transition·lab→422 not_imaging·미존재 404. 응답=완료 `ExaminationResponse`(completed_*·findings·reading_conclusion) |
+| `fetch_reading_worklist`/`call_complete_examination` | 함수(`core/db`) | service_role(RLS 우회). 워크리스트=`fetch_radiology_worklist` 미러(status='performed'·performed_by 조인). 완료=소견 same-status UPDATE+RPC 동일 txn(`call_perform_examination` 미러). 반환 `_EXAMINATION_COLUMNS`(findings/reading_conclusion 포함) |
+| `(staff)/doctor/radiology`·`ReadingWorklistPage`·`ReadingPanel`·`lib/doctor/reading.ts` | 웹(`app/(staff)/`·`components/doctor/`) | 가드 `requirePermission('examination.complete')`. 워크리스트(좌 미판독 영상검사·우 판독 패널)·판독 패널(서명 URL 썸네일[`fetchExaminationImages` 재사용]·소견/결론 textarea·완료 버튼[소견 빈 disabled·busy disable]·completed 잠금). nav doctor "판독" `/doctor/radiology`(기정의) |
+
+> **영상 판독 경계(Story 5.9 확정):** **신규 마이그 1건(0020=판독 소견 컬럼 2·DDL만)·신규 권한·RPC·CHECK·시드 0**(`examination.complete`·`complete_examination`·doctor grant 모두 0015/seed 기존). **결정 3건(사용자 확정)**: ① 판독지=`findings`(소견·필수) + `reading_conclusion`(결론·선택) 2-필드·examinations 컬럼(별도 테이블 아님) ② `completed`=종결·정정/애드덤 이월(재완료=PT409) ③ `/doctor/radiology` 판독 워크리스트 신규=5.8 방사선사 워크리스트와 대칭(상태 축 ordered→performed). 소견·결론=자유 임상 서사→감사 마스킹 필수(5.8 과 결정적 차이). findings non-blank=서버 findings_required 422(5.8 image_required 형제·DB CHECK 아님 — `complete_examination` RPC 공유 계약 보존). 영상 조회=order.read 재사용(5.8 이 판독의용으로 게이트). **이월**: 판독 정정/애드덤·진료 허브 오더패널 교차링크=future / 영상 수가 자동발생=5.10 / lab 완료(외부 의뢰 결과 FR-061)·환자 포털 판독 조회=이월.
 
 ## 근무표 · 휴진 (Story 6.1, `0030_doctor_schedules.sql`)
 
