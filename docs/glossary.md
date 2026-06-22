@@ -389,6 +389,29 @@
 
 > **간호 활력징후 경계(Story 5.6 확정):** **신규 마이그 1건(0017=vital_signs)·신규 권한 0**(`vital.record`=0002 기존·nurse seed grant 만). 활력=항목별 선택+최소 1개 강제(3중 방어). 기록=간호(`/nurse/vitals` 워크리스트 진입·encounter.read 0 유지)·조회=의사 진료 허브 좌 패널(FR-032·`require_any_permission`). 워크리스트=`/nursing/*`(라우트 충돌 회피). 수치=구조화 → **감사 마스킹 집합 무변경**. **일상 간호기록 `nursing_record`·처치 수행·재수행 차단 = 5.7 / 활력 수정·삭제·시계열 차트·오더-by-내원상태 게이트·환자 포털 활력 조회(RLS self 미연결) = 이월.**
 
+## 간호 처치 수행 · 일상 간호기록 (Story 5.7, `0018_nursing_records.sql`)
+
+> ⚠️ **마이그 번호 0018**: Epic 5 블록 0015~0029 의 네 번째(5.1=0015·5.5=0016·5.6=0017). **처치 수행 엔진은 0015 가 완비**(`perform_treatment_order` RPC·전이 트리거·`treatment_orders`·`treatment.perform`) → 0018 = 소비만 + `nursing_record` 테이블·신규 권한 `nursing.record`. **재수행 차단은 RPC 소스상태 precondition**(이미 5.1 구현). content=자유 임상 서사 → 감사 마스킹 동반 확장.
+
+| 식별자 | 종류 | 비고 |
+|---|---|---|
+| `nursing_record` | 테이블(0018) | 간호기록 — `encounter_id` FK(1:N)·`treatment_order_id` FK **nullable**(처치 수행 연결 / NULL=일상 기록 FR-094)·`content` text(자유 임상 서사·감사 마스킹)·`recorded_by` FK·`recorded_at`. vital_signs(0017) DDL 미러. 처치 수행 내용·일상 간호기록을 단일 테이블이 담음(treatment_orders 엔 내용 컬럼 없음) |
+| `nursing_record_content_not_blank` | CHECK(0018) | `char_length(btrim(content)) >= 1` — 빈/공백 내용 차단(DB 최종선). 클라 가드(1차)·서버 `NursingRecordCreate` min_length(2차·422)·DB CHECK(최종) 3중 |
+| `nursing_record_select_staff`/`_self` | RLS(0018) | 직원=`has_permission('order.read') OR has_permission('nursing.record')`·환자=본인 내원. **방어심층**(FastAPI service_role RLS 우회·권위=라우터·환자 포털 Epic 8 대비). vital_signs RLS 미러 |
+| `nursing.record` | 권한(**0018 신규**) | 일상 간호기록 게이트(간호 직무·0002:76 nurse='처치·활력·간호기록'). **0002 미존재 → INSERT + admin 부트 재grant 필수**(test_admin_role_has_all_permissions 회귀 회피·0015 패턴). nurse seed grant 1건. ⚠️ 0017 vital.record(기존·신규 0)와 다른 점 |
+| `treatment.perform` | 권한(0002 기존) | 처치 수행 게이트 — **nurse 가 이미 보유**(seed.sql:178·Story 5.1 grant). 0018 신규 아님·admin 재grant 불요. `perform_treatment_order` RPC 가 자가 게이트. **처치 수행 403 baseline = reception(권한 0) + doctor(treatment.order 有·treatment.perform 無 = order-yes/perform-no, 처치 오더 baseline 역전)** |
+| `perform_treatment_order(uuid)` | RPC(0015·소비) | 처치 수행 전진 전이(ordered→performed) — 권한 자가 게이트·`for update`·**소스상태 precondition(재수행 차단 FR-093)**·performed_by/at=auth.uid()/now(). not-found PT404·재수행 PT409→409 invalid_transition. `call_perform_treatment_order`(db) 가 경로 선검사(404)+RPC+content 연결 nursing_record 를 동일 txn 에 |
+| `POST …/treatment-orders/{oid}/perform` | 엔드포인트(api·`nursing`) | 처치 수행(FR-090·FR-092). 게이트 `treatment.perform`. body `TreatmentPerformBody`(content 선택). 재수행→409·미존재→404·권한→403. content 입력 시 연결 `nursing_record`(treatment_order_id 부착) 같은 액션 생성. 응답=갱신 `TreatmentOrderResponse`(performed_*) |
+| `POST …/encounters/{id}/nursing-records` | 엔드포인트(api·`nursing`·201) | 일상 간호기록(FR-094). 게이트 `nursing.record`. treatment_order_id=NULL 고정(오더 연결은 수행 액션 소유). 빈/공백 422·미존재 404·권한 403. recorded_by=토큰 주체 |
+| `GET …/encounters/{id}/nursing-records` | 엔드포인트(api·`nursing`) | 한 내원 간호기록 목록(최신순·users 조인). 게이트 `require_any_permission("order.read","nursing.record")`(의사·간호 ∨ 간호). 처치 수행 연결+일상 기록 모두. 직접 배열 |
+| `GET …/nursing/worklist` | 엔드포인트(api·`nursing`) | 간호 워크리스트(FR-090) — 오늘(KST) 활성 내원 + `pending_treatment_count`(미수행 ordered)·`oldest_pending_ordered_at`(지연 디텍터 UX-DR21 ⑥)·`nursing_record_count`. 게이트 `require_any("treatment.perform","nursing.record")`. 처치 워크리스트·간호기록 두 화면 공유. 비-PII·`/nursing/*` 네임스페이스 |
+| `content` 감사 마스킹 | audit.py·audit.ts | nursing_record.content=자유 임상 서사 → `_SENSITIVE_KEY`(서버 권위)·`SENSITIVE_KEY`(웹 거울) 양쪽 `content` 추가(드리프트 금지). 0017 활력 수치(구조화)는 무변경이었으나 5.7 자유텍스트는 변경 |
+| `(staff)/nurse/worklist`·`TreatmentWorklistPage`·`TreatmentPerformPanel` | 웹(`app/(staff)/`·`components/nurse/`) | 처치 워크리스트(AC1·AC2). 가드 `requirePermission('treatment.perform')`. 좌=미수행 처치 보유 내원(pending>0·지연 배지)·우=오더별 수행(ordered=폼+content 선택·busy disable / performed=잠금 "수행 완료"·추적 라인 UX-DR21 ⑤⑦). 409→토스트+재로드. nav "처치 워크리스트"(`/nurse/worklist`·기정의) |
+| `(staff)/nurse/notes`·`NursingNotesPage` | 웹(`app/(staff)/`·`components/nurse/`) | 일상 간호기록(AC3). 가드 `requirePermission('nursing.record')`. 좌=오늘 활성 내원 전체(간호기록 건수)·우=기록 작성 폼(content 필수·빈값 가드·busy·toast)+기록 목록(처치 연결 태그). nav "간호기록"(`/nurse/notes`·기정의) |
+| nurse → `nursing.record` | seed grant(`seed.sql`) | 일상 간호기록 권한(간호 직무). DEV/데모 전용(운영=1.7 매트릭스). treatment.perform 은 5.1 에서 기grant → 본 스토리 nurse grant=nursing.record 1건 |
+
+> **간호 처치 수행·간호기록 경계(Story 5.7 확정):** **신규 마이그 1건(0018=nursing_record + 권한 nursing.record)·신규 권한 1**(처치 수행=treatment.perform 기존, 일상 간호기록=nursing.record 신규·admin 재grant·nurse grant). 처치 수행=`perform_treatment_order` RPC(0015 기완비) 소비 — 재수행 차단=소스상태 precondition(409). content(처치기록 내용)=수행 시 선택 입력→연결 nursing_record. 워크리스트=encounter-centric(`/nursing/worklist` 공유·5.6 미러). **재수행 차단 임상 해석**: 동일 *오더* 재수행만 차단(반복 처치=의사 신규 오더). **이월**: 처치 `completed` 전이·`complete_treatment_order` RPC·수가 자동발생(5.10/Epic7)·오더-by-내원상태 게이트(완료/취소 내원)·same-status attribution 덮어쓰기(RPC 경로만 보호)·간호기록 수정/삭제(append-only)·의사 허브 간호기록 표시·환자 포털 간호기록(RLS self 미연결).
+
 ## 근무표 · 휴진 (Story 6.1, `0030_doctor_schedules.sql`)
 
 > ⚠️ **마이그 번호 0030**: Epic 6 = 병렬 worktree → 마이그 블록 0030~(main 0014/Epic5 0015~0029 와 충돌 회피). 에픽/아키 묶음 계획 `0011_scheduling.sql`(3테이블)을 **스토리별 분리**(4.6/4.7 선례) → 6.1 = 근무표·휴진 2테이블만, **예약(appointments)·예약 생성·`encounters.reservation_id` FK·더블부킹은 booking 스토리(6.2/6.3)** 소유.
