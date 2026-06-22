@@ -296,3 +296,8 @@
 ## Deferred from: code review of 5-4-처치-오더 (2026-06-22)
 
 - **fee_schedule active/effective 서버 검증 부재** [api/app/core/db.py `insert_treatment_order`] — 처치 오더 생성은 `fee_schedule_id` FK 존재만 검사(23503→422)하고 EDI 처치 행위의 `is_active`/effective 윈도우를 재검증하지 않는다(`insert_examination`/`insert_prescription` 동일 posture). 웹 `MasterSearchPicker` 가 `today` 로 currently-valid 행위만 노출(UI 1차선)하나 직접 API·피커 로드 후 만료 race 는 우회. **이 갭은 이미 추적됨** — "신규 FK 의 active/effective 마스터 불변식 DB 미강제"(5.1 defer③ 항목)가 `drug_id`/`fee_schedule_id` 등 전 FK 와 `5.2/5.3/5.4 _require_*` 를 명시. 별도 해소 불요(마스터 불변식 일관 정책 스토리에서 drug·fee_schedule 일괄). 5.4 는 처치에 대해 동일 갭을 잇는다(신규 위험 0).
+
+## Deferred from: code review of 6-5-환자-앱-예약 (2026-06-22)
+
+- **`department_id`↔`doctor_id` 정합 서버 백스톱 부재** — `insert_self_appointment`/`insert_appointment`(api/app/core/db.py) 가 의사·진료과를 각각 독립 active 검증만 하고 둘의 소속 관계를 검증하지 않는다. 정상 UI 흐름(진료과 선택→해당 진료과 active 의사만 로드)에선 도달 불가·API 직접 호출 또는 웹 stale 상태(의사 목록 race)에서만 도달. **6.4 cross-department reschedule defer 와 동형의 기존 공백**(6.5 가 신규로 만든 것 아님). 교차-의사/진료과 정합 가드 착수 시(예: `_assert_doctor_in_department`) 직원·환자 예약·reschedule 경로에 일괄 적용. 출처: code review edge M4.
+- **날짜 칩 레일 per-date 가용성 미반영** — `web/src/components/scheduling/patient-booking.tsx:buildDateChips` 가 오늘부터 14일 칩을 전부 활성으로 렌더(비근무일·종일 경과·일요일 포함). 누르면 빈-상태("예약 가능한 시간이 없어요")로 안전하나 시행착오를 강요. per-date 휴진/마감 배지는 **N일 일괄 가용성 사전계산**(배치 가용성 엔드포인트)이 필요해 스펙 단계에서 명시 이월. 6.2/6.3 의 슬롯 사전계산 defer 와 동일선상. 출처: code review edge L2/L3.
