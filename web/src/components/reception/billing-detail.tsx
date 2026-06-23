@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/admin/confirm-dialog";
 import { PayChip } from "@/components/encounters/order-item-meta";
 import { ReceiptDocument } from "@/components/reception/receipt-document";
+import { StatementDocument } from "@/components/reception/statement-document";
 import { ApiError } from "@/lib/api/client";
 import { formatAuditTime } from "@/lib/admin/audit";
 import { formatKrw } from "@/lib/admin/masters";
@@ -15,6 +16,7 @@ import {
   exportReceipt,
   fetchReceipt,
   finalizePayment,
+  type DocumentType,
   type Payment,
   type PaymentDetail,
   type PaymentMethod,
@@ -23,12 +25,13 @@ import {
 import { insuranceLabel } from "@/lib/reception/patients";
 import { cn } from "@/lib/utils";
 
-// 수납 집계·결제·문서 상세(Story 7.2/7.3/7.4/7.5 / FR-110~113·UX-DR14·UX-DR21·UX-DR22) — 진입 시
+// 수납 집계·결제·문서 상세(Story 7.2/7.3/7.4/7.5/7.6 / FR-110~114·UX-DR14·UX-DR21·UX-DR22) — 진입 시
 // build_payment(POST·payment.manage) 멱등 호출 → 자동발생 수가 집계 + 본인부담 산정. 헤더 요약(본인부담금
 // headline + 총/급여/비급여/공단부담 + "자동 산정" teal 마커·보험유형 근거) + 분류별 라인 + **결제(결제수단
-// 토글 → 신원 재진술 confirm → finalize)**. finalized 시 완료 패널 + **문서 출력(진료비 계산서·영수증
-// 미리보기 → 브라우저 인쇄/PDF·인쇄=감사 beforeprint·7.5)**. 상시 신원 배너(이름·차트번호·UX-DR21).
-// useState 단일 로드(TanStack 미사용). 금액 KRW 정수·tabular-nums·"원".
+// 토글 → 신원 재진술 confirm → finalize)**. finalized 시 완료 패널 + **문서 출력 미리보기(문서 탭: 진료비
+// 계산서·영수증 7.5 / 세부산정내역서 7.6·동일 데이터·다른 렌더) → 브라우저 인쇄/PDF·인쇄=감사 beforeprint
+// (활성 탭 document_type)**. 상시 신원 배너(이름·차트번호·UX-DR21). useState 단일 로드(TanStack 미사용).
+// 금액 KRW 정수·tabular-nums·"원".
 
 /** 결제 수단 선택지(카드/현금/계좌이체 — DB CHECK·Pydantic Literal 거울). */
 const PAYMENT_METHODS: { value: PaymentMethod; label: string }[] = [
@@ -137,6 +140,8 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
   const [finalizing, setFinalizing] = useState(false);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [loadingReceipt, setLoadingReceipt] = useState(false);
+  // 미리보기 활성 문서 탭 — receipt=진료비 계산서·영수증 / statement=세부산정내역서(7.6·동일 데이터·다른 렌더).
+  const [activeDoc, setActiveDoc] = useState<DocumentType>("receipt");
 
   const load = useCallback(async () => {
     try {
@@ -161,35 +166,38 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
     void load();
   }, [load]);
 
-  // 문서 출력(진료비 계산서·영수증) — finalized 패널에서 클릭 시 영수증 데이터 로드 → 미리보기(7.5).
+  // 문서 출력 — finalized 패널에서 클릭 시 문서 데이터 로드 → 미리보기(7.5/7.6·영수증·세부내역서 공용 데이터).
   async function handleOpenReceipt() {
     if (loadingReceipt) return;
     setLoadingReceipt(true);
     try {
       const doc = await fetchReceipt(encounterId);
       setReceipt(doc);
+      setActiveDoc("receipt"); // 진입 기본 탭 = 영수증.
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "영수증을 불러오지 못했습니다.");
+      toast.error(err instanceof ApiError ? err.message : "문서를 불러오지 못했습니다.");
     } finally {
       setLoadingReceipt(false);
     }
   }
 
   // 인쇄/내보내기 = 감사(UX-DR22) — 미리보기 열린 동안 beforeprint 리스너(버튼·PDF 저장·네이티브 Ctrl P
-  // 전부 포착·각 인쇄 1 감사·fire-and-forget). document.title 은 불투명값(영수증_{차트}·파일명 PII 금지).
+  // 전부 포착·각 인쇄 1 감사·fire-and-forget). 감사 document_type·파일명은 **활성 탭** 기준(activeDoc 의존성).
+  // document.title 은 불투명값(영수증_/세부내역서_{차트}·파일명 PII 금지).
   useEffect(() => {
     if (!receipt) return;
     const onBeforePrint = () => {
-      void exportReceipt(encounterId, "receipt").catch(() => {});
+      void exportReceipt(encounterId, activeDoc).catch(() => {});
     };
     const prevTitle = document.title;
-    document.title = `영수증_${receipt.patient.chart_no}`;
+    const docLabel = activeDoc === "statement" ? "세부내역서" : "영수증";
+    document.title = `${docLabel}_${receipt.patient.chart_no}`;
     window.addEventListener("beforeprint", onBeforePrint);
     return () => {
       window.removeEventListener("beforeprint", onBeforePrint);
       document.title = prevTitle;
     };
-  }, [receipt, encounterId]);
+  }, [receipt, encounterId, activeDoc]);
 
   // 결제·내원 완료(finalize) — 신원 재진술 confirm 후 호출. mutation 중 가드(이중제출 방지·UX-DR21).
   async function handleFinalize() {
@@ -374,22 +382,48 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
                 disabled={loadingReceipt}
                 className="w-full rounded-lg border border-primary/40 bg-primary/5 px-4 py-2.5 text-[12.5px] font-semibold text-primary hover:bg-primary/10 disabled:opacity-60"
               >
-                문서 출력 (진료비 계산서·영수증)
+                문서 출력 (진료비 계산서·영수증 · 세부산정내역서)
               </button>
             </section>
           ) : null}
 
-          {/* 진료비 계산서·영수증 미리보기 — Batang serif 법정 서식 + 브라우저 인쇄/PDF(7.5·FR-113). */}
-          {/* @media print: .receipt-paper 만 출력(아래 툴바·앱 셸은 인쇄에서 숨김). 인쇄=감사(beforeprint). */}
+          {/* 문서 출력 미리보기 — 문서 탭 토글(영수증 7.5 / 세부산정내역서 7.6·동일 데이터·다른 렌더). */}
+          {/* Batang serif 법정 서식 + 브라우저 인쇄/PDF. @media print: 활성 탭 .receipt-paper 만 출력 */}
+          {/* (아래 툴바·앱 셸은 인쇄에서 숨김). 인쇄=감사(beforeprint·활성 탭 document_type). */}
           {receipt ? (
             <section className="space-y-3 rounded-xl border border-border bg-card p-4">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-[13px] font-semibold text-foreground">
                   문서 출력 미리보기
                   <span className="ml-1.5 rounded border border-border px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
                     법정 서식
                   </span>
                 </h3>
+                {/* 문서 탭 — 활성 탭 = 렌더·인쇄·감사 대상(A3 색비의존: 배경 + 밑줄 강조). */}
+                <div role="tablist" aria-label="문서 선택" className="flex gap-1">
+                  {(
+                    [
+                      { value: "receipt", label: "진료비 계산서·영수증" },
+                      { value: "statement", label: "세부산정내역서" },
+                    ] as const
+                  ).map((tab) => (
+                    <button
+                      key={tab.value}
+                      type="button"
+                      role="tab"
+                      aria-selected={activeDoc === tab.value}
+                      onClick={() => setActiveDoc(tab.value)}
+                      className={cn(
+                        "rounded-md border px-2.5 py-1 text-[11.5px] font-medium transition-colors",
+                        activeDoc === tab.value
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-border bg-card text-muted-foreground hover:bg-muted",
+                      )}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
                 <div className="ml-auto flex gap-2">
                   <button
                     type="button"
@@ -407,8 +441,13 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
                   </button>
                 </div>
               </div>
+              {/* 활성 탭 문서만 렌더 — 인쇄(.receipt-paper)에 1개만 잡히도록 조건부 렌더(둘 다 렌더 금지). */}
               <div className="overflow-x-auto rounded-md border border-border bg-muted/30 p-3">
-                <ReceiptDocument data={receipt} />
+                {activeDoc === "statement" ? (
+                  <StatementDocument data={receipt} />
+                ) : (
+                  <ReceiptDocument data={receipt} />
+                )}
               </div>
             </section>
           ) : null}

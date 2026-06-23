@@ -135,17 +135,21 @@ export type Receipt = {
   details: PaymentDetail[];
 };
 
-/** 문서 유형(7.5=영수증, 세부산정내역서='statement'=7.6). */
-export type DocumentType = "receipt";
+/** 문서 유형 — receipt=진료비 계산서·영수증(7.5), statement=진료비 세부산정내역서(7.6). 동일 ReceiptResponse 데이터의 다른 렌더링. */
+export type DocumentType = "receipt" | "statement";
 
-/** finalized 수납 건의 영수증 문서 데이터(GET). 게이트 payment.read. 비-finalized → 409·빌드 전 → 404. */
+/**
+ * finalized 수납 건의 문서 데이터(GET). 게이트 payment.read. 비-finalized → 409·빌드 전 → 404.
+ * 영수증·세부산정내역서가 **동일 데이터**를 공유(라인 전 컬럼·진료기간 포함) — 문서별 렌더링은 web 컴포넌트.
+ */
 export async function fetchReceipt(encounterId: string): Promise<Receipt> {
   return apiFetch<Receipt>(`/v1/encounters/${encounterId}/payment/receipt`);
 }
 
 /**
  * 문서 인쇄/내보내기 = 감사 이벤트 기록(POST·204). 게이트 payment.read. 인쇄(Ctrl P)/PDF 저장 직전
- * 호출 → audit_logs 'read'(document_type). UX-DR22 "민감 문서 인쇄/내보내기 자체가 감사 이벤트".
+ * 호출 → audit_logs 'read'(document_type=receipt/statement). UX-DR22 "민감 문서 인쇄/내보내기 자체가
+ * 감사 이벤트". documentType 으로 영수증/세부산정내역서 내보내기를 구분 기록(동일 엔드포인트·RPC).
  */
 export async function exportReceipt(
   encounterId: string,
