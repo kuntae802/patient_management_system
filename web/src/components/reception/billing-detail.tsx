@@ -6,11 +6,13 @@ import { toast } from "sonner";
 
 import { ConfirmDialog } from "@/components/admin/confirm-dialog";
 import { PayChip } from "@/components/encounters/order-item-meta";
+import { PrescriptionDocument } from "@/components/reception/prescription-document";
 import { ReceiptDocument } from "@/components/reception/receipt-document";
 import { StatementDocument } from "@/components/reception/statement-document";
 import { ApiError } from "@/lib/api/client";
 import { formatAuditTime } from "@/lib/admin/audit";
 import { formatKrw } from "@/lib/admin/masters";
+import { formatKstDate } from "@/lib/billing/format";
 import {
   buildPayment,
   exportReceipt,
@@ -22,6 +24,13 @@ import {
   type PaymentMethod,
   type Receipt,
 } from "@/lib/billing/payments";
+import {
+  dispensePrescription,
+  exportPrescriptionDocument,
+  fetchPrescriptionDocument,
+  type PrescriptionDocItem,
+  type PrescriptionDocument as PrescriptionDoc,
+} from "@/lib/billing/prescriptions";
 import { insuranceLabel } from "@/lib/reception/patients";
 import { cn } from "@/lib/utils";
 
@@ -42,14 +51,26 @@ const PAYMENT_METHODS: { value: PaymentMethod; label: string }[] = [
 
 /** 결제 수단 라벨(완료 패널·confirm 표시). */
 function paymentMethodLabel(method: string | null): string {
-  return PAYMENT_METHODS.find((m) => m.value === method)?.label ?? method ?? "—";
+  return (
+    PAYMENT_METHODS.find((m) => m.value === method)?.label ?? method ?? "—"
+  );
 }
 
 /** 결제상태 배지 A3(UX-DR14·색비의존 — 글리프+라벨). 미수납=로즈·완료=그린·취소=취소선. */
-function PaymentStatusBadge({ status, className }: { status: string; className?: string }) {
+function PaymentStatusBadge({
+  status,
+  className,
+}: {
+  status: string;
+  className?: string;
+}) {
   const meta =
     status === "finalized"
-      ? { label: "완료", glyph: "✓", cls: "border-status-done/40 bg-status-done/12 text-status-done-ink" }
+      ? {
+          label: "완료",
+          glyph: "✓",
+          cls: "border-status-done/40 bg-status-done/12 text-status-done-ink",
+        }
       : status === "cancelled"
         ? {
             label: "취소",
@@ -83,10 +104,51 @@ function finalizeErrorMessage(err: unknown): string {
     if (err.code === "primary_diagnosis_required")
       return "주상병이 지정되지 않았습니다. 의사 진단 완료 후 다시 시도하세요.";
     if (err.code === "forbidden") return "수납 권한이 없습니다.";
-    if (err.code === "invalid_transition") return "이미 처리되었거나 정산할 수 없는 수납입니다.";
+    if (err.code === "invalid_transition")
+      return "이미 처리되었거나 정산할 수 없는 수납입니다.";
     return err.message;
   }
   return "결제 처리에 실패했습니다.";
+}
+
+/** 처방전 발급 실패 → 사용자 메시지(7.7). 이미 발급·권한·미존재·일반. */
+function dispenseErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === "invalid_transition") return "이미 발급된 처방입니다.";
+    if (err.code === "forbidden") return "처방전 발급 권한이 없습니다.";
+    if (err.code === "not_found") return "처방을 찾을 수 없습니다.";
+    return err.message;
+  }
+  return "처방전 발급에 실패했습니다.";
+}
+
+/** 처방 상태 배지 A3(색비의존 — 글리프+라벨). 발행=중립·발급=그린(완료). */
+function RxStatusBadge({ status }: { status: string }) {
+  const meta =
+    status === "dispensed"
+      ? {
+          label: "발급",
+          glyph: "✓",
+          cls: "border-status-done/40 bg-status-done/12 text-status-done-ink",
+        }
+      : {
+          label: "발행",
+          glyph: "○",
+          cls: "border-border bg-muted text-muted-foreground",
+        };
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5 text-[11.5px] font-medium",
+        meta.cls,
+      )}
+    >
+      <span aria-hidden className="text-[9px] leading-none">
+        {meta.glyph}
+      </span>
+      {meta.label}
+    </span>
+  );
 }
 
 /** 분류 라벨(스냅샷 category) — null/빈값은 "기타". */
@@ -95,7 +157,9 @@ function categoryLabel(category: string | null): string {
 }
 
 /** 라인을 분류(category)별로 묶는다 — 적재 순서 보존(진찰료가 먼저). */
-function groupByCategory(details: PaymentDetail[]): { category: string; lines: PaymentDetail[] }[] {
+function groupByCategory(
+  details: PaymentDetail[],
+): { category: string; lines: PaymentDetail[] }[] {
   const groups: { category: string; lines: PaymentDetail[] }[] = [];
   for (const line of details) {
     const label = categoryLabel(line.category);
@@ -126,7 +190,8 @@ function AmountCell({ label, amount }: { label: string; amount: number }) {
     <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
       <p className="text-[10.5px] text-muted-foreground">{label}</p>
       <p className="mt-0.5 text-[15px] font-semibold text-foreground tabular-nums">
-        {formatKrw(amount)} <span className="text-[10.5px] font-normal">원</span>
+        {formatKrw(amount)}{" "}
+        <span className="text-[10.5px] font-normal">원</span>
       </p>
     </div>
   );
@@ -142,6 +207,13 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
   const [loadingReceipt, setLoadingReceipt] = useState(false);
   // 미리보기 활성 문서 탭 — receipt=진료비 계산서·영수증 / statement=세부산정내역서(7.6·동일 데이터·다른 렌더).
   const [activeDoc, setActiveDoc] = useState<DocumentType>("receipt");
+  // 원외처방전(7.7) — payment 무관(발행 처방이면 노출). doc=문서 데이터·activeRx=미리보기 중인 처방 1매.
+  const [prescriptionDoc, setPrescriptionDoc] =
+    useState<PrescriptionDoc | null>(null);
+  const [activeRx, setActiveRx] = useState<PrescriptionDocItem | null>(null);
+  const [dispensing, setDispensing] = useState(false);
+  const [pendingDispense, setPendingDispense] =
+    useState<PrescriptionDocItem | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -166,16 +238,34 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
     void load();
   }, [load]);
 
+  // 원외처방전 문서(7.7) — 진입 시 best-effort 조회(prescription.dispense 게이트·payment 무관). 처방
+  // 없거나 권한 없으면 섹션 미표시(에러 토스트 없음 — 선택 기능). 발급 후 갱신 위해 콜백 분리.
+  const loadPrescriptions = useCallback(async () => {
+    try {
+      setPrescriptionDoc(await fetchPrescriptionDocument(encounterId));
+    } catch {
+      setPrescriptionDoc(null);
+    }
+  }, [encounterId]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loadPrescriptions 의 setState 는 await 이후
+    void loadPrescriptions();
+  }, [loadPrescriptions]);
+
   // 문서 출력 — finalized 패널에서 클릭 시 문서 데이터 로드 → 미리보기(7.5/7.6·영수증·세부내역서 공용 데이터).
   async function handleOpenReceipt() {
     if (loadingReceipt) return;
     setLoadingReceipt(true);
+    setActiveRx(null); // 처방전 미리보기와 상호배타(인쇄 .receipt-paper 1개만).
     try {
       const doc = await fetchReceipt(encounterId);
       setReceipt(doc);
       setActiveDoc("receipt"); // 진입 기본 탭 = 영수증.
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "문서를 불러오지 못했습니다.");
+      toast.error(
+        err instanceof ApiError ? err.message : "문서를 불러오지 못했습니다.",
+      );
     } finally {
       setLoadingReceipt(false);
     }
@@ -199,6 +289,45 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
     };
   }, [receipt, encounterId, activeDoc]);
 
+  // 처방전 미리보기 — 영수증/세부내역서 미리보기와 상호배타(둘 다 .receipt-paper → 인쇄에 1개만 잡히도록).
+  function handleOpenPrescription(rx: PrescriptionDocItem) {
+    setReceipt(null);
+    setActiveRx(rx);
+  }
+
+  // 처방전 인쇄=감사(UX-DR22·7.5 계승) — 미리보기 열린 동안 beforeprint → exportPrescriptionDocument
+  // (활성 처방 1매·fire-and-forget). document.title=처방전_{차트}(파일명 PII 금지·불투명). receipt 미리보기와
+  // 상호배타라 둘 중 하나만 리스너 활성(activeRx 없으면 early return).
+  useEffect(() => {
+    if (!prescriptionDoc || !activeRx) return;
+    const onBeforePrint = () => {
+      void exportPrescriptionDocument(encounterId, activeRx.id).catch(() => {});
+    };
+    const prevTitle = document.title;
+    document.title = `처방전_${prescriptionDoc.patient.chart_no}`;
+    window.addEventListener("beforeprint", onBeforePrint);
+    return () => {
+      window.removeEventListener("beforeprint", onBeforePrint);
+      document.title = prevTitle;
+    };
+  }, [prescriptionDoc, activeRx, encounterId]);
+
+  // 발급 확정(issued→dispensed) — 신원 재진술 confirm 후 호출. 비가역 1방향·mutation 중 가드. 성공 시 갱신.
+  async function handleDispense() {
+    if (!pendingDispense || dispensing) return;
+    setDispensing(true);
+    try {
+      await dispensePrescription(encounterId, pendingDispense.id);
+      toast.success("원외처방전이 발급되었습니다.");
+      setPendingDispense(null);
+      await loadPrescriptions();
+    } catch (err) {
+      toast.error(dispenseErrorMessage(err));
+    } finally {
+      setDispensing(false);
+    }
+  }
+
   // 결제·내원 완료(finalize) — 신원 재진술 confirm 후 호출. mutation 중 가드(이중제출 방지·UX-DR21).
   async function handleFinalize() {
     if (!payment || finalizing) return;
@@ -207,7 +336,9 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
       const result = await finalizePayment(payment.encounter_id, method);
       setPayment(result);
       setShowConfirm(false);
-      toast.success(`결제·내원 완료되었습니다 · 영수증 ${result.payment_no ?? ""}`);
+      toast.success(
+        `결제·내원 완료되었습니다 · 영수증 ${result.payment_no ?? ""}`,
+      );
     } catch (err) {
       toast.error(finalizeErrorMessage(err));
     } finally {
@@ -241,7 +372,9 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
         <>
           {/* 상시 신원 배너(UX-DR21) — 결제 확정 전 잘못 열린 탭 오류 차단(이름·차트번호 + 결제상태). */}
           <section className="flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-3">
-            <span className="text-[13px] font-semibold text-foreground">{payment.patient_name}</span>
+            <span className="text-[13px] font-semibold text-foreground">
+              {payment.patient_name}
+            </span>
             <span className="text-[12px] text-muted-foreground tabular-nums">
               차트 {payment.chart_no}
             </span>
@@ -251,7 +384,9 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
           {/* 헤더 요약 — 본인부담금(환자 청구액) headline + 총/급여/비급여/공단부담 + "자동 산정" 마커·보험유형 근거. */}
           <section className="rounded-xl border border-border bg-card p-4">
             <div className="mb-3 flex items-center gap-2">
-              <h2 className="text-[14px] font-semibold text-foreground">수납 집계</h2>
+              <h2 className="text-[14px] font-semibold text-foreground">
+                수납 집계
+              </h2>
               <AutoTag />
               <span className="ml-auto text-[11px] font-medium text-muted-foreground">
                 {insuranceLabel(payment.insurance_type)}
@@ -259,7 +394,9 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
             </div>
             {/* 본인부담금 = 환자 실청구액(headline 강조·산정 결과의 핵심). */}
             <div className="mb-3 rounded-md border border-primary/30 bg-primary/5 px-4 py-3">
-              <p className="text-[11px] text-muted-foreground">본인부담금 (환자 청구)</p>
+              <p className="text-[11px] text-muted-foreground">
+                본인부담금 (환자 청구)
+              </p>
               <p className="mt-0.5 text-[22px] font-bold text-foreground tabular-nums">
                 {formatKrw(payment.copay_amount_krw)}{" "}
                 <span className="text-[12px] font-normal">원</span>
@@ -268,22 +405,32 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <AmountCell label="총 진료비" amount={payment.total_amount_krw} />
               <AmountCell label="급여" amount={payment.covered_amount_krw} />
-              <AmountCell label="비급여" amount={payment.non_covered_amount_krw} />
-              <AmountCell label="공단부담금" amount={payment.insurer_amount_krw} />
+              <AmountCell
+                label="비급여"
+                amount={payment.non_covered_amount_krw}
+              />
+              <AmountCell
+                label="공단부담금"
+                amount={payment.insurer_amount_krw}
+              />
             </div>
             <p className="mt-2 text-[10.5px] text-muted-foreground">
-              {insuranceLabel(payment.insurance_type)} 기준 급여 본인부담률을 적용해 산정했습니다.
+              {insuranceLabel(payment.insurance_type)} 기준 급여 본인부담률을
+              적용해 산정했습니다.
             </p>
           </section>
 
           {/* 상세 라인 — 분류별 그룹. 각 라인 code·행위명·pay-chip·금액·"자동" 마커. */}
           <section className="rounded-xl border border-border bg-card">
             <header className="border-b border-border px-4 py-2.5">
-              <h3 className="text-[13px] font-semibold text-foreground">수납 상세</h3>
+              <h3 className="text-[13px] font-semibold text-foreground">
+                수납 상세
+              </h3>
             </header>
             {payment.details.length === 0 ? (
               <p className="px-4 py-6 text-[12.5px] text-muted-foreground">
-                집계된 수가 항목이 없습니다. 진찰·검사·처치 수행 후 자동 산정됩니다.
+                집계된 수가 항목이 없습니다. 진찰·검사·처치 수행 후 자동
+                산정됩니다.
               </p>
             ) : (
               <div className="divide-y divide-border/60">
@@ -298,7 +445,9 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
                           key={line.id}
                           className="flex items-center gap-2 text-[12.5px] text-foreground"
                         >
-                          <span className="shrink-0 font-semibold tabular-nums">{line.code ?? "—"}</span>
+                          <span className="shrink-0 font-semibold tabular-nums">
+                            {line.code ?? "—"}
+                          </span>
                           <span className="truncate">{line.name ?? "—"}</span>
                           <PayChip coverageType={line.coverage_type} />
                           {line.fee_item_id ? <AutoTag small /> : null}
@@ -309,7 +458,9 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
                           ) : null}
                           <span className="ml-auto shrink-0 font-semibold tabular-nums">
                             {formatKrw(line.amount_krw)}{" "}
-                            <span className="text-[10.5px] font-normal">원</span>
+                            <span className="text-[10.5px] font-normal">
+                              원
+                            </span>
                           </span>
                         </li>
                       ))}
@@ -323,8 +474,14 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
           {/* 결제 — draft: 결제수단 토글 + "결제·내원 완료"(신원 재진술 confirm). finalized: 완료 패널. */}
           {payment.status === "draft" ? (
             <section className="space-y-3 rounded-xl border border-border bg-card p-4">
-              <h3 className="text-[13px] font-semibold text-foreground">결제</h3>
-              <div role="radiogroup" aria-label="결제 수단" className="flex gap-2">
+              <h3 className="text-[13px] font-semibold text-foreground">
+                결제
+              </h3>
+              <div
+                role="radiogroup"
+                aria-label="결제 수단"
+                className="flex gap-2"
+              >
                 {PAYMENT_METHODS.map((m) => (
                   <button
                     key={m.value}
@@ -352,28 +509,37 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
                 결제·내원 완료
               </button>
               <p className="text-[10.5px] text-muted-foreground">
-                확정 시 본인부담금 {formatKrw(payment.copay_amount_krw)}원이 결제되고 내원이 완료됩니다.
-                완료 후 취소할 수 없습니다.
+                확정 시 본인부담금 {formatKrw(payment.copay_amount_krw)}원이
+                결제되고 내원이 완료됩니다. 완료 후 취소할 수 없습니다.
               </p>
             </section>
           ) : payment.status === "finalized" ? (
             <section className="space-y-2 rounded-xl border border-status-done/40 bg-status-done/5 p-4">
               <div className="flex items-center gap-2">
-                <h3 className="text-[13px] font-semibold text-foreground">결제 완료</h3>
+                <h3 className="text-[13px] font-semibold text-foreground">
+                  결제 완료
+                </h3>
                 <PaymentStatusBadge status="finalized" />
               </div>
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-[12.5px]">
                 <dt className="text-muted-foreground">영수증번호</dt>
-                <dd className="font-medium text-foreground tabular-nums">{payment.payment_no}</dd>
+                <dd className="font-medium text-foreground tabular-nums">
+                  {payment.payment_no}
+                </dd>
                 <dt className="text-muted-foreground">결제수단</dt>
-                <dd className="text-foreground">{paymentMethodLabel(payment.payment_method)}</dd>
+                <dd className="text-foreground">
+                  {paymentMethodLabel(payment.payment_method)}
+                </dd>
                 <dt className="text-muted-foreground">납부액</dt>
                 <dd className="text-foreground tabular-nums">
-                  {formatKrw(payment.paid_amount_krw)} <span className="text-[10.5px]">원</span>
+                  {formatKrw(payment.paid_amount_krw)}{" "}
+                  <span className="text-[10.5px]">원</span>
                 </dd>
                 <dt className="text-muted-foreground">결제일시</dt>
                 <dd className="text-foreground tabular-nums">
-                  {payment.finalized_at ? formatAuditTime(payment.finalized_at) : "—"}
+                  {payment.finalized_at
+                    ? formatAuditTime(payment.finalized_at)
+                    : "—"}
                 </dd>
               </dl>
               <button
@@ -384,6 +550,93 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
               >
                 문서 출력 (진료비 계산서·영수증 · 세부산정내역서)
               </button>
+            </section>
+          ) : null}
+
+          {/* 원외처방전(7.7) — payment 무관(발행 처방이면 노출). 발급 확정(issued→dispensed)·출력(미리보기). */}
+          {prescriptionDoc && prescriptionDoc.prescriptions.length > 0 ? (
+            <section className="space-y-2 rounded-xl border border-border bg-card p-4">
+              <div className="flex items-center gap-2">
+                <h3 className="text-[13px] font-semibold text-foreground">
+                  원외처방전
+                </h3>
+                <span className="text-[11px] text-muted-foreground">
+                  발행된 처방을 발급·출력합니다
+                </span>
+              </div>
+              <ul className="divide-y divide-border/60">
+                {prescriptionDoc.prescriptions.map((rx) => (
+                  <li
+                    key={rx.id}
+                    className="flex flex-wrap items-center gap-2 py-2 text-[12.5px]"
+                  >
+                    <RxStatusBadge status={rx.status} />
+                    <span className="text-muted-foreground">
+                      {rx.prescriber.name ?? "—"} ·{" "}
+                      {formatKstDate(rx.ordered_at)}
+                    </span>
+                    <span className="text-muted-foreground tabular-nums">
+                      약품 {rx.drugs.length}건
+                    </span>
+                    <div className="ml-auto flex gap-2">
+                      {rx.status === "issued" ? (
+                        <button
+                          type="button"
+                          onClick={() => setPendingDispense(rx)}
+                          disabled={dispensing}
+                          className="rounded-md bg-primary px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-primary-hover disabled:opacity-60"
+                        >
+                          발급 확정
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => handleOpenPrescription(rx)}
+                        className="rounded-md border border-border bg-card px-3 py-1.5 text-[12px] font-medium hover:bg-muted"
+                      >
+                        출력
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
+          {/* 처방전 미리보기 — 법정 서식(Batang serif·.receipt-paper) + 브라우저 인쇄/PDF. 영수증 미리보기와 */}
+          {/* 상호배타(activeRx 설정 시 receipt=null). 인쇄=감사(beforeprint·처방 1매·document_type=prescription). */}
+          {prescriptionDoc && activeRx ? (
+            <section className="space-y-3 rounded-xl border border-border bg-card p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-[13px] font-semibold text-foreground">
+                  원외처방전 미리보기
+                  <span className="ml-1.5 rounded border border-border px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
+                    법정 서식
+                  </span>
+                </h3>
+                <div className="ml-auto flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    className="rounded-md bg-primary px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-primary-hover"
+                  >
+                    인쇄 / PDF 저장 (Ctrl P)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveRx(null)}
+                    className="rounded-md border border-border bg-card px-3 py-1.5 text-[12px] font-medium hover:bg-muted"
+                  >
+                    닫기
+                  </button>
+                </div>
+              </div>
+              <div className="overflow-x-auto rounded-md border border-border bg-muted/30 p-3">
+                <PrescriptionDocument
+                  data={prescriptionDoc}
+                  prescription={activeRx}
+                />
+              </div>
             </section>
           ) : null}
 
@@ -400,7 +653,11 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
                   </span>
                 </h3>
                 {/* 문서 탭 — 활성 탭 = 렌더·인쇄·감사 대상(A3 색비의존: 배경 + 밑줄 강조). */}
-                <div role="tablist" aria-label="문서 선택" className="flex gap-1">
+                <div
+                  role="tablist"
+                  aria-label="문서 선택"
+                  className="flex gap-1"
+                >
                   {(
                     [
                       { value: "receipt", label: "진료비 계산서·영수증" },
@@ -460,6 +717,16 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
             confirmLabel="결제·내원 완료"
             onConfirm={() => void handleFinalize()}
             onCancel={() => setShowConfirm(false)}
+          />
+
+          {/* 처방전 발급 confirm(UX-DR21·신원 재진술) — 발급은 비가역(issued→dispensed). */}
+          <ConfirmDialog
+            open={pendingDispense !== null}
+            title="원외처방전 발급 확인"
+            description={`환자 ${payment.patient_name} · 차트 ${payment.chart_no}의 원외처방전을 발급합니다. 발급 후 취소할 수 없습니다.`}
+            confirmLabel="발급 확정"
+            onConfirm={() => void handleDispense()}
+            onCancel={() => setPendingDispense(null)}
           />
         </>
       )}
