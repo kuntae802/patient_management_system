@@ -97,6 +97,15 @@ def doctor_id(psql: Psql) -> str:
     ).lower()
 
 
+@pytest.fixture(scope="module")
+def admin_id(psql: Psql) -> str:
+    """admin auth uid — 전권(examination.perform). 부분수행 셋업의 검사 수행 호출자(7.10)."""
+    return psql.scalar(
+        "select u.id::text from public.users u "
+        "join public.roles r on r.id = u.role_id where r.code = 'admin' limit 1"
+    ).lower()
+
+
 def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -791,3 +800,101 @@ def test_cancel_nonexistent_404(client, reception_token):
     """미존재 내원 취소 → 404."""
     res = client.post(_cancel_url(str(uuid.uuid4())), headers=_bearer(reception_token), json={})
     assert res.status_code == 404, res.text
+
+
+# ── Story 7.10: 부분 수행 정산 — pending_orders_count + 수행분만 정산 ──────────────
+
+_FEE_IMG_CODE = "ha201"  # 검사(흉부촬영) — 수행 시 fee_item
+_FEE_TRT_CODE = "m0030"  # 처치(드레싱) — 미수행 시 fee_item 없음
+
+
+def _setup_partial_encounter(psql: Psql, doctor_id: str, admin_id: str) -> str:
+    """부분수행 in_progress 내원 — 진찰료 + 수행 검사 1 + 미수행 검사 1 + 미수행 처치 1.
+
+    주상병 부착(finalize). pending_orders_count == 2. 검사 수행=admin. eid 반환."""
+    pid, eid = str(uuid.uuid4()), str(uuid.uuid4())
+    xperf, xpend, tpend = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    doc = '{"sub":"' + doctor_id + '","role":"authenticated"}'
+    adm = '{"sub":"' + admin_id + '","role":"authenticated"}'
+    img = f"(select id from public.fee_schedules where lower(code)='{_FEE_IMG_CODE}' limit 1)"
+    trt = f"(select id from public.fee_schedules where lower(code)='{_FEE_TRT_CODE}' limit 1)"
+    sql = (
+        "begin;"
+        + _patient_sql(pid)
+        + "insert into public.encounters(id, patient_id, department_id, visit_type, status) "
+        f"values ('{eid}','{pid}',{_DEPT},'walk_in','registered');"
+        f"select set_config('request.jwt.claims', '{doc}', true);"
+        f"select set_config('app.actor_id', '{doctor_id}', true);"
+        f"select public.start_consult('{eid}');"
+        "insert into public.encounter_diagnoses"
+        "(encounter_id, diagnosis_id, is_primary, recorded_by, is_active) "
+        f"values ('{eid}',(select id from public.diagnoses limit 1),true,'{doctor_id}',true);"
+        # 오더 3건 생성(in_progress·게이트 통과). 수행 1·미수행 2.
+        "insert into public.examinations"
+        "(id, encounter_id, exam_type, fee_schedule_id, status, ordered_by) "
+        f"values ('{xperf}','{eid}','imaging',{img},'ordered','{doctor_id}');"
+        "insert into public.examinations"
+        "(id, encounter_id, exam_type, fee_schedule_id, status, ordered_by) "
+        f"values ('{xpend}','{eid}','imaging',{img},'ordered','{doctor_id}');"
+        "insert into public.treatment_orders"
+        "(id, encounter_id, fee_schedule_id, status, ordered_by) "
+        f"values ('{tpend}','{eid}',{trt},'ordered','{doctor_id}');"
+        # 검사 1건만 수행(admin) → fee_item 적재. 나머지 2건 ordered 잔존(미수행).
+        f"select set_config('request.jwt.claims', '{adm}', true);"
+        f"select set_config('app.actor_id', '{admin_id}', true);"
+        f"select public.perform_examination('{xperf}');"
+        "commit;"
+    )
+    proc = psql.run(sql)
+    assert proc.returncode == 0, proc.stderr
+    return eid
+
+
+def test_partial_performance_pending_count(client, reception_token, doctor_id, admin_id, psql):
+    """부분수행 내원 build → pending_orders_count == 2(미수행 검사 1 + 처치 1)."""
+    eid = _setup_partial_encounter(psql, doctor_id, admin_id)
+    res = client.post(_payment_url(eid), headers=_bearer(reception_token))
+    assert res.status_code == 200, res.text
+    assert res.json()["pending_orders_count"] == 2
+
+
+def test_partial_performance_settles_performed_only(
+    client, reception_token, doctor_id, admin_id, psql
+):
+    """부분수행 finalize → 수행분만 청구·미수행 제외·내원 completed·미수행 오더 잔존(7.10)."""
+    eid = _setup_partial_encounter(psql, doctor_id, admin_id)
+    res = client.post(
+        _finalize_url(eid), headers=_bearer(reception_token), json={"payment_method": "card"}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "finalized"
+    # 수행 검사(HA201) 1건만 청구·미수행 검사(동일 HA201) 제외·미수행 처치(M0030) 제외.
+    codes = [(d["code"] or "").upper() for d in body["details"]]
+    assert codes.count(_FEE_IMG_CODE.upper()) == 1, codes  # 수행 1건만(미수행 검사 fee_item 0)
+    assert codes.count(_FEE_TRT_CODE.upper()) == 0, codes  # 미수행 처치 제외
+    assert body["total_amount_krw"] == sum(d["amount_krw"] for d in body["details"])
+    assert _encounter_status(psql, eid) == "completed"
+    # 미수행 오더는 그대로 ordered 잔존(자동 cancel 안 함·설계 결정 ②).
+    assert (
+        psql.scalar(
+            "select count(*) from public.examinations "
+            f"where encounter_id='{eid}' and status='ordered'"
+        )
+        == "1"
+    )
+    assert (
+        psql.scalar(
+            "select count(*) from public.treatment_orders "
+            f"where encounter_id='{eid}' and status='ordered'"
+        )
+        == "1"
+    )
+
+
+def test_pending_orders_count_zero_when_no_pending(client, reception_token, doctor_id, psql):
+    """미수행 오더 없는 내원 build → pending_orders_count == 0(부분수행 배지 미표시 경로)."""
+    eid = _setup_finalizable_encounter(psql, doctor_id)  # 진찰료만·오더 없음
+    res = client.post(_payment_url(eid), headers=_bearer(reception_token))
+    assert res.status_code == 200, res.text
+    assert res.json()["pending_orders_count"] == 0

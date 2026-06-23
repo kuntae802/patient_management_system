@@ -197,6 +197,7 @@ function makePayment(over: Partial<Payment> = {}): Payment {
     insurance_type: "health_insurance",
     patient_name: "홍길동",
     chart_no: "C-0001",
+    pending_orders_count: 0,
     total_amount_krw: 17610,
     covered_amount_krw: 17610,
     non_covered_amount_krw: 0,
@@ -295,6 +296,35 @@ describe("BillingDetail", () => {
     expect(await screen.findByText("홍길동")).toBeInTheDocument();
     expect(screen.getByText("차트 C-0001")).toBeInTheDocument();
     expect(screen.getByText("미수납")).toBeInTheDocument();
+  });
+
+  it("부분 수행 배지 — draft·미수행 오더>0 시 카운트 안내(7.10)", async () => {
+    mockBuild.mockResolvedValue(makePayment({ pending_orders_count: 2 }));
+    render(<BillingDetail encounterId="enc-1" />);
+    const badge = await screen.findByText(/미수행 오더/);
+    expect(badge).toHaveTextContent("미수행 오더 2건");
+  });
+
+  it("부분 수행 배지 — 미수행 0건이면 미표시", async () => {
+    mockBuild.mockResolvedValue(makePayment({ pending_orders_count: 0 }));
+    render(<BillingDetail encounterId="enc-1" />);
+    await screen.findByText("미수납"); // 로드 완료 대기
+    expect(screen.queryByText(/미수행 오더/)).toBeNull();
+  });
+
+  it("부분 수행 배지 — finalized(종결) 이면 미표시", async () => {
+    mockBuild.mockResolvedValue(
+      makePayment({
+        status: "finalized",
+        pending_orders_count: 2,
+        payment_no: "R-20260625-000001",
+        payment_method: "card",
+        finalized_at: "2026-06-25T05:00:00Z",
+      }),
+    );
+    render(<BillingDetail encounterId="enc-1" />);
+    await screen.findByText("R-20260625-000001"); // 완료 패널 로드 대기
+    expect(screen.queryByText(/미수행 오더/)).toBeNull();
   });
 
   it("결제수단 토글 + 신원 재진술 confirm → finalize 성공 시 완료 패널", async () => {
