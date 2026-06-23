@@ -622,3 +622,87 @@ def test_export_nonexistent_payment_404(client, reception_token):
         json={"document_type": "receipt"},
     )
     assert res.status_code == 404, res.text
+
+
+# ── Story 7.8: 선결제(선수납) + 차액 정산 + 워크리스트 registered ──────────────
+
+
+def _prepay_url(encounter_id: str) -> str:
+    return f"/v1/encounters/{encounter_id}/payment/prepay"
+
+
+def test_prepay_at_registered_accumulates(client, reception_token, psql):
+    """registered(수가 0) 선결제 5000 → 200 draft·paid=5000·billing_type prepaid(선수납 진입점)."""
+    eid = _setup_billable_encounter(psql, with_fees=False)
+    res = client.post(
+        _prepay_url(eid),
+        headers=_bearer(reception_token),
+        json={"amount_krw": 5000, "payment_method": "card"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "draft"
+    assert body["billing_type"] == "prepaid"
+    assert body["paid_amount_krw"] == 5000
+    assert body["payment_method"] == "card"
+
+
+def test_prepay_invalid_amount_422(client, reception_token, psql):
+    """선결제 금액 0/음수/상한초과 → 422(Pydantic Field gt=0·le=1억 — int4 overflow 방어)."""
+    eid = _setup_billable_encounter(psql, with_fees=False)
+    zero = client.post(
+        _prepay_url(eid),
+        headers=_bearer(reception_token),
+        json={"amount_krw": 0, "payment_method": "card"},
+    )
+    assert zero.status_code == 422, zero.text
+    over_cap = client.post(
+        _prepay_url(eid),
+        headers=_bearer(reception_token),
+        json={"amount_krw": 100_000_001, "payment_method": "card"},  # 1억 초과
+    )
+    assert over_cap.status_code == 422, over_cap.text
+
+
+def test_prepay_forbidden_doctor(client, doctor_token, psql):
+    """doctor(payment.read 보유·manage 미보유) 선결제 → 403(쓰기 권한 분리)."""
+    eid = _setup_billable_encounter(psql, with_fees=False)
+    res = client.post(
+        _prepay_url(eid),
+        headers=_bearer(doctor_token),
+        json={"amount_krw": 5000, "payment_method": "card"},
+    )
+    assert res.status_code == 403, res.text
+
+
+def test_prepay_then_finalize_settles_difference(client, reception_token, doctor_id, psql):
+    """선결제 3000(copay 5280) → finalize → paid=5280(차액 정산·완납)·billing_type prepaid 유지."""
+    eid = _setup_finalizable_encounter(psql, doctor_id)
+    prepay = client.post(
+        _prepay_url(eid),
+        headers=_bearer(reception_token),
+        json={"amount_krw": 3000, "payment_method": "card"},
+    )
+    assert prepay.status_code == 200, prepay.text
+    assert prepay.json()["paid_amount_krw"] == 3000
+    final = client.post(
+        _finalize_url(eid), headers=_bearer(reception_token), json={"payment_method": "card"}
+    )
+    assert final.status_code == 200, final.text
+    body = final.json()
+    assert body["status"] == "finalized"
+    assert body["copay_amount_krw"] == 5280
+    assert body["paid_amount_krw"] == 5280  # greatest(5280, 3000) — 차액 수금·완납
+    assert body["billing_type"] == "prepaid"
+    assert _encounter_status(psql, eid) == "completed"
+
+
+def test_worklist_includes_registered(client, reception_token, psql):
+    """GET /billing/worklist → registered(선수납 가능) 내원도 포함(status=registered·예상총액 0)."""
+    eid = _setup_billable_encounter(psql, with_fees=False)  # registered·수가 0
+    res = client.get("/v1/billing/worklist", headers=_bearer(reception_token))
+    assert res.status_code == 200, res.text
+    row = next((r for r in res.json()["data"] if r["encounter_id"] == eid), None)
+    assert row is not None, f"registered 내원 {eid} 워크리스트 미포함(7.8 선수납 진입점)"
+    assert row["status"] == "registered"
+    assert row["estimated_total_krw"] == 0

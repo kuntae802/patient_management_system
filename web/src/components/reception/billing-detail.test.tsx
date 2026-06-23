@@ -21,6 +21,7 @@ vi.mock("@/lib/billing/payments", async (importOriginal) => {
     ...actual,
     buildPayment: vi.fn(),
     finalizePayment: vi.fn(),
+    prepayPayment: vi.fn(),
     fetchReceipt: vi.fn(),
     exportReceipt: vi.fn(),
   };
@@ -51,6 +52,7 @@ import {
   exportReceipt,
   fetchReceipt,
   finalizePayment,
+  prepayPayment,
   type Payment,
   type PaymentDetail,
   type Receipt,
@@ -65,6 +67,7 @@ import {
 
 const mockBuild = vi.mocked(buildPayment);
 const mockFinalize = vi.mocked(finalizePayment);
+const mockPrepay = vi.mocked(prepayPayment);
 const mockFetchReceipt = vi.mocked(fetchReceipt);
 const mockExportReceipt = vi.mocked(exportReceipt);
 const mockFetchRx = vi.mocked(fetchPrescriptionDocument);
@@ -564,5 +567,126 @@ describe("BillingDetail", () => {
     await waitFor(() =>
       expect(mockExportRx).toHaveBeenCalledWith("enc-1", "rx-1"),
     );
+  });
+
+  // ── Story 7.8: 선수납(선결제) + 차액 정산 + 부분 결제상태 ───────────────────
+
+  it("선결제(paid>0) draft → 부분 배지(◐) + 이미 납부/납부할 차액 표시", async () => {
+    mockBuild.mockResolvedValue(
+      makePayment({
+        billing_type: "prepaid",
+        copay_amount_krw: 5280,
+        paid_amount_krw: 3000,
+      }),
+    );
+    render(<BillingDetail encounterId="enc-1" />);
+    // A3 부분 배지(미수납/완료 아님) + 선수납 칩.
+    expect(await screen.findByText("부분")).toBeInTheDocument();
+    expect(screen.getAllByText("선수납").length).toBeGreaterThanOrEqual(1);
+    // 납부 현황 — 이미 납부 3,000 / 납부할 차액 2,280(=5280-3000).
+    expect(screen.getByText("이미 납부 (선결제)")).toBeInTheDocument();
+    expect(screen.getByText("3,000")).toBeInTheDocument();
+    expect(screen.getByText("납부할 차액")).toBeInTheDocument();
+    expect(screen.getByText("2,280")).toBeInTheDocument();
+  });
+
+  it("선수납 패널 — 금액 입력 + 선결제 → 신원 confirm → prepayPayment 호출", async () => {
+    mockBuild.mockResolvedValue(makePayment({ copay_amount_krw: 5280 }));
+    mockPrepay.mockResolvedValue(
+      makePayment({
+        billing_type: "prepaid",
+        copay_amount_krw: 5280,
+        paid_amount_krw: 3000,
+      }),
+    );
+    render(<BillingDetail encounterId="enc-1" />);
+    // 결제수단 현금 선택 + 금액 입력.
+    await userEvent.click(await screen.findByRole("radio", { name: "현금" }));
+    await userEvent.type(screen.getByLabelText("선결제 (선수납)"), "3000");
+    // 선결제 버튼 → 신원 재진술 confirm(이름·차트번호·선결제액).
+    await userEvent.click(screen.getByRole("button", { name: "선결제" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText(/홍길동/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/3,000/)).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "선결제" }));
+    await waitFor(() =>
+      expect(mockPrepay).toHaveBeenCalledWith("enc-1", 3000, "cash"),
+    );
+    expect(toastSuccess).toHaveBeenCalled();
+  });
+
+  it("registered(수가 0) → 선결제 패널만·결제·내원 완료 버튼 없음(예치 안내)", async () => {
+    mockBuild.mockResolvedValue(
+      makePayment({
+        total_amount_krw: 0,
+        covered_amount_krw: 0,
+        copay_amount_krw: 0,
+        details: [],
+      }),
+    );
+    render(<BillingDetail encounterId="enc-1" />);
+    expect(await screen.findByLabelText("선결제 (선수납)")).toBeInTheDocument();
+    // 수가 미발생 → 정산(완료) 불가·예치 안내.
+    expect(screen.getByText(/예치금으로 기록/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "결제·내원 완료" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("선납 draft(total>0) finalize 안내 = 차액 기준", async () => {
+    mockBuild.mockResolvedValue(
+      makePayment({
+        billing_type: "prepaid",
+        copay_amount_krw: 5280,
+        paid_amount_krw: 3000,
+      }),
+    );
+    render(<BillingDetail encounterId="enc-1" />);
+    // finalize 버튼 존재 + 안내 문구 = 차액 2,280(전액 본인부담금 5,280 아님).
+    expect(
+      await screen.findByRole("button", { name: "결제·내원 완료" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/차액 2,280원/)).toBeInTheDocument();
+  });
+
+  it("과납(선납>본인부담금) → 환급 대상 표시(환급은 7.9 이월)", async () => {
+    mockBuild.mockResolvedValue(
+      makePayment({
+        billing_type: "prepaid",
+        copay_amount_krw: 5280,
+        paid_amount_krw: 9000,
+      }),
+    );
+    render(<BillingDetail encounterId="enc-1" />);
+    expect(await screen.findByText("환급 대상 (과납)")).toBeInTheDocument();
+    expect(screen.getByText("3,720")).toBeInTheDocument(); // 9000 - 5280
+  });
+
+  it("완납/과납(차액≤0) finalize confirm = '추가 결제 없이(선결제 완납)' 문구", async () => {
+    mockBuild.mockResolvedValue(
+      makePayment({
+        billing_type: "prepaid",
+        copay_amount_krw: 5280,
+        paid_amount_krw: 9000, // 과납 → due ≤ 0
+      }),
+    );
+    render(<BillingDetail encounterId="enc-1" />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "결제·내원 완료" }),
+    );
+    const dialog = await screen.findByRole("alertdialog");
+    // due≤0 → "차액 0원 결제"가 아니라 "추가 결제 없이(선결제 완납)".
+    expect(within(dialog).getByText(/추가 결제 없이.*선결제 완납/)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/차액 0원/)).not.toBeInTheDocument();
+  });
+
+  it("선결제 금액 상한(1억원) 초과 입력 → 선결제 버튼 비활성", async () => {
+    mockBuild.mockResolvedValue(makePayment({ copay_amount_krw: 5280 }));
+    render(<BillingDetail encounterId="enc-1" />);
+    await userEvent.type(
+      await screen.findByLabelText("선결제 (선수납)"),
+      "100000001", // 1억 초과
+    );
+    expect(screen.getByRole("button", { name: "선결제" })).toBeDisabled();
   });
 });

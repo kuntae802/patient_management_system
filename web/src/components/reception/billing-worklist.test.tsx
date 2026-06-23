@@ -38,7 +38,7 @@ afterEach(() => {
 });
 
 describe("BillingWorklist", () => {
-  it("정산 대상 행을 렌더(환자명·예상 총액·상세 링크)", async () => {
+  it("정산 대상(진찰중) 행을 렌더(환자명·예상 총액·상태 칩·상세 링크)", async () => {
     mockFetch.mockResolvedValue({
       data: [makeItem()],
       meta: { page: 1, page_size: 200, total: 1 },
@@ -48,14 +48,35 @@ describe("BillingWorklist", () => {
     expect(await screen.findByText("김환자")).toBeInTheDocument();
     expect(screen.getByText("C-0001")).toBeInTheDocument();
     expect(screen.getByText("17,610")).toBeInTheDocument(); // formatKrw·tabular-nums
+    expect(screen.getByText("진찰중 · 정산 대상")).toBeInTheDocument(); // 7.8 상태 칩
     const link = screen.getByRole("link");
     expect(link).toHaveAttribute("href", "/reception/billing/enc-1");
   });
 
-  it("정산 대상 0건이면 빈 상태", async () => {
+  it("registered(접수) 행 → '선수납 가능' 상태 칩 + 진입 링크(7.8 진입점)", async () => {
+    mockFetch.mockResolvedValue({
+      data: [
+        makeItem({
+          encounter_id: "enc-2",
+          status: "registered",
+          consult_started_at: null,
+          estimated_total_krw: 0,
+        }),
+      ],
+      meta: { page: 1, page_size: 200, total: 1 },
+    });
+    render(<BillingWorklist />);
+    expect(await screen.findByText("접수 · 선수납 가능")).toBeInTheDocument();
+    expect(screen.getByRole("link")).toHaveAttribute(
+      "href",
+      "/reception/billing/enc-2",
+    );
+  });
+
+  it("수납 대상 0건이면 빈 상태", async () => {
     mockFetch.mockResolvedValue({ data: [], meta: { page: 1, page_size: 200, total: 0 } });
     render(<BillingWorklist />);
-    expect(await screen.findByText("정산 대상 내원이 없습니다.")).toBeInTheDocument();
+    expect(await screen.findByText("수납 대상 내원이 없습니다.")).toBeInTheDocument();
   });
 
   it("로드 실패 시 에러 + 다시 시도 버튼", async () => {
