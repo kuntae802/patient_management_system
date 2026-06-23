@@ -910,3 +910,167 @@ def test_coverage_seed_has_both_classes(psql):
     assert psql.scalar("select coverage_type from public.drugs where code = '653700110'") == (
         "non_covered"
     )
+
+
+# ── Story 7.7: 원외처방전 출력·발급 (FR-115·FR-080) ───────────────────────────────
+# 게이트=prescription.dispense(원무). 발행(create)·조회와 별개 권한 — 비중첩 baseline.
+# 문서=요양기관+환자(masked RRN)+처방 1:N(발행의 면허·KCD·약품). 발급=issued→dispensed(비가역).
+
+
+def _prescription_document_url(eid: str) -> str:
+    return f"{_ENCOUNTERS_URL}/{eid}/prescription-document"
+
+
+def _dispense_url(eid: str, rid: str) -> str:
+    return f"{_ENCOUNTERS_URL}/{eid}/prescriptions/{rid}/dispense"
+
+
+def _rx_export_url(eid: str, rid: str) -> str:
+    return f"{_ENCOUNTERS_URL}/{eid}/prescriptions/{rid}/document/export"
+
+
+def _issue_prescription(client, doctor_token, eid, drug_id, *, encounter_diagnosis_id=None) -> str:
+    body = {
+        "details": [
+            {
+                "drug_id": drug_id,
+                "dose": 1,
+                "frequency": "TID",
+                "duration_days": 3,
+                "usage_instruction": "식후 30분",
+            }
+        ]
+    }
+    if encounter_diagnosis_id:
+        body["encounter_diagnosis_id"] = encounter_diagnosis_id
+    res = client.post(_prescriptions_url(eid), json=body, headers=_bearer(doctor_token))
+    assert res.status_code == 201, res.text
+    return res.json()["id"]
+
+
+def test_prescription_document_golden_path(
+    client, admin_token, doctor_token, reception_token, dept_id, drug_ids, diagnosis_ids
+):
+    """reception GET prescription-document → 200: 요양기관·환자 masked·처방 라인·KCD·면허."""
+    import re
+
+    eid = _walk_in(client, admin_token, dept_id)
+    ed = _attach_diagnosis(client, doctor_token, eid, diagnosis_ids["i10"])
+    rid = _issue_prescription(
+        client, doctor_token, eid, drug_ids["tylenol"], encounter_diagnosis_id=ed
+    )
+    res = client.get(_prescription_document_url(eid), headers=_bearer(reception_token))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["clinic"]["hira_no"]  # 요양기관기호(0049 시드)
+    assert body["patient"]["resident_no_masked"].endswith("******")  # masked
+    # full RRN(13자리 평문) 미투영(PII 경계).
+    assert not re.search(r"\d{6}-\d{7}", body["patient"]["resident_no_masked"])
+    assert len(body["prescriptions"]) == 1
+    rx = body["prescriptions"][0]
+    assert rx["id"] == rid
+    assert rx["status"] == "issued"
+    assert rx["dispensed_at"] is None
+    assert rx["prescriber"]["license_type"] == "doctor"
+    assert rx["prescriber"]["license_no"] == "12345"  # 데모 의사 면허(seed 7.7)
+    assert rx["diagnosis"]["code"].lower() == "i10"  # 질병분류기호 KCD(FR-051)
+    assert len(rx["drugs"]) == 1
+    drug = rx["drugs"][0]
+    assert drug["drug_code"] == "645100250"
+    assert drug["drug_name"]
+    assert drug["frequency"] == "TID"
+    assert drug["duration_days"] == 3
+
+
+def test_prescription_document_empty_when_no_prescriptions(
+    client, admin_token, reception_token, dept_id
+):
+    """처방 없는 내원 → 200 + prescriptions=[](404 아님)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.get(_prescription_document_url(eid), headers=_bearer(reception_token))
+    assert res.status_code == 200, res.text
+    assert res.json()["prescriptions"] == []
+
+
+def test_prescription_document_nonexistent_encounter_404(client, reception_token):
+    """미존재 내원 문서 → 404."""
+    res = client.get(
+        _prescription_document_url(str(uuid.uuid4())), headers=_bearer(reception_token)
+    )
+    assert res.status_code == 404, res.text
+
+
+def test_dispense_prescription_golden_path(
+    client, admin_token, doctor_token, reception_token, dept_id, drug_ids
+):
+    """reception 발급 → 200 status='dispensed'·dispensed_at 세팅. 재발급 → 409(비가역 1방향)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    rid = _issue_prescription(client, doctor_token, eid, drug_ids["tylenol"])
+    res = client.post(_dispense_url(eid, rid), headers=_bearer(reception_token))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "dispensed"
+    assert body["dispensed_at"] is not None
+    # 재발급 → 409(invalid_transition).
+    res2 = client.post(_dispense_url(eid, rid), headers=_bearer(reception_token))
+    assert res2.status_code == 409, res2.text
+    assert res2.json()["error"]["code"] == "invalid_transition"
+
+
+def test_dispense_reflected_in_document(
+    client, admin_token, doctor_token, reception_token, dept_id, drug_ids
+):
+    """발급 후 문서 재조회 → status='dispensed'·dispensed_at 반영."""
+    eid = _walk_in(client, admin_token, dept_id)
+    rid = _issue_prescription(client, doctor_token, eid, drug_ids["tylenol"])
+    client.post(_dispense_url(eid, rid), headers=_bearer(reception_token))
+    res = client.get(_prescription_document_url(eid), headers=_bearer(reception_token))
+    rx = next(r for r in res.json()["prescriptions"] if r["id"] == rid)
+    assert rx["status"] == "dispensed"
+    assert rx["dispensed_at"] is not None
+
+
+def test_prescription_document_export_204(
+    client, admin_token, doctor_token, reception_token, dept_id, drug_ids
+):
+    """내보내기 감사 → 204(finalize 무관 — 발행 처방이면 출력 가능)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    rid = _issue_prescription(client, doctor_token, eid, drug_ids["tylenol"])
+    res = client.post(_rx_export_url(eid, rid), headers=_bearer(reception_token))
+    assert res.status_code == 204, res.text
+
+
+def test_dispense_cross_encounter_404(
+    client, admin_token, doctor_token, reception_token, dept_id, drug_ids
+):
+    """타 내원의 prescription_id 로 발급 시도 → 404(경로 정합 선검사)."""
+    eid_a = _walk_in(client, admin_token, dept_id)
+    eid_b = _walk_in(client, admin_token, dept_id)
+    rid = _issue_prescription(client, doctor_token, eid_a, drug_ids["tylenol"])
+    res = client.post(_dispense_url(eid_b, rid), headers=_bearer(reception_token))
+    assert res.status_code == 404, res.text
+
+
+def test_prescription_document_forbidden_for_doctor(
+    client, admin_token, doctor_token, dept_id, drug_ids
+):
+    """doctor 는 prescription.dispense 미보유 → 문서/발급 403(발급=원무 직무·비중첩 baseline)."""
+    eid = _walk_in(client, admin_token, dept_id)
+    rid = _issue_prescription(client, doctor_token, eid, drug_ids["tylenol"])
+    doc = client.get(_prescription_document_url(eid), headers=_bearer(doctor_token))
+    assert doc.status_code == 403, doc.text
+    disp = client.post(_dispense_url(eid, rid), headers=_bearer(doctor_token))
+    assert disp.status_code == 403, disp.text
+
+
+def test_reception_cannot_issue_prescription_baseline(
+    client, admin_token, reception_token, dept_id, drug_ids
+):
+    """비중첩 baseline 유지 — reception 은 prescription.dispense 만, 발행(create)은 여전히 403."""
+    eid = _walk_in(client, admin_token, dept_id)
+    res = client.post(
+        _prescriptions_url(eid),
+        json={"details": [{"drug_id": drug_ids["tylenol"]}]},
+        headers=_bearer(reception_token),
+    )
+    assert res.status_code == 403, res.text

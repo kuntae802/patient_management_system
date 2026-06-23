@@ -655,3 +655,110 @@ def test_rls_anon_cannot_select_orders(psql: Psql):
         "begin;set local role anon;select count(*) from public.prescriptions;rollback;"
     )
     assert "permission denied" in err.lower() and "prescriptions" in err.lower(), err
+
+
+# ── Story 7.7: 원외처방전 발급(dispense)·내보내기 감사 RPC (0050) ───────────────────
+# reception 은 0050/seed 로 prescription.dispense 보유(발급 직무·FR-115) — 발행(create)·조회는
+# baseline 403 은 비중첩 유지. nurse 는 dispense 미보유(거부 baseline).
+
+
+def test_dispense_prescription_rpc_transition(psql: Psql, admin_id: str, reception_id: str):
+    """dispense_prescription RPC(reception): issued→dispensed + dispensed_at + 전이 감사."""
+    pid, eid, rid = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    out = psql.scalar(
+        "begin;"
+        + _patient_sql(pid)
+        + _encounter_sql(eid, pid)
+        + _rx_sql(rid, eid, admin_id)
+        + _claims(reception_id)
+        + "select public.dispense_prescription('"
+        + rid
+        + "');"
+        + "select 'V:'||status||'|d='||(dispensed_at is not null)::text"
+        "||'|aud='||(exists (select 1 from public.audit_logs where target_id='"
+        + rid
+        + "' and action='update' and actor_id::text='"
+        + reception_id
+        + "'))::text from public.prescriptions where id='"
+        + rid
+        + "';"
+        "rollback;"
+    )
+    assert _verdict(out) == "dispensed|d=true|aud=true", out
+
+
+def test_dispense_prescription_already_dispensed_409(psql: Psql, admin_id: str, reception_id: str):
+    """이미 dispensed 인 처방 재발급 → PT409(비가역 1방향·소스상태 issued 선검사)."""
+    pid, eid, rid = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    _assert_sqlstate(
+        psql,
+        setup=_patient_sql(pid)
+        + _encounter_sql(eid, pid)
+        + _rx_sql(rid, eid, admin_id)
+        + _claims(reception_id)
+        + "select public.dispense_prescription('"
+        + rid
+        + "');",
+        op="perform public.dispense_prescription('" + rid + "');",
+        sqlstate="PT409",
+        claims_uid=reception_id,
+    )
+
+
+def test_dispense_prescription_not_found_404(psql: Psql, reception_id: str):
+    """존재하지 않는 처방 발급 → PT404."""
+    _assert_sqlstate(
+        psql,
+        setup="",
+        op="perform public.dispense_prescription('" + str(uuid.uuid4()) + "');",
+        sqlstate="PT404",
+        claims_uid=reception_id,
+    )
+
+
+def test_dispense_prescription_denied_for_nurse(psql: Psql, admin_id: str, nurse_id: str):
+    """prescription.dispense 미보유(nurse=order.read 만) → insufficient_privilege(42501 → 403)."""
+    pid, eid, rid = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    _assert_sqlstate(
+        psql,
+        setup=_patient_sql(pid) + _encounter_sql(eid, pid) + _rx_sql(rid, eid, admin_id),
+        op="perform public.dispense_prescription('" + rid + "');",
+        sqlstate="42501",
+        claims_uid=nurse_id,
+    )
+
+
+def test_log_prescription_document_export_audits(psql: Psql, admin_id: str, reception_id: str):
+    """log_prescription_document_export(reception): audit 'read'·target=prescriptions.
+
+    finalized 게이트 없음 검증 — payment 없는 처방도 내보내기 감사 성공(0049 영수증과의 차이)."""
+    pid, eid, rid = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    out = psql.scalar(
+        "begin;"
+        + _patient_sql(pid)
+        + _encounter_sql(eid, pid)
+        + _rx_sql(rid, eid, admin_id)
+        + _claims(reception_id)
+        + "select public.log_prescription_document_export('"
+        + rid
+        + "','prescription');"
+        + "select 'V:'||count(*)::text||'|t='||coalesce(max(target_table),'')"
+        "||'|dt='||coalesce(max(after_data->>'document_type'),'') from public.audit_logs "
+        "where target_id='"
+        + rid
+        + "' and action='read' and after_data->>'event'='document_export';"
+        "rollback;"
+    )
+    assert _verdict(out) == "1|t=prescriptions|dt=prescription", out
+
+
+def test_log_prescription_export_denied_for_nurse(psql: Psql, admin_id: str, nurse_id: str):
+    """prescription.dispense 미보유(nurse) → 42501(내보내기 감사도 dispense 게이트)."""
+    pid, eid, rid = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    _assert_sqlstate(
+        psql,
+        setup=_patient_sql(pid) + _encounter_sql(eid, pid) + _rx_sql(rid, eid, admin_id),
+        op="perform public.log_prescription_document_export('" + rid + "','prescription');",
+        sqlstate="42501",
+        claims_uid=nurse_id,
+    )
