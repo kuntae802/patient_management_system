@@ -631,7 +631,7 @@
 | 식별자 | 종류 | 의미 |
 |---|---|---|
 | `payments` | 테이블(0045) | 수납 헤더 — 내원 1:1(`encounter_id` UNIQUE FK)·`status`(draft/finalized/cancelled)·`billing_type`(postpaid/prepaid·선후수납 7.8)·금액 6컬럼(total/covered/non_covered/copay/insurer/paid `_krw` int≥0·default 0)·결제 6컬럼(payment_method card/cash/transfer·payment_no UNIQUE 영수증번호·finalized_at/by·cancelled_at·cancel_reason). **금액·결제 컬럼=7.2/7.3/7.4 가 채움**(본 파일=기본값 0/NULL) |
-| `payment_details` | 테이블(0045) | 수납상세 라인 — `payment_id` FK **ON DELETE CASCADE**·`fee_item_id` FK(nullable=수기 라인)·스냅샷(fee_schedule_id·code·name·category·quantity·unit_amount_krw·amount_krw·coverage_type)·본인부담(copay_rate numeric(4,3)·copay_amount_krw·insurer_amount_krw·7.3 채움). **`unique(payment_id, fee_item_id)`** 집계 멱등·**`check(amount_krw=quantity*unit_amount_krw)`** |
+| `payment_details` | 테이블(0045) | 수납상세 라인 — `payment_id` FK **ON DELETE CASCADE**·`fee_item_id` FK(nullable=수기 라인)·스냅샷(fee_schedule_id·code·name·category·quantity·unit_amount_krw·amount_krw·coverage_type)·본인부담(copay_rate numeric(4,3)·copay_amount_krw·insurer_amount_krw·**7.3 `price_payment`(0047) 채움**·라인 `amount=copay+insurer` 정합). **`unique(payment_id, fee_item_id)`** 집계 멱등·**`check(amount_krw=quantity*unit_amount_krw)`** |
 | `payment.read` | 권한(0045 신규) | 수납 조회(원무 정산·의사·환자 포털 Epic 8 소비) — **admin 부트 grant 재실행**(회귀 회피). doctor·reception seed grant·403 baseline=nurse. 쓰기 권한(finalize)=7.4 소관 |
 | `fee_on_encounter_start` 재정의(0045) | 트리거 함수 | **초진/재진 동적 판정**(0021 단일 매핑 대체): 환자 과거 완료 내원 존재 → 재진(`encounter_start_repeat`→AA254) / 없으면 초진(`encounter_start_initial`→AA154)·분기 부재 시 레거시 `encounter_start` 폴백. 트리거 부착(trg_encounters_fee)은 0021 불변 |
 | `insert_fee_item` 재정의(0045) | 함수(SECURITY DEFINER) | **만료·비활성 수가 적재 제외**(5.10 이월 흡수): 룩업 WHERE 에 `is_active·effective_from≤current_date·(effective_to null or ≥current_date)` 추가 → 만료/폐지 EDI 코드 신규 적재 차단. PUBLIC EXECUTE 회수 방어적 재선언(위조 적재 차단) |
@@ -647,9 +647,22 @@
 |---|---|---|
 | `build_payment` | 함수(0046·SECURITY DEFINER) | 한 내원의 자동발생 수가(`fee_items`)를 draft 수납 건으로 **멱등 집계**: 헤더 upsert(내원 1:1)→status≠draft early return→`fee_items` JOIN `fee_schedules`(code/name 스냅샷)로 `payment_details` 적재(`on conflict (payment_id,fee_item_id) do nothing`)→헤더 롤업(total/covered/non_covered). copay/insurer 롤업=7.3·결제=7.4. `revoke all from public,anon,authenticated`+`grant execute to service_role`(쓰기 위조 차단) |
 | `payment.manage` | 권한(0046 신규) | 수납 쓰기(집계 빌드 7.2·finalize 7.4 공유) — **admin 부트 grant 재실행**(회귀 회피)·**reception seed grant**(수납 정산 직무)·403 baseline=doctor·nurse. 의사는 `payment.read` 조회만 |
-| `POST /v1/encounters/{id}/payment` | 엔드포인트(billing.py) | 집계 빌드(진입 시 자동 집계·멱등) → `build_payment` 호출·헤더+라인 반환. 게이트 payment.manage·미존재 내원 404 |
+| `POST /v1/encounters/{id}/payment` | 엔드포인트(billing.py) | 집계 빌드 + 본인부담 산정(진입 시 자동·멱등) → `build_payment`→`price_payment` 원자 호출(7.2 집계 + 7.3 산정)·헤더+라인 반환. 게이트 payment.manage·미존재 내원 404 |
 | `GET /v1/encounters/{id}/payment` | 엔드포인트 | 수납 건 조회(헤더+라인). 게이트 payment.read·빌드 전 404 |
 | `GET /v1/billing/worklist` | 엔드포인트 | 수납 워크리스트(정산 대상=오늘 in_progress 내원·진료과 무관)·`estimated_total_krw`=Σ fee_items 라이브. 게이트 payment.read·`{data,meta}` |
 | `/reception/billing[/{encounterId}]` | 화면(Next.js) | 수납 워크리스트(목록) → 집계 상세(헤더 요약 총/급여/비급여 + **"자동 산정" teal 마커**·분류별 라인·pay-chip·"자동" 마커). nav 엔트리 기존(staff-nav·reception). 데이터 패칭=useState/apiFetch(TanStack 미사용) |
 
 > **집계 경계(Story 7.2 확정):** **신규 마이그 1건(0046)·신규 권한 1(payment.manage)·admin 부트 grant 재실행.** Epic 7 첫 풀스택 슬라이스(DB 함수+FastAPI billing.py+Next.js). 집계 로직=**`build_payment` DB 함수 소유**(project-context "수가/정산 로직=DB"·FastAPI 오케스트레이션만). **7.2 채움=total/covered/non_covered 롤업**(deferred-work L366 흡수·`total=covered+non_covered`). **미구현(후속)**: 본인부담 산정(copay/insurer 롤업)=7.3·finalize/결제/`complete_encounter`/신원 재진술=7.4·진료비 문서=7.5~7.7·취소노쇼 정산=7.9·부분수행=7.10.
+
+## 본인부담 산정 (Story 7.3, `0047_payment_pricing.sql`)
+
+> ⚠️ **마이그 번호 0047**: Epic 7 블록 0045~0059(0046 다음). **산정(pricing) 레이어**(0045 컬럼 선언 → 0046 라인 적재 → 0047 본인부담 산정). **설계 결정(사용자 확정 2026-06-23·AskUserQuestion 4건)**: ① 본인부담률 프리셋(급여=건강보험 0.300/의료급여 0.150/자보 0.000/일반 1.000·비급여=전 유형 1.000) ② 요율 저장=**`copay_policies` 정책 테이블**(보험유형×급여구분→rate·마이그 임베드 시드) ③ 산정 시점=**집계에 이어 자동**(`POST .../payment` 가 build→price 원자·새 엔드포인트 0) ④ **본인부담금 10원 미만 절사**·insurer=차액 흡수(라인 amount=copay+insurer 정합).
+
+| 식별자 | 종류 | 의미 |
+|---|---|---|
+| `copay_policies` | 테이블(0047) | 본인부담률 정책 — `insurance_type`×`coverage_type` → `copay_rate numeric(4,3)`. `unique(insurance_type, coverage_type)`. **요율 8행 마이그 임베드 시드**(운영 필수 참조데이터·seed.sql[dev 전용] 아님·permissions 부트 동형). 급여: 건강보험 0.300/의료급여 0.150/자보 0.000/일반 1.000·비급여: 전 유형 1.000. RLS select-for-authenticated(비민감 요율)·쓰기 없음 |
+| `price_payment` | 함수(0047·SECURITY DEFINER) | 한 내원 draft 수납 라인에 본인부담 산정: 환자 `insurance_type` 룩업(payments→encounters→patients)→status≠draft early return→라인별 `copay_policies` JOIN(미존재 1.0 폴백)→`copay = rate≥1?amount : rate≤0?0 : floor(amount*rate/10)*10`(10원 절사)·`insurer=amount-copay`·`copay_rate` 스냅샷(change-guard UPDATE)→헤더 copay/insurer 롤업. 멱등(재산정 안정). `revoke all from public,anon,authenticated`+`grant execute to service_role`(산정 위조 차단) |
+| 본인부담 정합 불변식 | 규칙(7.3 보증) | 라인 `amount_krw = copay_amount_krw + insurer_amount_krw` · 헤더 `total_amount_krw = copay_amount_krw + insurer_amount_krw`(deferred-work L366 `copay+insurer` 부분 해소·단일테이블 CHECK 불가 → 적재 경로 보증) |
+| `PaymentResponse.insurance_type` | 응답 필드(7.3) | 환자 보험유형 노출(헤더 조회 시 patients 상관 서브쿼리·비-PII 분류 enum) — 수납 상세 화면 산정 근거 표시(`insuranceLabel` 한글화). build_payment·fetch_payment 공통 |
+
+> **본인부담 산정 경계(Story 7.3 확정):** **신규 마이그 1건(0047)·신규 권한 0**(`payment.manage` 재사용 — admin 부트 grant 함정 비해당). 산정 로직=**`price_payment` DB 함수 소유**(project-context). 집계(7.2)에 이어 자동 산정(`POST .../payment` = build→price 원자·새 엔드포인트/서비스/라우터 0·기존 의미 확장). copay 컬럼·web 타입은 7.2 선반영(0→채움). **PayChip 비급여=중립 유지·변경 금지**(5.5 의도적·앰버는 지연/지시 예약 — epics "앰버 잉크" 문구는 본인부담/공단부담 금액 분리표시로 화해·색비의존 UX-DR20). **미구현(단순화 선·이월)**: 산정특례·연령별·의료급여 정액제·30일 재진규칙·진료과/시간대 가산(copay_policies 확장 수용). **후속**: finalize/결제/내원완료=7.4·계산서영수증=7.5·세부산정내역서(라인별 본인부담/공단부담 표)=7.6·원외처방전=7.7.
