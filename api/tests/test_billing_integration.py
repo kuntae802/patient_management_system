@@ -453,3 +453,146 @@ def test_finalize_payment_nonexistent_404(client, reception_token):
         json={"payment_method": "card"},
     )
     assert res.status_code == 404, res.text
+
+
+# ── Story 7.5: 진료비 계산서·영수증 출력 (receipt 데이터 + 내보내기 감사) ───────
+
+
+def _receipt_url(encounter_id: str) -> str:
+    return f"/v1/encounters/{encounter_id}/payment/receipt"
+
+
+def _export_url(encounter_id: str) -> str:
+    return f"/v1/encounters/{encounter_id}/payment/receipt/export"
+
+
+def _export_audit_count(psql: Psql, eid: str) -> int:
+    """한 내원의 문서 내보내기('document_export') 감사 행 수 — payment_id 대상 'read' 이벤트."""
+    return int(
+        psql.scalar(
+            "select count(*) from public.audit_logs a "
+            "where a.action='read' and a.target_table='payments' "
+            "and a.after_data->>'event'='document_export' "
+            f"and a.target_id=(select id::text from public.payments where encounter_id='{eid}');"
+        )
+    )
+
+
+def _finalize(client, reception_token, eid: str) -> dict:
+    res = client.post(
+        _finalize_url(eid), headers=_bearer(reception_token), json={"payment_method": "card"}
+    )
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def test_receipt_assembles_finalized_document(client, reception_token, doctor_id, psql):
+    """finalized 영수증 GET → 200·요양기관·환자(masked RRN)·진료과/담당의·결제·발급·납부할금액."""
+    eid = _setup_finalizable_encounter(psql, doctor_id)
+    paid = _finalize(client, reception_token, eid)
+    res = client.get(_receipt_url(eid), headers=_bearer(reception_token))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 요양기관(clinic_profile seed)
+    assert body["clinic"]["name"] == "○○의원"
+    assert body["clinic"]["hira_no"] == "31234567"
+    # 환자 — masked RRN 만(full 미렌더)
+    assert body["patient"]["resident_no_masked"] == "900101-1******"
+    assert body["patient"]["chart_no"]
+    assert body["patient"]["insurance_type"] == "health_insurance"
+    # 진료 — 진료과(IM=내과)·담당의(start_consult doctor)
+    assert body["encounter"]["department_name"] == "내과"
+    assert body["encounter"]["doctor_name"]
+    assert body["encounter"]["treatment_started_on"]
+    # 결제·발급
+    assert body["status"] == "finalized"
+    assert body["payment_no"] == paid["payment_no"]
+    assert body["payment_method"] == "card"
+    assert body["issued_by_name"]  # finalized_by → users.name(발급담당)
+    # 3행 합계: 본인부담총액(copay) / 기납부(paid) / 납부할금액(due=copay-paid·전액정산이면 0)
+    assert body["copay_amount_krw"] == paid["copay_amount_krw"]
+    assert body["paid_amount_krw"] == paid["paid_amount_krw"]
+    assert body["due_amount_krw"] == body["copay_amount_krw"] - body["paid_amount_krw"]
+    assert len(body["details"]) >= 1
+    # PII 경계: raw 주민번호(13자리) 미유입 — 마스킹 값만.
+    assert "******" in res.text
+    assert "9001011" not in res.text
+
+
+def test_receipt_draft_rejected_409(client, reception_token, psql):
+    """비-finalized(draft) 수납 영수증 GET → 409 invalid_transition('정산된 수납 건만')."""
+    eid = _setup_billable_encounter(psql)
+    client.post(_payment_url(eid), headers=_bearer(reception_token))  # draft 빌드만(finalize 안 함)
+    res = client.get(_receipt_url(eid), headers=_bearer(reception_token))
+    assert res.status_code == 409, res.text
+    assert res.json()["error"]["code"] == "invalid_transition", res.text
+
+
+def test_receipt_nonexistent_404(client, reception_token):
+    """미존재(빌드 전) 영수증 GET → 404."""
+    res = client.get(_receipt_url(str(uuid.uuid4())), headers=_bearer(reception_token))
+    assert res.status_code == 404, res.text
+    assert res.json()["error"]["code"] == "not_found", res.text
+
+
+def test_receipt_forbidden_nurse(client, nurse_token, reception_token, doctor_id, psql):
+    """nurse(payment.read 미보유) 영수증 GET → 403(finalize 는 reception 선행)."""
+    eid = _setup_finalizable_encounter(psql, doctor_id)
+    _finalize(client, reception_token, eid)
+    res = client.get(_receipt_url(eid), headers=_bearer(nurse_token))
+    assert res.status_code == 403, res.text
+
+
+def test_doctor_can_read_receipt(client, doctor_token, reception_token, doctor_id, psql):
+    """doctor(payment.read 보유) 영수증 GET → 200(조회 가능)."""
+    eid = _setup_finalizable_encounter(psql, doctor_id)
+    _finalize(client, reception_token, eid)
+    res = client.get(_receipt_url(eid), headers=_bearer(doctor_token))
+    assert res.status_code == 200, res.text
+
+
+def test_export_records_audit_204(client, reception_token, doctor_id, psql):
+    """내보내기 POST → 204 + audit 'read' 1건(receipt). 재호출 = 각 인쇄 1감사(2건 누적)."""
+    eid = _setup_finalizable_encounter(psql, doctor_id)
+    _finalize(client, reception_token, eid)
+    assert _export_audit_count(psql, eid) == 0
+    first = client.post(
+        _export_url(eid), headers=_bearer(reception_token), json={"document_type": "receipt"}
+    )
+    assert first.status_code == 204, first.text
+    assert _export_audit_count(psql, eid) == 1
+    # 각 인쇄가 독립 내보내기 이벤트 — 재호출 시 감사 누적(중복 제거 안 함).
+    second = client.post(
+        _export_url(eid), headers=_bearer(reception_token), json={"document_type": "receipt"}
+    )
+    assert second.status_code == 204, second.text
+    assert _export_audit_count(psql, eid) == 2
+
+
+def test_export_default_document_type(client, reception_token, doctor_id, psql):
+    """document_type 미지정 → 기본 'receipt'(Literal default)·204."""
+    eid = _setup_finalizable_encounter(psql, doctor_id)
+    _finalize(client, reception_token, eid)
+    res = client.post(_export_url(eid), headers=_bearer(reception_token), json={})
+    assert res.status_code == 204, res.text
+    assert _export_audit_count(psql, eid) == 1
+
+
+def test_export_forbidden_nurse(client, nurse_token, reception_token, doctor_id, psql):
+    """nurse(payment.read 미보유) 내보내기 → 403."""
+    eid = _setup_finalizable_encounter(psql, doctor_id)
+    _finalize(client, reception_token, eid)
+    res = client.post(
+        _export_url(eid), headers=_bearer(nurse_token), json={"document_type": "receipt"}
+    )
+    assert res.status_code == 403, res.text
+
+
+def test_export_nonexistent_payment_404(client, reception_token):
+    """payment 미존재 내원 내보내기 → 404."""
+    res = client.post(
+        _export_url(str(uuid.uuid4())),
+        headers=_bearer(reception_token),
+        json={"document_type": "receipt"},
+    )
+    assert res.status_code == 404, res.text

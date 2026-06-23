@@ -16,7 +16,13 @@ vi.mock("sonner", () => ({
 }));
 vi.mock("@/lib/billing/payments", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/billing/payments")>();
-  return { ...actual, buildPayment: vi.fn(), finalizePayment: vi.fn() };
+  return {
+    ...actual,
+    buildPayment: vi.fn(),
+    finalizePayment: vi.fn(),
+    fetchReceipt: vi.fn(),
+    exportReceipt: vi.fn(),
+  };
 });
 vi.mock("next/link", () => ({
   default: ({ children, href }: { children: React.ReactNode; href: string }) => (
@@ -25,10 +31,59 @@ vi.mock("next/link", () => ({
 }));
 
 import { ApiError } from "@/lib/api/client";
-import { buildPayment, finalizePayment, type Payment, type PaymentDetail } from "@/lib/billing/payments";
+import {
+  buildPayment,
+  exportReceipt,
+  fetchReceipt,
+  finalizePayment,
+  type Payment,
+  type PaymentDetail,
+  type Receipt,
+} from "@/lib/billing/payments";
 
 const mockBuild = vi.mocked(buildPayment);
 const mockFinalize = vi.mocked(finalizePayment);
+const mockFetchReceipt = vi.mocked(fetchReceipt);
+const mockExportReceipt = vi.mocked(exportReceipt);
+
+function makeReceipt(over: Partial<Receipt> = {}): Receipt {
+  return {
+    clinic: {
+      name: "○○의원",
+      biz_no: "123-45-67890",
+      hira_no: "31234567",
+      address: "서울특별시 ○○구 ○○로 123",
+      ceo_name: "박○○",
+      phone: "02-123-4567",
+    },
+    patient: {
+      name: "홍길동",
+      chart_no: "C-0001",
+      resident_no_masked: "900101-1******",
+      insurance_type: "health_insurance",
+    },
+    encounter: {
+      department_name: "내과",
+      doctor_name: "이정훈",
+      treatment_started_on: "2026-06-23",
+      treatment_ended_on: "2026-06-23",
+    },
+    status: "finalized",
+    payment_no: "R-20260623-000042",
+    payment_method: "card",
+    finalized_at: "2026-06-23T05:00:00Z",
+    issued_by_name: "김원무",
+    total_amount_krw: 17610,
+    covered_amount_krw: 17610,
+    non_covered_amount_krw: 0,
+    copay_amount_krw: 5280,
+    insurer_amount_krw: 12330,
+    paid_amount_krw: 5280,
+    due_amount_krw: 0,
+    details: [makeLine({ copay_amount_krw: 5280, insurer_amount_krw: 12330 })],
+    ...over,
+  };
+}
 
 function makeLine(over: Partial<PaymentDetail> = {}): PaymentDetail {
   return {
@@ -194,10 +249,54 @@ describe("BillingDetail", () => {
     // "완료" 배지 = 상시 신원 배너 + 완료 패널 양쪽(finalized 상태).
     expect(screen.getAllByText("완료").length).toBeGreaterThanOrEqual(2);
     expect(screen.queryByRole("button", { name: "결제·내원 완료" })).not.toBeInTheDocument();
-    // 문서 출력 = 다음-액션 placeholder(7.5~7.6 경계·비활성·UX-DR14 "결제 완료 → 문서 출력" 자리).
+    // 문서 출력(7.5) = 활성 버튼(UX-DR14 "결제 완료 → 문서 출력" 게이트·클릭 시 영수증 미리보기).
     const docBtn = screen.getByRole("button", { name: /문서 출력/ });
     expect(docBtn).toBeInTheDocument();
-    expect(docBtn).toBeDisabled();
+    expect(docBtn).toBeEnabled();
+  });
+
+  // ── Story 7.5: 진료비 계산서·영수증 문서 출력 ───────────────────────────────
+
+  it("문서 출력 클릭 → fetchReceipt → 법정 서식 미리보기(병원·항목별 금액·납부 3행)", async () => {
+    mockBuild.mockResolvedValue(
+      makePayment({ status: "finalized", payment_no: "R-20260623-000042", paid_amount_krw: 5280 }),
+    );
+    mockFetchReceipt.mockResolvedValue(makeReceipt());
+    render(<BillingDetail encounterId="enc-1" />);
+    await userEvent.click(await screen.findByRole("button", { name: /문서 출력/ }));
+    await waitFor(() => expect(mockFetchReceipt).toHaveBeenCalledWith("enc-1"));
+    // 법정 서식 렌더(요양기관·문서 제목·납부 3행 라벨·masked RRN).
+    expect(await screen.findByText("진료비 계산서 · 영수증")).toBeInTheDocument();
+    expect(screen.getByText("31234567")).toBeInTheDocument(); // 요양기관기호
+    expect(screen.getByText("900101-1******")).toBeInTheDocument(); // masked RRN
+    expect(screen.getByText("납부할 금액")).toBeInTheDocument(); // 3행 합계
+    expect(screen.getByText("항목별 금액")).toBeInTheDocument();
+  });
+
+  it("인쇄 버튼 → window.print + beforeprint 시 exportReceipt 감사 호출", async () => {
+    mockBuild.mockResolvedValue(makePayment({ status: "finalized", paid_amount_krw: 5280 }));
+    mockFetchReceipt.mockResolvedValue(makeReceipt());
+    mockExportReceipt.mockResolvedValue(undefined);
+    const printSpy = vi.spyOn(window, "print").mockImplementation(() => {});
+    render(<BillingDetail encounterId="enc-1" />);
+    await userEvent.click(await screen.findByRole("button", { name: /문서 출력/ }));
+    await screen.findByText("진료비 계산서 · 영수증");
+    // 인쇄 버튼 → window.print().
+    await userEvent.click(screen.getByRole("button", { name: /인쇄 \/ PDF 저장/ }));
+    expect(printSpy).toHaveBeenCalled();
+    // 인쇄/내보내기 = 감사(beforeprint 리스너 — 네이티브 Ctrl P 포함). 각 인쇄 1 감사.
+    window.dispatchEvent(new Event("beforeprint"));
+    await waitFor(() => expect(mockExportReceipt).toHaveBeenCalledWith("enc-1", "receipt"));
+    printSpy.mockRestore();
+  });
+
+  it("문서 출력 실패(403) → 에러 토스트·미리보기 미표시", async () => {
+    mockBuild.mockResolvedValue(makePayment({ status: "finalized", paid_amount_krw: 5280 }));
+    mockFetchReceipt.mockRejectedValue(new ApiError("forbidden", "수납 권한이 없습니다.", 403));
+    render(<BillingDetail encounterId="enc-1" />);
+    await userEvent.click(await screen.findByRole("button", { name: /문서 출력/ }));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(screen.queryByText("진료비 계산서 · 영수증")).not.toBeInTheDocument();
   });
 
   it("finalize 실패(주상병 미지정 422) → 에러 토스트", async () => {
