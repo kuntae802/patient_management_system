@@ -416,3 +416,12 @@
 - **`due_amount_krw = copay - paid` 음수 방어 부재** [api/app/core/db.py `fetch_receipt`·web receipt-document.tsx] — 납부할 금액을 `copay-paid` 로 산출하나 `max(0,...)`·환급 분기 없음. 7.4 전액정산(`paid=copay` 강제·finalize 후 copay 동결)으로 `due=0` 고정 → **현 스코프 도달불가**. 부분/선수납(7.8)·과오납·취소 환급(7.9)에서 `paid>copay` 가능 시 음수 "납부할 금액"이 법정 영수증에 출력될 수 있다. 해소: 7.8/7.9 에서 음수=환급(별도 표시) vs `max(0)` 정책 결정. Blind Med.
 - **클라 내보내기 감사 best-effort(비차단·비발화/복수발화 가능)** [web billing-detail.tsx `beforeprint` 리스너·`exportReceipt` fire-and-forget] — `void exportReceipt(...).catch(()=>{})` + `beforeprint` 는 인쇄를 동기 차단 못 함 → 감사 POST 실패(403/네트워크)해도 인쇄/PDF 진행, 브라우저별 `beforeprint` 비발화/복수발화로 "각 인쇄 1감사" 1:1 미보장(UX-DR22 best-effort 약화). 감사 RPC 는 payment.read 게이트라 정상 사용자 403 비현실적·인쇄 자체는 클라 행위. 해소: **서버측 PDF 생성**(dev of 7-5 이월) 도입 시 export 가 server-authoritative(생성=감사 원자). Blind+Edge Med.
 - **clinic_profile 행이 seed.sql 만 적재(마이그 미임베드)** [supabase/migrations/0049_payment_receipt.sql·supabase/seed.sql] — 테이블 DDL 은 0049, 데이터 1행은 seed.sql 분리 → 마이그만 적용하고 seed 미실행한 환경은 `clinic is None` → 모든 영수증 500(fail-loud·AC3 의도). 설계 결정 ②(seed 1행·관리 UI 없음)·프로젝트 배포는 항상 `db reset`(마이그+seed) 실행이라 정상 경로 미발생. 해소: 마이그에 기본 clinic_profile INSERT 임베드(마이그-only 배포 하드닝) 또는 clinic_profile 관리 UI(dev of 7-5 이월) 도입 시 함께. Blind Low.
+
+## Deferred from: dev of 7-6-진료비-세부산정내역서-출력 (2026-06-24)
+
+> 설계 결정(사용자 확정·AskUserQuestion 3건): ① 데이터=receipt 엔드포인트(ReceiptResponse) 재사용 ② UI=문서 탭 토글 ③ 일자=진료일·일수=1. 7.6 은 마이그 0·엔드포인트 0·권한 0·라이브러리 0(7.5 인프라 재사용). 아래는 스코프 밖으로 미룬 신규 이월.
+>
+> **확인(7.6)**: L371-372 익명 수기 라인→세부내역서(자동 라인 전부 code/name·익명 없음·7.5와 동일) · L407 full RRN 문서 reveal(세부내역서도 masked only·동일 이월 묶음) · dev of 7-5 서버측 PDF(L408)/파일명 PII(L410) 이월은 세부내역서에도 동일 적용(브라우저 인쇄·beforeprint 공유). dev of 7-5 음수 due(L416)는 세부내역서엔 무관(세부내역서는 납부 3행 없음·라인 합만).
+
+- **라인별 임상 일자/일수 미보유(진료일·1 고정)** [supabase/migrations/0021_billing.sql `fee_items`·0045 `payment_details`·web statement-document.tsx] — 세부산정내역서 FR-114 의 "일자·일수" 컬럼을 내원 진료일(`encounter.treatment_started_on`·KST·전 라인 동일)과 1(상수)로 채운다. `fee_items`/`payment_details` 에 라인별 임상 수행 날짜(`created_at`=집계시각)·투약/입원 일수 컬럼이 없기 때문(외래 단일내원 모델·약제비=원외 스코프아웃이라 투약일수 무의미). **다일 진료·입원·다회 방문 청구**가 도입되면 `payment_details`(+`build_payment`·`fee_items`)에 `service_date`·`days` 컬럼 추가(마이그·Epic 5 적재 경로 재작업)해 라인별 실제 일자/일수를 산정. 설계 결정 ③.
+- **세부산정내역서 급여/비급여 구분 소계 부재(합계 1행만)** [web statement-document.tsx] — 현재 tfoot 은 전 라인 단일 합계(Σ금액·Σ본인부담·Σ공단부담)만 렌더. 표준 양식 일부는 급여/비급여 구분 소계 또는 항목분류별 중간 소계를 둔다. FR-114 는 "라인별 + 10컬럼"만 요구해 범위 밖(스코프 규율) — 영수증(7.5)의 대분류 집계표가 이미 구분 합계를 제공. 양식 정교화 요구 시 구분/그룹 소계 행 추가.

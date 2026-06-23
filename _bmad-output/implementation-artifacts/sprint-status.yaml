@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-24T09:30:00+0000
+last_updated: 2026-06-24T13:00:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -123,7 +123,7 @@ development_status:
   7-3-급여-비급여-구분-본인부담-산정: done
   7-4-수납-처리-내원-완료: done
   7-5-진료비-계산서-영수증-출력: done
-  7-6-진료비-세부산정내역서-출력: backlog
+  7-6-진료비-세부산정내역서-출력: done
   7-7-원외처방전-출력-발급: backlog
   7-8-수납-정책-후수납-선수납: backlog
   7-9-취소-노쇼-정산-수가-미발생: backlog
