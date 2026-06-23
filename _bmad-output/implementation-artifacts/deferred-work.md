@@ -222,6 +222,7 @@
 ## Deferred from: code review of 4-5-진료-허브-환자-배너-과거-이력-활력-컨텍스트 (2026-06-21)
 
 - 감사 'read' 이벤트가 RRN reveal 과 연락처 reveal 을 구분하지 못함(action/target_table/target_id 동일). 1.9 `decrypt_sensitive` 의 'read' 관례 + 0004 action CHECK(create/read/update/delete/login)가 신규 action 을 불허하므로 구분하려면 CHECK 변경(별도 스코프). 감사 granularity 향상 시 처리.
+  - **🟢 부분 개선(Story 7.5 — 2026-06-24):** 문서 내보내기 감사(`log_payment_document_export`·0049)는 `audit_logs.after_data` jsonb 에 `{document_type, event:'document_export'}` 를 적재해 reveal 과 구분 가능(action 'read'·target_table 은 공유). 동일 패턴을 reveal(RRN/연락처)에도 적용하면 action CHECK 변경 없이 granularity 확보 가능 — 감사 granularity 하드닝 시 reveal RPC 에도 after_data 태깅 도입 검토.
 - soft-deleted(is_active=false) 환자도 `reveal_rrn`/`reveal_contact`·`fetch_patient` 로 조회 가능(is_active 미검사). 기존 전이 RPC(0010)·fetch_patient 전부 동일 posture, soft-delete UI 부재. 4.2/4.4 의 is_active TOCTOU 이월과 통합 처리.
 - 진료 허브 배너/좌패널의 by-id 로드(`patient-banner`·`patient-context-panel`)가 fetch abort·patientId 변경 시 state 초기화 부재 → 환자 전환 시 stale/오환자 데이터 순간 노출 가능. patient-detail.tsx 등 코드베이스 전반의 동일 패턴 — AbortController/mounted-ref/즉시 리셋 교차절단 하드닝으로 일괄 처리.
 - reveal 후 재마스킹 토글 부재(한 번 "표시"하면 영구 노출). UX-DR9 transient reveal+감사는 충족(접근 감사됨). 재마스킹/타임아웃 토글은 어깨너머 노출 완화 nice-to-have.
@@ -368,6 +369,7 @@
   - **🟢 부분 해소(Story 7.2/7.3 — 2026-06-23):** `total=covered+non_covered`는 7.2 `build_payment` 롤업이, 라인 `amount=copay+insurer`·헤더 `total=copay+insurer`는 7.3 `price_payment`(0047)가 적재 경로에서 보증(DB 테스트 단언). **잔여 이월**: 교차테이블 정합을 *제약/트리거/derived 뷰로 강제*하진 않음(적재 경로 보증만) — service_role 직접 UPDATE 시 발산 가능. 또한 fee_item 철회 시 stale payment_detail 동기화(append-only)는 미해소(오더 철회 흐름 정의 시).
 - **encounter_id UNIQUE 가 취소 후 재청구 차단** [supabase/migrations/0045_payments.sql `payments`] — `cancelled` payment 가 내원당 1:1 UNIQUE 슬롯을 점유 → 동일 내원 재정산 INSERT 시 23505. **7.9 취소·노쇼 재정산** 이 재청구 시맨틱(취소 행 재사용 vs 부분 unique vs 재오픈) 결정. 현 1:1 은 7.1 의도(외래 1내원=1수납). Edge Hunter.
 - **익명 수기 라인 가능(fee_item_id·name·code·fee_schedule_id 전부 nullable)** [supabase/migrations/0045_payments.sql `payment_details`] — 수기 라인(`fee_item_id` null)이 name/code 없이 금액만으로 INSERT 가능 → 영수증(7.5)에 설명 없는 청구 라인. **수기 라인 기능(7.x 가산·노쇼료 7.9)** 도입 시 최소 필드 요건(`name not null or fee_item_id not null` 류) 정의. Edge Hunter.
+  - **🟢 확인(Story 7.5 — 2026-06-24):** 영수증(7.5)은 자동 집계 라인만 소비하고 현재 자동 라인은 `build_payment`(0046)이 `fee_schedules` 에서 code/name/category 를 스냅샷 적재하므로 익명 라인 없음(영수증 항목별 금액표는 category 그룹핑·미분류 라인은 "기타"로 안전 처리). 수기 라인 기능(7.x) 도입 시 최소 필드 요건을 같이 정의.
 - **late-perform 만료 skip(주문 시 유효·수행 시 만료)** [supabase/migrations/0045_payments.sql `insert_fee_item`] — 검사/처치가 fee 유효일에 주문되고 `effective_to` 이후 수행되면 `perform_*` 트리거의 `insert_fee_item` 이 current_date 기준 만료 판정 → 수행 행위에 0 적재. **AC4 적재 시점 검증 by-design**(주문이 아닌 적재=수행 시점 유효성)·`current_date` TZ 는 0007 "현재 유효" 계약과 일관(Edge 확인). 행위 시점 가격 보존이 필요하면 주문 시점 fee 스냅샷 모델 검토. Edge Low.
 
 ## Deferred from: code review of 7-2-수납-건-생성-집계 (2026-06-23)
@@ -397,3 +399,20 @@
 - **ConfirmDialog confirm 버튼이 finalizing 중 disabled 아님** [web billing-detail.tsx·components/admin/confirm-dialog.tsx] — finalize 트리거(외부) 버튼은 `disabled={finalizing}` 이나 실제 호출은 공유 `ConfirmDialog` 의 confirm 버튼이며 그 버튼은 finalizing 을 모른다(disabled prop 없음). `handleFinalize` 의 `if (finalizing) return` 동기 가드 + React state 비동기 사이 연타 윈도우에 2차 호출 가능. 서버 PT409·성공 시 다이얼로그 닫힘이 최종 방어선. 해소: ConfirmDialog 에 `confirmDisabled` prop 도입(공유 컴포넌트 — 일괄). Blind+Edge Low.
 - **동시 finalize — build/price 가 for-update 락 선행 없이 실행** [api/app/core/db.py `finalize_payment` _op] — `_op` 가 finalize_payment(내부 `for update`) 호출 *이전* 에 build_payment/price_payment 를 락 없이 실행 → 동시 finalize 2건이 둘 다 build/price 통과 후 한쪽만 finalize 락 획득(다른쪽 PT409). 두 커밋 사이 관찰자 발산 가능. **7.2/7.3 동시성 이월 계승**(단일 원무·낮은 빈도·DB 최종선)·finalize for-update + status 가드가 이중결제(비가역)는 차단. 해소: build 직전 payment 행 `for update` 선점(7.2/7.3 row-lock 이월과 일괄). Blind+Edge Low.
 - **cancelled 상태 수납 상세 진입 시 결제 섹션 빈 화면** [web billing-detail.tsx status 분기] — status 분기가 draft/finalized/null 만 처리 → cancelled 는 null(결제 섹션 전체 미렌더·신원배지만 "취소"·안내 없는 빈 영역). 취소 로직=7.9 소관·워크리스트 in_progress 미노출로 현재 도달 불가. 해소: 7.9 에서 cancelled 안내 패널. Edge Low.
+
+## Deferred from: dev of 7-5-진료비-계산서-영수증-출력 (2026-06-24)
+
+> 설계 결정(사용자 확정·AskUserQuestion 4건): 브라우저 인쇄·시드 1행 clinic_profile·전용 receipt+export 엔드포인트·masked RRN 만. 아래는 스코프 밖으로 미룬 신규 이월.
+
+- **영수증 full RRN reveal 문서 렌더 미구현(masked only)** [web receipt-document.tsx·api fetch_receipt] — 영수증은 `resident_no_masked`(710314-2******)만 렌더하고 full 주민번호 reveal(권한 게이트+감사+사유) 문서 렌더는 미구현(설계 결정 ④). UX-DR22 clinical-safety 권고("문서 full RRN=감사 reveal 이벤트")의 완전 충족은 후속. **연락처 PII reveal 이월(L39 묶음)** 과 동일 클래스 — 전용 reveal-하드닝 스토리에서 문서 full RRN reveal(`reveal_rrn` 재사용 + 문서 내보내기 감사 결합)로 일괄. 인쇄/내보내기 자체는 이미 감사(`log_payment_document_export`).
+- **서버측 영수증 PDF 생성 미구현(브라우저 인쇄 채택)** [설계 결정 ①] — `window.print()` + `@media print`(Batang serif)로 인쇄/PDF 저장. 아키텍처 `services/document_service(진료비 PDF)` 언급이나 신규 라이브러리(weasyprint/reportlab)·픽셀 일관성 필요 시 도입(project-context "신규 라이브러리 임의 추가 금지"). 배치 출력(여러 영수증 일괄 PDF)·서버 보관(감사용 PDF 스냅샷)이 요구되면 서버 렌더링 스토리에서.
+- **clinic_profile 관리 UI 부재(seed 만)** [supabase/seed.sql·0049 clinic_profile] — 요양기관 정보가 seed 1행으로만 존재(관리자 편집 화면 없음·설계 결정 ②). 운영 중 병원 정보 변경은 DB 직접 UPDATE 필요. 마스터 관리 화면(Epic 2 패턴) 확장 시 clinic_profile CRUD(단일행 편집)를 추가.
+- **브라우저 인쇄 파일명 PII 강제 불가(document.title 완화만)** [web billing-detail.tsx beforeprint] — 미리보기 열림 시 `document.title=영수증_{chart_no}`(불투명 식별자)로 브라우저 PDF 기본 파일명을 PII-free 로 설정하나, 사용자가 저장 다이얼로그에서 파일명을 임의 변경(이름 등 입력)하는 것은 막을 수 없다(브라우저 소관). 라우트·문서 제목·title 에 PII 미포함은 보장. 서버측 PDF 도입 시 파일명 완전 통제 가능.
+
+## Deferred from: code review of 7-5-진료비-계산서-영수증-출력 (2026-06-24)
+
+> 3레이어 적대 리뷰. Acceptance Auditor: AC1~AC12 SATISFIED·위반 0·스코프 누수 0. patch 2(소계 자기정합·export finalized 게이트) 적용. 아래는 defer.
+
+- **`due_amount_krw = copay - paid` 음수 방어 부재** [api/app/core/db.py `fetch_receipt`·web receipt-document.tsx] — 납부할 금액을 `copay-paid` 로 산출하나 `max(0,...)`·환급 분기 없음. 7.4 전액정산(`paid=copay` 강제·finalize 후 copay 동결)으로 `due=0` 고정 → **현 스코프 도달불가**. 부분/선수납(7.8)·과오납·취소 환급(7.9)에서 `paid>copay` 가능 시 음수 "납부할 금액"이 법정 영수증에 출력될 수 있다. 해소: 7.8/7.9 에서 음수=환급(별도 표시) vs `max(0)` 정책 결정. Blind Med.
+- **클라 내보내기 감사 best-effort(비차단·비발화/복수발화 가능)** [web billing-detail.tsx `beforeprint` 리스너·`exportReceipt` fire-and-forget] — `void exportReceipt(...).catch(()=>{})` + `beforeprint` 는 인쇄를 동기 차단 못 함 → 감사 POST 실패(403/네트워크)해도 인쇄/PDF 진행, 브라우저별 `beforeprint` 비발화/복수발화로 "각 인쇄 1감사" 1:1 미보장(UX-DR22 best-effort 약화). 감사 RPC 는 payment.read 게이트라 정상 사용자 403 비현실적·인쇄 자체는 클라 행위. 해소: **서버측 PDF 생성**(dev of 7-5 이월) 도입 시 export 가 server-authoritative(생성=감사 원자). Blind+Edge Med.
+- **clinic_profile 행이 seed.sql 만 적재(마이그 미임베드)** [supabase/migrations/0049_payment_receipt.sql·supabase/seed.sql] — 테이블 DDL 은 0049, 데이터 1행은 seed.sql 분리 → 마이그만 적용하고 seed 미실행한 환경은 `clinic is None` → 모든 영수증 500(fail-loud·AC3 의도). 설계 결정 ②(seed 1행·관리 UI 없음)·프로젝트 배포는 항상 `db reset`(마이그+seed) 실행이라 정상 경로 미발생. 해소: 마이그에 기본 clinic_profile INSERT 임베드(마이그-only 배포 하드닝) 또는 clinic_profile 관리 UI(dev of 7-5 이월) 도입 시 함께. Blind Low.

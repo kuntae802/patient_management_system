@@ -44,7 +44,7 @@
 | `appointment` | 예약 | 슬롯 기반 |
 | `doctor_schedule` | 근무표 | 요일·시간대·진료실 |
 | `doctor_time_off` | 휴진/예외 | 휴가·학회 |
-| `payment` | 수납 | 헤더 — `payments`(0045·7.1)·내원 1:1(encounter_id UNIQUE)·status draft/finalized/cancelled·billing_type postpaid/prepaid·금액 집계 컬럼은 7.2 집계(`build_payment` 0046·total/covered/non_covered)/7.3 산정/7.4 결제(`finalize_payment` 0048·payment_method·payment_no·finalized_at/by·paid)가 채움 |
+| `payment` | 수납 | 헤더 — `payments`(0045·7.1)·내원 1:1(encounter_id UNIQUE)·status draft/finalized/cancelled·billing_type postpaid/prepaid·금액 집계 컬럼은 7.2 집계(`build_payment` 0046·total/covered/non_covered)/7.3 산정/7.4 결제(`finalize_payment` 0048·payment_method·payment_no·finalized_at/by·paid)가 채움. **문서 출력=7.5**(진료비 계산서·영수증 `0049`·브라우저 인쇄·masked RRN·내보내기 감사 `log_payment_document_export`) |
 | `payment_detail` | 수납상세 | 라인 항목 — `payment_details`(0045·7.1)·payment 1:N(ON DELETE CASCADE)·`fee_item_id` 집계원·스냅샷(code·name·금액·coverage)·`unique(payment_id,fee_item_id)`·`amount=qty*unit`·**7.2 `build_payment`(0046)가 fee_items→payment_details 멱등 집계 적재** |
 | `notification_log` | 알림로그 | SMS 시뮬 발송이력 |
 
@@ -683,3 +683,21 @@
 | `POST /v1/encounters/{id}/payment/finalize` | 엔드포인트(billing.py) | 결제·내원 완료 — `build→price→finalize_payment→complete_encounter` 원자 호출(NFR-041). body=PaymentFinalizeRequest·게이트 payment.manage. 주상병 미지정 422·비-draft/정산대상0 409·미존재 404·권한 403 |
 
 > **수납 처리·내원 완료 경계(Story 7.4 확정):** **신규 마이그 1건(0048)·신규 권한 0**(`payment.manage`·`encounter.complete` 재사용 — reception 에 encounter.complete seed grant 추가만·admin 부트 grant 함정 비해당). finalize·완료 전이 로직=**`finalize_payment`/`complete_encounter` DB 함수 소유**(상태머신 재구현 금지·project-context). `payment_no` 생성·`paid=copay`·완료 호출=DB. **흡수**: deferred-work L365 finalized 컬럼 일관성 CHECK·L385 finalize-before-price(build→price 선행). **미구현(후속)**: 진료비 계산서·영수증=7.5·세부산정내역서=7.6·원외처방전=7.7·선/부분수납=7.8·취소노쇼 정산(cancelled 일관성 CHECK 포함)=7.9·부분수행=7.10. finalized 패널 "문서 출력"=다음-액션 placeholder(7.5~7.6).
+
+## 진료비 계산서 · 영수증 출력 (Story 7.5, `0049_payment_receipt.sql`)
+
+> ⚠️ **마이그 번호 0049**: Epic 7 블록 0045~0059(0048 다음). **문서 출력 레이어**(0045 컬럼 → 0046 적재 → 0047 산정 → 0048 결제·완료 → 0049 문서). **설계 결정(사용자 확정 2026-06-24·AskUserQuestion 4건)**: ① 인쇄/PDF=**브라우저 `window.print()` + `@media print`(Batang serif)**·"PDF 저장"=브라우저 인쇄→PDF·신규 라이브러리 0(서버 PDF 이월) ② 요양기관 정보=**시드 1행 `clinic_profile` 테이블**(관리 UI 없음·seed 만·7.6/7.7 재사용) ③ 데이터·감사=**전용 `GET .../payment/receipt` + `POST .../payment/receipt/export`**(`log_payment_document_export` 제네릭 RPC·reveal_contact 선례) ④ 주민번호=**masked RRN 만**(`resident_no_masked`·full reveal 이월).
+
+> ⚠️ **인쇄=감사(비자명)**: 버튼만 감사하면 네이티브 `Ctrl P` 누락 → 미리보기 열린 동안 `beforeprint` 리스너가 `exportReceipt` 호출(버튼·PDF 저장·네이티브 Ctrl P 전부 포착·각 인쇄 1감사). 항목별 금액표 = `payment_details` 를 category(진찰료/검사료/영상료/처치료/주사료)별 집계(급여 본인/공단·비급여·합계) — **클라 표시 그룹핑**(pricing=DB 7.3 산정값 합산만). 3행 합계=본인부담총액(copay)·기납부(paid)·납부할금액(due=copay-paid).
+
+| 식별자 | 종류 | 의미 |
+|---|---|---|
+| `clinic_profile` | 테이블(0049) | 요양기관 정보 단일행 마스터(영수증 헤더) — `id smallint PK default 1 check(id=1)`(단일행)·name/biz_no/hira_no/address/ceo_name/phone(전부 NOT NULL). departments(0006) posture 미러: authenticated SELECT(전역 참조·비민감)·service_role 쓰기·`audit_trigger_fn` 감사. seed 1행(○○의원·관리 UI 없음). 7.6/7.7 재사용 |
+| `log_payment_document_export` | 함수(0049·SECURITY DEFINER) | 문서 인쇄/내보내기 = 'read' 감사(UX-DR22). `has_permission('payment.read')` 재평가 → payment 룩업(PT404) → **finalized 게이트(비-finalized PT409·GET receipt 409 와 일관·코드리뷰 patch)** → actor 캡처(reveal_contact 0012 미러) → `audit_logs`(action='read'·target_table='payments'·target_id=payment_id·after_data={document_type,event:'document_export'})`. raw PII 미적재. 제네릭(document_type) → 7.6 'statement' 재사용. `revoke all from public,anon,authenticated`+`grant execute to service_role`(감사 위조 차단) |
+| `ReceiptResponse` (+ `ReceiptClinic`/`ReceiptPatient`/`ReceiptEncounter`) | 응답 스키마(billing.py) | 영수증 문서 데이터 — clinic(요양기관)·patient(name·chart_no·`resident_no_masked`·insurance_type)·encounter(department_name·doctor_name·진료기간 KST date)·결제(payment_no/method/finalized_at)·issued_by_name(발급담당=finalized_by→users.name)·금액 헤더 + `due_amount_krw`(=copay-paid)·details. `fetch_receipt`(db) 단일조인 조립·finalized 게이트 |
+| `DocumentExportRequest` | 요청 스키마(billing.py) | `document_type: Literal['receipt']='receipt'`(7.5 receipt만·7.6 'statement' 추가) |
+| `GET /v1/encounters/{id}/payment/receipt` | 엔드포인트(billing.py) | 영수증 문서 데이터(finalized 만·게이트 payment.read). 비-finalized 409 invalid_transition·빌드 전 404·권한 403. 인쇄/항목별 금액표 집계=web |
+| `POST /v1/encounters/{id}/payment/receipt/export` | 엔드포인트(billing.py·204) | 문서 인쇄/내보내기 감사 기록(`log_payment_document_export` 호출·게이트 payment.read). body=DocumentExportRequest. payment 미존재 404·권한 403 |
+| `ReceiptDocument` / `aggregateByCategory` | 컴포넌트·함수(web·receipt-document.tsx) | Batang serif(`font-legal-serif`·`.receipt-paper`) 법정 서식 — 요양기관·환자 masked RRN·항목별 금액표(category 집계)·소계=헤더 정합·납부 3행·발급/서명. `@media print`(.receipt-paper 만 출력) |
+
+> **진료비 계산서·영수증 경계(Story 7.5 확정):** **신규 마이그 1건(0049)·신규 권한 0**(`payment.read` 재사용 — clinic_profile authenticated SELECT·receipt/export 게이트). 문서 데이터 조립=**`fetch_receipt` FastAPI**(복잡 read·문서)·감사=**`log_payment_document_export` DB RPC 소유**(우회 불가)·인쇄/PDF=**브라우저**(window.print). 주민번호 masked 만(full reveal 이월). **흡수/확인**: deferred-work L370 익명 수기 라인(현재 자동 라인 전부 name/code 보유·익명 없음)·L224 내보내기 감사가 after_data.document_type 로 reveal 과 구분. **신규 이월**: full RRN 문서 reveal·서버측 영수증 PDF 생성·clinic_profile 관리 UI(seed 만). **미구현(후속)**: 세부산정내역서(라인별)=7.6·원외처방전=7.7·선/부분수납=7.8·취소노쇼=7.9·부분수행=7.10.
