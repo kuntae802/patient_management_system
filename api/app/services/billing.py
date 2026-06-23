@@ -41,6 +41,15 @@ async def get_payment(sub: UUID, encounter_id: UUID) -> PaymentResponse:
     return _to_payment(row)
 
 
+async def finalize_payment(sub: UUID, encounter_id: UUID, payment_method: str) -> PaymentResponse:
+    """수납 finalize(결제 기록 + 내원 완료) — build→price→finalize→complete 원자(FR-112·NFR-041).
+
+    미존재 내원 → 404, 권한 미보유 → 403, 주상병 미지정 → 422, 이미 결제/취소(비-draft) 또는 정산
+    대상 0 → 409(전부 db/DB 가 동일 트랜잭션 검증·raise). 결제 컬럼·내원 완료 반영 행 반환."""
+    row = await db.finalize_payment(sub, encounter_id, payment_method)
+    return _to_payment(row)
+
+
 async def list_billing_worklist(
     sub: UUID,
     *,

@@ -11,6 +11,7 @@ copay/insurer=7.3 · 결제=7.4). 라인은 집계 시점 스냅샷(code·name·
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -57,6 +58,8 @@ class PaymentResponse(BaseModel):
     status: str
     billing_type: str
     insurance_type: str  # 환자 보험유형(본인부담 산정 근거 표시·7.3·비-PII 분류 enum)
+    patient_name: str  # 신원 재진술 confirm·상시 배너 표시(7.4·워크리스트 노출 posture 계승·비-RRN)
+    chart_no: str  # 차트번호(불투명 식별자 — 신원 재진술용)
     total_amount_krw: int
     covered_amount_krw: int
     non_covered_amount_krw: int
@@ -72,6 +75,16 @@ class PaymentResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     details: list[PaymentDetailItem]
+
+
+class PaymentFinalizeRequest(BaseModel):
+    """수납 finalize 요청(Story 7.4) — 결제 수단만(전액 정산·금액 입력 없음·설계 결정 ③).
+
+    payment_method = 카드/현금/계좌이체(Literal 1차 검증 422·DB 컬럼 CHECK 최종선). 결제 금액은
+    본인부담금(copay_amount_krw) 전액 자동(paid_amount_krw) — 선/부분수납은 7.8 소관.
+    """
+
+    payment_method: Literal["card", "cash", "transfer"]
 
 
 class BillingWorklistItem(BaseModel):

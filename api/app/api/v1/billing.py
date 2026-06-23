@@ -1,9 +1,10 @@
-"""수납(billing) 집계·조회 라우터 — 집계 빌드 + 조회 + 워크리스트. Story 7.2 / FR-110·UX-DR14.
+"""수납(billing) 라우터 — 집계 빌드·조회·워크리스트·결제(finalize). Story 7.2/7.4.
 
-쓰기 권위(FastAPI/service_role): 집계 빌드(build_payment)는 이 경로(authenticated 직접 쓰기 정책
-없음, 0045). 집계는 **액션 엔드포인트**(POST .../payment — 멱등 빌드/리프레시). 게이트 =
-require_permission('payment.manage') → 403. 실제 집계·롤업은 build_payment DB 함수가 원자적 소유
-(NFR-041·project-context "수가 로직=DB"). 조회(GET)·워크리스트는 payment.read. finalize·결제는 7.4.
+쓰기 권위(FastAPI/service_role): 집계 빌드(build_payment)·finalize(finalize_payment)는 이 경로
+(authenticated 직접 쓰기 정책 없음, 0045). 둘 다 액션 엔드포인트(POST .../payment 멱등 빌드 ·
+POST .../payment/finalize 결제·완료). 게이트 = payment.manage → 403. 집계·산정·결제·완료 전이는
+DB 함수가 원자 소유(NFR-041·"수가/정산 로직=DB"). 조회·워크리스트는 payment.read. finalize 는
+build→price→finalize→complete_encounter 를 한 트랜잭션으로 호출.
 """
 
 from __future__ import annotations
@@ -14,7 +15,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 
 from app.core.security import CurrentUser, require_permission
-from app.schemas.billing import BillingWorklistPage, PaymentResponse
+from app.schemas.billing import (
+    BillingWorklistPage,
+    PaymentFinalizeRequest,
+    PaymentResponse,
+)
 from app.services import billing as billing_service
 
 router = APIRouter(tags=["billing"])
@@ -60,3 +65,18 @@ async def get_payment(
 ) -> PaymentResponse:
     """한 내원의 수납 건 조회(헤더 + 라인). 게이트 payment.read. 빌드 전(미집계) → 404."""
     return await billing_service.get_payment(user.sub, encounter_id)
+
+
+@router.post("/encounters/{encounter_id}/payment/finalize", response_model=PaymentResponse)
+async def finalize_payment(
+    encounter_id: UUID,
+    body: PaymentFinalizeRequest,
+    user: CurrentUser = Depends(require_payment_manage),
+) -> PaymentResponse:
+    """수납 finalize(결제 기록 + 내원 완료 — FR-112·UX-DR21·NFR-041). 게이트 payment.manage.
+
+    결제 수단(카드/현금/계좌이체)을 기록해 draft 수납을 finalized 로 전이하고, 같은 트랜잭션에서
+    complete_encounter 로 내원 완료(in_progress→completed·build→price→finalize→complete 원자).
+    액션 엔드포인트(status PATCH 아님). 주상병 미지정 → 422, 이미 결제/취소 또는 정산 대상 0 → 409,
+    미존재 내원 → 404, 권한 미보유 → 403. 신원 재진술 confirm 은 웹(클라 가드)."""
+    return await billing_service.finalize_payment(user.sub, encounter_id, body.payment_method)

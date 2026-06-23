@@ -4051,14 +4051,21 @@ _PAYMENT_DETAIL_COLUMNS = (
     "unit_amount_krw, amount_krw, coverage_type, copay_rate, copay_amount_krw, "
     "insurer_amount_krw, created_at, updated_at"
 )
-# 헤더 조회 = payments 전 컬럼 + 환자 보험유형(본인부담 산정 근거 표시·Story 7.3). insurance_type 은
-#   상관 서브쿼리로 부착(JOIN 시 id/encounter_id 컬럼명 충돌 회피). 비-PII 분류 enum(마스킹 무관).
+# 헤더 조회 = payments 전 컬럼 + 환자 보험유형(산정 근거·7.3) + 신원(이름·차트번호 — 재진술
+#   confirm·상시 배너·7.4). 환자 컬럼은 상관 서브쿼리로 부착(JOIN 시 컬럼명 충돌 회피). 보험유형=
+#   비-PII enum, 이름·차트번호=denormalized 표시(워크리스트 posture 계승·라우트/로그 미유입).
 #   build_payment(by payment id)·fetch_payment(by encounter id) 공통 — WHERE 만 다르게 이어 붙임.
 _PAYMENT_HEADER_SELECT = (
     f"select {_PAYMENT_COLUMNS}, "
     "(select pat.insurance_type from public.encounters e "
     " join public.patients pat on pat.id = e.patient_id "
-    " where e.id = payments.encounter_id) as insurance_type "
+    " where e.id = payments.encounter_id) as insurance_type, "
+    "(select pat.name from public.encounters e "
+    " join public.patients pat on pat.id = e.patient_id "
+    " where e.id = payments.encounter_id) as patient_name, "
+    "(select pat.chart_no from public.encounters e "
+    " join public.patients pat on pat.id = e.patient_id "
+    " where e.id = payments.encounter_id) as chart_no "
     "from public.payments"
 )
 # 워크리스트(정산 대상) — 내원 + denormalized 표시 + 예상 총액(Σ fee_items 라이브). raw PII 제외.
@@ -4113,6 +4120,40 @@ async def build_payment(sub: UUID, encounter_id: UUID) -> dict[str, object]:
         assert payment_id is not None  # build_payment 는 항상 payment_id 반환(헤더 upsert)
         # 집계에 이어 본인부담 산정(동일 txn — Story 7.3). draft 외/헤더 없음은 함수가 no-op 처리.
         await conn.fetchval("select public.price_payment($1)", encounter_id)
+        header = await conn.fetchrow(f"{_PAYMENT_HEADER_SELECT} where id = $1", payment_id)
+        assert header is not None
+        details = await _fetch_payment_details(conn, payment_id)
+        return {**dict(header), "details": [dict(r) for r in details]}
+
+    return await _run_authed(sub, _op)
+
+
+async def finalize_payment(sub: UUID, encounter_id: UUID, payment_method: str) -> dict[str, object]:
+    """수납 finalize(결제 기록 + 내원 완료) — build→price→finalize→complete 원자(Story 7.4·NFR-041).
+
+    한 트랜잭션에서: 권한 재평가(payment.manage) → 내원 존재검사(404) → build_payment(집계 신선화)
+    → price_payment(산정 — finalize 전 선행 보장·L385) → finalize_payment(결제 컬럼 +
+    complete_encounter 완료). 모든 RPC 동일 txn = 원자(중간 실패 롤백). finalize_payment 의
+    complete_encounter 의 주상병 미지정 → PT422, 비-in_progress → PT409 가 raise → _map_pg_sqlstate
+    가 422/409 로 변환(여기 try/except 불요·build_payment 동형). 비-draft 재finalize → PT409.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        await _require_payment_manage(conn)
+        exists = await conn.fetchval(
+            "select true from public.encounters where id = $1", encounter_id
+        )
+        if exists is None:
+            raise NotFoundError(
+                "내원을 찾을 수 없습니다.", detail={"encounter_id": str(encounter_id)}
+            )
+        # finalize 직전 build→price 재실행(신선 집계·산정·price 선행 보장). draft 라 함수 동작.
+        await conn.fetchval("select public.build_payment($1)", encounter_id)
+        await conn.fetchval("select public.price_payment($1)", encounter_id)
+        payment_id = await conn.fetchval(
+            "select public.finalize_payment($1, $2)", encounter_id, payment_method
+        )
+        assert payment_id is not None  # finalize_payment 는 성공 시 payment_id 반환(실패는 raise)
         header = await conn.fetchrow(f"{_PAYMENT_HEADER_SELECT} where id = $1", payment_id)
         assert header is not None
         details = await _fetch_payment_details(conn, payment_id)
