@@ -2655,6 +2655,186 @@ async def fetch_prescriptions(sub: UUID, encounter_id: UUID) -> list[dict[str, o
     return await _run_authed(sub, _op)
 
 
+# ── 원외처방전 문서 조립·발급·내보내기 감사 (Story 7.7 — 0050 dispense_prescription·
+#    log_prescription_document_export 소비) ──────────────────────────────────────────────
+# 처방전은 payment 스코프가 아니라 prescription 스코프(7.5/7.6 영수증·세부내역서와 근본 차이) —
+# finalize 무관(발행 처방이면 출력·발급). 문서 데이터 = clinic_profile(재사용) + 환자(masked RRN·
+# 생년월일·성별) + 진료과/담당의 + 처방 1:N(발행의 면허·근거 진단 KCD·약품 라인). 발급 =
+# dispense_prescription RPC(0050). 내보내기 감사 = log_prescription_document_export RPC.
+
+# 환자(masked RRN·생년월일·성별) + 진료과/담당의 — encounter 기준 1행. raw RRN 미투영(PII 경계).
+_PRESCRIPTION_DOC_HEADER_SELECT = (
+    "select pat.name as patient_name, pat.chart_no, pat.resident_no_masked, pat.insurance_type, "
+    "pat.birth_date, pat.sex, "
+    "dept.name as department_name, doc.name as doctor_name "
+    "from public.encounters e "
+    "join public.patients pat on pat.id = e.patient_id "
+    "join public.departments dept on dept.id = e.department_id "
+    "left join public.users doc on doc.id = e.doctor_id "
+    "where e.id = $1"
+)
+
+# 처방 헤더(발행의 면허·근거 진단 KCD 조인) — 발행/발급 상태만·발행순(ordered_at).
+_PRESCRIPTION_DOC_RX_SELECT = (
+    "select pr.id, pr.status, pr.ordered_at, pr.dispensed_at, "
+    "ub.name as prescriber_name, ub.license_type, ub.license_no, "
+    "dg.code as diagnosis_code, dg.name as diagnosis_name "
+    "from public.prescriptions pr "
+    "left join public.users ub on ub.id = pr.ordered_by "
+    "left join public.encounter_diagnoses ed on ed.id = pr.encounter_diagnosis_id "
+    "left join public.diagnoses dg on dg.id = ed.diagnosis_id "
+    "where pr.encounter_id = $1 and pr.is_active = true "
+    "and pr.status in ('issued', 'dispensed') "
+    "order by pr.ordered_at asc, pr.id asc"
+)
+
+# 처방 약품 라인(drugs 조인·unit 포함 = 1회 투약량 단위). 여러 처방을 한 번에(N+1 회피)·부착순.
+_PRESCRIPTION_DOC_DRUG_SELECT = (
+    "select pd.prescription_id, dr.code as drug_code, dr.name as drug_name, dr.unit as drug_unit, "
+    "pd.dose, pd.frequency, pd.duration_days, pd.usage_instruction "
+    "from public.prescription_details pd join public.drugs dr on dr.id = pd.drug_id "
+    "where pd.prescription_id = any($1::uuid[]) and pd.is_active = true "
+    "order by pd.prescription_id, pd.created_at asc, pd.id asc"
+)
+
+
+async def fetch_prescription_document(sub: UUID, encounter_id: UUID) -> dict[str, object]:
+    """원외처방전 문서 데이터 조립(Story 7.7·FR-115). 게이트=라우터 prescription.dispense.
+
+    요양기관(clinic_profile) + 환자(masked RRN·생년월일·성별) + 진료(진료과/담당의) + 처방 1:N
+    (면허·근거 진단 KCD·약품 라인)을 한 트랜잭션 조립. payment 무관. 미존재 내원 → 404. 처방
+    0건 → 빈 배열. masked RRN 만(PII 경계).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        header = await conn.fetchrow(_PRESCRIPTION_DOC_HEADER_SELECT, encounter_id)
+        if header is None:
+            raise NotFoundError(
+                "내원을 찾을 수 없습니다.", detail={"encounter_id": str(encounter_id)}
+            )
+        clinic = await conn.fetchrow(
+            "select name, biz_no, hira_no, address, ceo_name, phone "
+            "from public.clinic_profile where id = 1"
+        )
+        if clinic is None:  # seed 보장(7.5 도입) — 미설정은 운영 결함(fail-loud)
+            raise AppError(
+                "요양기관 정보가 설정되지 않았습니다.",
+                code="clinic_profile_missing",
+                status_code=500,
+            )
+        rx_rows = await conn.fetch(_PRESCRIPTION_DOC_RX_SELECT, encounter_id)
+        drugs_by_rx: dict[object, list[dict[str, object]]] = {}
+        if rx_rows:
+            drug_rows = await conn.fetch(_PRESCRIPTION_DOC_DRUG_SELECT, [r["id"] for r in rx_rows])
+            for d in drug_rows:
+                drugs_by_rx.setdefault(d["prescription_id"], []).append(
+                    {
+                        "drug_code": d["drug_code"],
+                        "drug_name": d["drug_name"],
+                        "drug_unit": d["drug_unit"],
+                        "dose": d["dose"],
+                        "frequency": d["frequency"],
+                        "duration_days": d["duration_days"],
+                        "usage_instruction": d["usage_instruction"],
+                    }
+                )
+        prescriptions = [
+            {
+                "id": r["id"],
+                "status": r["status"],
+                "ordered_at": r["ordered_at"],
+                "dispensed_at": r["dispensed_at"],
+                "prescriber": {
+                    "name": r["prescriber_name"],
+                    "license_type": r["license_type"],
+                    "license_no": r["license_no"],
+                },
+                "diagnosis": (
+                    {"code": r["diagnosis_code"], "name": r["diagnosis_name"]}
+                    if r["diagnosis_code"] is not None
+                    else None
+                ),
+                "drugs": drugs_by_rx.get(r["id"], []),
+            }
+            for r in rx_rows
+        ]
+        return {
+            "clinic": dict(clinic),
+            "patient": {
+                "name": header["patient_name"],
+                "chart_no": header["chart_no"],
+                "resident_no_masked": header["resident_no_masked"],
+                "insurance_type": header["insurance_type"],
+                "birth_date": header["birth_date"],
+                "sex": header["sex"],
+            },
+            "encounter": {
+                "department_name": header["department_name"],
+                "doctor_name": header["doctor_name"],
+            },
+            "prescriptions": prescriptions,
+        }
+
+    return await _run_authed(sub, _op)
+
+
+async def _require_prescription_owned(
+    conn: asyncpg.Connection, encounter_id: UUID, prescription_id: UUID
+) -> None:
+    """경로 정합 선검사 — prescription_id 가 encounter_id 소속이어야 함(타 내원 발급/출력 → 404)."""
+    owner = await conn.fetchval(
+        "select encounter_id from public.prescriptions where id = $1", prescription_id
+    )
+    if owner is None or owner != encounter_id:
+        raise NotFoundError(
+            "처방을 찾을 수 없습니다.", detail={"prescription_id": str(prescription_id)}
+        )
+
+
+async def dispense_prescription(
+    sub: UUID, encounter_id: UUID, prescription_id: UUID
+) -> dict[str, object]:
+    """원외처방전 발급(issued→dispensed·Story 7.7·FR-115). 게이트=라우터 prescription.dispense.
+
+    dispense_prescription RPC(0050)가 has_permission 재평가 + 상태 전이를 동일 txn 소유
+    (감사=trg_prescriptions_audit 자동). 경로 정합 선검사(소속 아니면 404). 비-issued 재발급 → 409
+    (PT409), 미존재 → 404(PT404), 권한 미보유 → 403(42501). 반환 = 갱신 처방.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        await _require_prescription_owned(conn, encounter_id, prescription_id)
+        await conn.execute("select public.dispense_prescription($1)", prescription_id)
+        header = await conn.fetchrow(
+            f"select {_PRESCRIPTION_COLUMNS} {_PRESCRIPTION_FROM} where pr.id = $1",
+            prescription_id,
+        )
+        details = await _fetch_prescription_details(conn, prescription_id)
+        return {**dict(header), "details": [dict(r) for r in details]}
+
+    return await _run_authed(sub, _op)
+
+
+async def log_prescription_document_export(
+    sub: UUID, encounter_id: UUID, prescription_id: UUID, document_type: str
+) -> None:
+    """처방전 인쇄/내보내기 = 'read' 감사 기록(Story 7.7·UX-DR22). 게이트=prescription.dispense.
+
+    경로 정합 선검사(소속 아니면 404). log_prescription_document_export RPC(0050·SECURITY DEFINER)가
+    has_permission 재평가 + audit_logs INSERT(target=prescriptions) 소유. finalized 게이트 없음 —
+    발행 처방이면 출력(payment 무관). 권한 미보유 → 403.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> None:
+        await _require_prescription_owned(conn, encounter_id, prescription_id)
+        await conn.execute(
+            "select public.log_prescription_document_export($1, $2)",
+            prescription_id,
+            document_type,
+        )
+
+    return await _run_authed(sub, _op)
+
+
 # ── 검사·영상 오더 생성·조회 (Story 5.3 — 0015 examinations 소비, service_role 직접 INSERT) ──────
 # examinations = 단건 평면 행(처방의 헤더/상세 1:N 아님). 오더 생성 = service_role 직접 INSERT
 # (전이 RPC 아님 — 자유 CRUD, insert_prescription 미러). exam_type(lab/imaging) = 워크리스트 라우팅

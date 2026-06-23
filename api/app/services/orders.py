@@ -15,6 +15,7 @@ from app.schemas.orders import (
     ExaminationCreate,
     ExaminationResponse,
     PrescriptionCreate,
+    PrescriptionDocumentResponse,
     PrescriptionResponse,
     TreatmentOrderCreate,
     TreatmentOrderResponse,
@@ -47,6 +48,36 @@ async def list_prescriptions(sub: UUID, encounter_id: UUID) -> list[Prescription
     """한 내원의 발행 처방전 목록(헤더 최신순 + 상세 1:N). 게이트=라우터(order.read)."""
     rows = await db.fetch_prescriptions(sub, encounter_id)
     return [_to_prescription(r) for r in rows]
+
+
+async def get_prescription_document(sub: UUID, encounter_id: UUID) -> PrescriptionDocumentResponse:
+    """원외처방전 문서 데이터 조립(Story 7.7·FR-115). 게이트=라우터(prescription.dispense).
+
+    요양기관·환자(masked RRN)·진료·발행/발급 처방 1:N(면허·KCD·약품 라인). 미존재 내원 → 404
+    (db 가 raise). payment 무관(finalize 게이트 없음)."""
+    row = await db.fetch_prescription_document(sub, encounter_id)
+    return PrescriptionDocumentResponse.model_validate(row)
+
+
+async def dispense_prescription(
+    sub: UUID, encounter_id: UUID, prescription_id: UUID
+) -> PrescriptionResponse:
+    """원외처방전 발급(issued→dispensed·Story 7.7·FR-115). 게이트=라우터(prescription.dispense).
+
+    dispense_prescription RPC(0050)가 전이·감사를 동일 txn 소유. 타 내원/미존재 → 404, 비-issued
+    재발급 → 409, 권한 미보유 → 403(전부 db/RPC 가 raise·_map_pg_sqlstate). 반환 = 갱신 처방."""
+    row = await db.dispense_prescription(sub, encounter_id, prescription_id)
+    return _to_prescription(row)
+
+
+async def export_prescription_document(
+    sub: UUID, encounter_id: UUID, prescription_id: UUID, document_type: str
+) -> None:
+    """처방전 인쇄/내보내기 = 감사 기록(Story 7.7·UX-DR22). 게이트=라우터(prescription.dispense).
+
+    log_prescription_document_export RPC(0050)가 audit_logs 'read'(target='prescriptions') 소유.
+    타 내원/미존재 → 404, 권한 미보유 → 403."""
+    await db.log_prescription_document_export(sub, encounter_id, prescription_id, document_type)
 
 
 def _to_examination(row: dict[str, object]) -> ExaminationResponse:

@@ -357,6 +357,20 @@ join public.permissions p on p.code = 'payment.manage'
 where r.code = 'reception'
 on conflict (role_id, permission_id) do nothing;
 
+-- ── (DEV/데모) 원무 역할 → 처방전 발급(prescription.dispense) 권한 grant (Story 7.7) ──────
+-- 처방전 발급(issued→dispensed)은 원무 직무 — 원무가 원외처방전을 출력·발급한다(FR-115·rbac-ui-
+-- exposure-model). prescription.dispense 는 0050 신규 — 여기선 역할 매핑만(admin 부트 grant 는 0050 가
+-- 수행). 발행(prescription.create)은 의사 직무이며 발급과 별개. 멱등 · db reset 전용(운영 미반영).
+-- ⚠️ 비중첩 baseline: reception 의 "오더 권한 0" baseline(prescription.create·order.read·examination.*·
+--    treatment.* 미보유 → 발행/조회/수행 403)은 그대로 유지된다 — prescription.dispense 는 별개 권한이라
+--    오더 발행/수행 baseline 에 영향 없음(reception 은 여전히 발행·조회·수행 불가, 발급만 가능).
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code = 'prescription.dispense'
+where r.code = 'reception'
+on conflict (role_id, permission_id) do nothing;
+
 -- ── (DEV/데모) 원무 역할 → 진료 완료(encounter.complete) 권한 grant (Story 7.4) ──────
 -- 7.4 finalize_payment 가 결제 확정 시 complete_encounter(내원 in_progress→completed)를 호출한다.
 -- 이 PMS 는 진료 후에도 내원이 in_progress 로 유지되고(billing 워크리스트=in_progress 필터·7.2),
@@ -551,6 +565,15 @@ update public.users
   set department_id = (select id from public.departments where lower(code) = lower('IM'))
   where id = '000000a2-0000-4000-8000-0000000000a2'
     and department_id is null;
+
+-- ── (DEV/데모) 데모 의사 → 면허종류·면허번호 (Story 7.7 원외처방전) ──────────────────
+-- 원외처방전 법정 서식은 처방 의료인의 면허종류·면허번호를 요구한다(0002 users.license_type/license_no).
+-- 데모 의사(EMP0002)에 의사 면허를 채워 처방전 발급 데모가 "—" 없이 완성된 서식을 띄우게 한다.
+-- 멱등(미설정일 때만) · db reset 전용(운영 미반영). 실제 면허 관리 UI 는 스코프 밖(데모 시드).
+update public.users
+  set license_type = 'doctor', license_no = '12345'
+  where id = '000000a2-0000-4000-8000-0000000000a2'
+    and license_no is null;
 
 -- ── (DEV/데모) 데모 의사 주간 근무표 + 샘플 휴진 (Story 6.1) ───────────────────────
 -- ⚠️ 파일 최하단 위치 필수: doctor_schedules·doctor_time_offs 가 users·departments·rooms 를 FK 참조

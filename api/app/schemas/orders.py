@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -99,6 +99,96 @@ class PrescriptionResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     details: list[PrescriptionDetailResponse]
+
+
+# ── 원외처방전 문서(Story 7.7·FR-115) — 발급·출력용 조립 데이터(전 필드 snake_case) ─────────
+# 처방전은 payment 스코프가 아니라 prescription 스코프(영수증 7.5/세부내역서 7.6 와 근본 차이).
+# 요양기관·환자(masked RRN)·진료과/담당의 + 처방 1:N(면허·근거 진단 KCD·약품 라인). 약가 없음.
+
+
+class PrescriptionDocumentClinic(BaseModel):
+    """원외처방전 요양기관 정보(0049 clinic_profile 거울 — 7.5 영수증과 동일 shape·재사용)."""
+
+    name: str
+    biz_no: str
+    hira_no: str  # 요양기관기호
+    address: str
+    ceo_name: str
+    phone: str
+
+
+class PrescriptionDocumentPatient(BaseModel):
+    """원외처방전 환자 정보 — 주민번호 masked 만(full reveal 이월). 생년월일·성별=통상 표기."""
+
+    name: str
+    chart_no: str
+    resident_no_masked: str
+    insurance_type: str
+    birth_date: date | None = None
+    sex: str | None = None
+
+
+class PrescriptionDocumentEncounter(BaseModel):
+    """원외처방전 진료 정보 — 진료과·담당의(내원 doctor_id·미배정 시 None)."""
+
+    department_name: str
+    doctor_name: str | None = None
+
+
+class PrescriptionDocumentPrescriber(BaseModel):
+    """처방 의료인 — 성명·면허종류·면허번호(0002 users.license_type/license_no·법정 서식 필수)."""
+
+    name: str | None = None
+    license_type: str | None = None
+    license_no: str | None = None
+
+
+class PrescriptionDocumentDiagnosis(BaseModel):
+    """근거 진단(질병분류기호·FR-051) — KCD code/name. 근거 진단 없으면 항목 None."""
+
+    code: str
+    name: str
+
+
+class PrescriptionDocumentDrug(BaseModel):
+    """처방 의약품 라인 — 약품명·코드·단위(drugs 조인) + 용량·횟수·일수·용법(FR-050). 약가 없음."""
+
+    drug_code: str
+    drug_name: str
+    drug_unit: str | None = None  # 1회 투약량 단위(예 정·mg)
+    dose: float | None = None  # 1회 투약량(numeric → float)
+    frequency: str | None = None  # 1일 투여횟수(예 'TID')
+    duration_days: int | None = None  # 총 투여일수
+    usage_instruction: str | None = None  # 용법(식후/식전 등)
+
+
+class PrescriptionDocumentItem(BaseModel):
+    """원외처방전 1매(처방 1건) — 발행/발급 상태·발행일/발급일·발행의·근거 진단·의약품 라인."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    status: str  # issued(발행) / dispensed(발급)
+    ordered_at: datetime  # 발행일
+    dispensed_at: datetime | None = None  # 발급일(미발급 시 None)
+    prescriber: PrescriptionDocumentPrescriber
+    diagnosis: PrescriptionDocumentDiagnosis | None = None
+    drugs: list[PrescriptionDocumentDrug]
+
+
+class PrescriptionDocumentResponse(BaseModel):
+    """원외처방전 문서 데이터(Story 7.7·FR-115) — 한 내원의 발행/발급 처방 전체를 법정 서식 조립.
+
+    payment 무관(finalize 게이트 없음 — 발행 처방이면 출력). 약가 없음(원외처방전 = 약품 목록만).
+    PII = masked RRN 만. 처방 0건이면 prescriptions=[](404 아님).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    clinic: PrescriptionDocumentClinic
+    patient: PrescriptionDocumentPatient
+    encounter: PrescriptionDocumentEncounter
+    prescriptions: list[PrescriptionDocumentItem]
 
 
 class ExaminationCreate(BaseModel):

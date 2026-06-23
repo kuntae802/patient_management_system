@@ -13,13 +13,14 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Response, status
 
 from app.core.security import CurrentUser, require_permission
 from app.schemas.orders import (
     ExaminationCreate,
     ExaminationResponse,
     PrescriptionCreate,
+    PrescriptionDocumentResponse,
     PrescriptionResponse,
     TreatmentOrderCreate,
     TreatmentOrderResponse,
@@ -36,6 +37,9 @@ require_prescription_create = require_permission("prescription.create")
 require_examination_order = require_permission("examination.order")
 require_treatment_order = require_permission("treatment.order")
 require_order_read = require_permission("order.read")
+# 원외처방전 발급·출력(Story 7.7) = prescription.dispense(0050·원무 직무·FR-115). 발행(create)·조회
+# (order.read)와 별개 — 원무는 dispense 만 보유(발행/조회/수행 baseline 403 유지).
+require_prescription_dispense = require_permission("prescription.dispense")
 
 
 @router.post(
@@ -71,6 +75,61 @@ async def list_prescriptions(
     ★ 읽기 게이트 = order.read(의사·간호·방사선만 — 원무 미열람, 최소권한). 작은 sub-collection →
     직접 배열(medical-records GET 선례, {data,meta} 봉투 아님)."""
     return await orders_service.list_prescriptions(user.sub, encounter_id)
+
+
+# ── 원외처방전 출력·발급 (Story 7.7 / FR-115·FR-080·UX-DR22) — 게이트 prescription.dispense ──
+# 발행(create·의사)·조회(order.read)와 별개 권한 — 원무가 발급·출력. payment 무관(finalize 게이트
+# 없음 — 발행 처방이면 출력·발급). 인쇄=감사·발급=상태전이(분리·설계 결정 ①).
+
+
+@router.get(
+    "/{encounter_id}/prescription-document",
+    response_model=PrescriptionDocumentResponse,
+)
+async def get_prescription_document(
+    encounter_id: UUID,
+    user: CurrentUser = Depends(require_prescription_dispense),
+) -> PrescriptionDocumentResponse:
+    """원외처방전 문서 데이터(Story 7.7·FR-115). 게이트 prescription.dispense(원무).
+
+    한 내원의 발행/발급 처방 전체를 법정 서식 조립 — 요양기관·환자(masked RRN)·진료·처방 1:N
+    (발행의 면허·근거 진단 KCD·약품 라인). payment 무관. 미존재 내원 → 404·권한 미보유 → 403."""
+    return await orders_service.get_prescription_document(user.sub, encounter_id)
+
+
+@router.post(
+    "/{encounter_id}/prescriptions/{prescription_id}/dispense",
+    response_model=PrescriptionResponse,
+)
+async def dispense_prescription(
+    encounter_id: UUID,
+    prescription_id: UUID,
+    user: CurrentUser = Depends(require_prescription_dispense),
+) -> PrescriptionResponse:
+    """원외처방전 발급(issued→dispensed·FR-080·FR-115). 게이트 prescription.dispense.
+
+    상태 전이 = 액션 엔드포인트(dispense_prescription RPC·0050·전이/감사 동일 txn). 타 내원/미존재
+    → 404·비-issued 재발급 → 409(비가역 1방향)·권한 미보유 → 403. 반환 = 갱신 처방(dispensed)."""
+    return await orders_service.dispense_prescription(user.sub, encounter_id, prescription_id)
+
+
+@router.post(
+    "/{encounter_id}/prescriptions/{prescription_id}/document/export",
+    status_code=204,
+)
+async def export_prescription_document(
+    encounter_id: UUID,
+    prescription_id: UUID,
+    user: CurrentUser = Depends(require_prescription_dispense),
+) -> Response:
+    """처방전 인쇄/내보내기 = 'read' 감사 이벤트(Story 7.7·UX-DR22). 게이트 prescription.dispense.
+
+    인쇄/PDF 직전 web 호출 → log_prescription_document_export('read'·target=prescriptions·
+    document_type='prescription'). 반환 204. 타 내원/미존재 → 404·권한 미보유 → 403."""
+    await orders_service.export_prescription_document(
+        user.sub, encounter_id, prescription_id, "prescription"
+    )
+    return Response(status_code=204)
 
 
 @router.post(
