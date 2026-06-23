@@ -4184,6 +4184,110 @@ async def fetch_payment(sub: UUID, encounter_id: UUID) -> dict[str, object]:
     return await _run_authed(sub, _op)
 
 
+# 영수증 문서 조립(Story 7.5) — payments 금액 + 환자(masked RRN·비-_enc/_hash) + 진료과·담당의·
+#   진료기간 + 발급담당(finalized_by→users.name). 한 SELECT 로 조립(복잡 read=FastAPI·문서). raw RRN
+#   미투영(resident_no_masked 만·PII 경계). 진료기간=consult_started~completed 의 KST date.
+_RECEIPT_HEADER_SELECT = (
+    "select p.status, p.payment_method, p.payment_no, p.finalized_at, "
+    "p.total_amount_krw, p.covered_amount_krw, p.non_covered_amount_krw, "
+    "p.copay_amount_krw, p.insurer_amount_krw, p.paid_amount_krw, p.id as payment_id, "
+    "pat.name as patient_name, pat.chart_no, pat.resident_no_masked, pat.insurance_type, "
+    "dept.name as department_name, doc.name as doctor_name, iss.name as issued_by_name, "
+    "(coalesce(e.consult_started_at, e.registered_at, e.created_at) "
+    " at time zone 'Asia/Seoul')::date as treatment_started_on, "
+    "(coalesce(e.completed_at, e.consult_started_at, e.registered_at, e.created_at) "
+    " at time zone 'Asia/Seoul')::date as treatment_ended_on "
+    "from public.payments p "
+    "join public.encounters e on e.id = p.encounter_id "
+    "join public.patients pat on pat.id = e.patient_id "
+    "join public.departments dept on dept.id = e.department_id "
+    "left join public.users doc on doc.id = e.doctor_id "
+    "left join public.users iss on iss.id = p.finalized_by "
+    "where p.encounter_id = $1"
+)
+
+
+async def fetch_receipt(sub: UUID, encounter_id: UUID) -> dict[str, object]:
+    """진료비 계산서·영수증 문서 데이터 조립(Story 7.5) — finalized 수납 건만(FR-113).
+
+    요양기관(clinic_profile) + 환자(masked RRN) + 진료(진료과/담당의/진료기간) + 결제·발급 + 상세
+    라인을 한 트랜잭션에서 조립. 게이트=라우터 payment.read(읽기 TOCTOU 저위험·fetch_payment 동형).
+    비-finalized → 409(invalid_transition·"정산된 수납 건"), 헤더 없음 → 404. 금액·산정값은 전부 DB.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        header = await conn.fetchrow(_RECEIPT_HEADER_SELECT, encounter_id)
+        if header is None:
+            raise NotFoundError(
+                "수납 건을 찾을 수 없습니다.", detail={"encounter_id": str(encounter_id)}
+            )
+        if header["status"] != "finalized":
+            # "정산된 수납 건만" — draft/cancelled 영수증 없음(UI 는 finalized 패널 진입·방어).
+            raise ConflictError(
+                "정산 완료된 수납 건만 영수증을 출력할 수 있습니다.",
+                code="invalid_transition",
+                detail={"status": header["status"]},
+            )
+        clinic = await conn.fetchrow(
+            "select name, biz_no, hira_no, address, ceo_name, phone "
+            "from public.clinic_profile where id = 1"
+        )
+        if clinic is None:  # seed 보장(AC9) — 미설정은 운영 결함(fail-loud)
+            raise AppError(
+                "요양기관 정보가 설정되지 않았습니다.",
+                code="clinic_profile_missing",
+                status_code=500,
+            )
+        details = await _fetch_payment_details(conn, header["payment_id"])
+        copay = int(header["copay_amount_krw"])
+        paid = int(header["paid_amount_krw"])
+        return {
+            "clinic": dict(clinic),
+            "patient": {
+                "name": header["patient_name"],
+                "chart_no": header["chart_no"],
+                "resident_no_masked": header["resident_no_masked"],
+                "insurance_type": header["insurance_type"],
+            },
+            "encounter": {
+                "department_name": header["department_name"],
+                "doctor_name": header["doctor_name"],
+                "treatment_started_on": header["treatment_started_on"],
+                "treatment_ended_on": header["treatment_ended_on"],
+            },
+            "status": header["status"],
+            "payment_no": header["payment_no"],
+            "payment_method": header["payment_method"],
+            "finalized_at": header["finalized_at"],
+            "issued_by_name": header["issued_by_name"],
+            "total_amount_krw": int(header["total_amount_krw"]),
+            "covered_amount_krw": int(header["covered_amount_krw"]),
+            "non_covered_amount_krw": int(header["non_covered_amount_krw"]),
+            "copay_amount_krw": copay,
+            "insurer_amount_krw": int(header["insurer_amount_krw"]),
+            "paid_amount_krw": paid,
+            "due_amount_krw": copay - paid,  # 납부할 금액(표시값 — pricing 아님)
+            "details": [dict(r) for r in details],
+        }
+
+    return await _run_authed(sub, _op)
+
+
+async def log_document_export(sub: UUID, encounter_id: UUID, document_type: str) -> None:
+    """문서 인쇄/내보내기 = 'read' 감사 기록(Story 7.5·UX-DR22). 게이트=라우터 payment.read.
+
+    log_payment_document_export(SECURITY DEFINER) 가 has_permission('payment.read') 재평가 +
+    audit_logs INSERT 를 소유(우회 불가). payment 미존재 → PT404→404, 권한 미보유 → 42501→403.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> None:
+        await conn.execute(
+            "select public.log_payment_document_export($1, $2)", encounter_id, document_type
+        )
+
+    await _run_authed(sub, _op)
+
+
 async def fetch_billing_worklist(
     sub: UUID,
     *,

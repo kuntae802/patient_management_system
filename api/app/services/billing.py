@@ -17,6 +17,7 @@ from app.schemas.billing import (
     BillingWorklistItem,
     BillingWorklistPage,
     PaymentResponse,
+    ReceiptResponse,
 )
 
 _KST = ZoneInfo("Asia/Seoul")  # 워크리스트 기본 일자 = KST 오늘(encounters_service 일관)
@@ -48,6 +49,22 @@ async def finalize_payment(sub: UUID, encounter_id: UUID, payment_method: str) -
     대상 0 → 409(전부 db/DB 가 동일 트랜잭션 검증·raise). 결제 컬럼·내원 완료 반영 행 반환."""
     row = await db.finalize_payment(sub, encounter_id, payment_method)
     return _to_payment(row)
+
+
+async def get_receipt(sub: UUID, encounter_id: UUID) -> ReceiptResponse:
+    """진료비 계산서·영수증 문서 데이터(Story 7.5·FR-113). 게이트=라우터(payment.read).
+
+    finalized 수납 건만 → 비-finalized 409, 미존재 404(db/DB 가 검증·raise). 요양기관·환자(masked
+    RRN)·진료·결제·발급 + 상세 라인을 묶은 ReceiptResponse 반환(항목별 금액표 집계는 web)."""
+    row = await db.fetch_receipt(sub, encounter_id)
+    return ReceiptResponse.model_validate(row)
+
+
+async def export_document(sub: UUID, encounter_id: UUID, document_type: str) -> None:
+    """문서 인쇄/내보내기 = 감사 이벤트 기록(Story 7.5·UX-DR22). 게이트=라우터(payment.read).
+
+    payment 미존재 → 404, 권한 미보유 → 403(db/RPC 가 검증·raise). 감사는 DB 가 소유(우회 불가)."""
+    await db.log_document_export(sub, encounter_id, document_type)
 
 
 async def list_billing_worklist(
