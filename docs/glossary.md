@@ -29,7 +29,7 @@
 | `diagnosis` | 진단 | KCD 코드 마스터 |
 | `fee_schedule` | 수가 | EDI 행위 마스터(버전·유효기간) |
 | `fee_item` | 수가항목 | `fee_items`(0021·5.10)·내원별 자동 적재·금액 스냅샷·멱등 (source_type, source_id)·Epic 7 수납상세가 집계 |
-| `fee_mapping` | 수가매핑 | `fee_mappings`(0021·5.10)·임상 행위→수가코드 규칙(진찰=비항등 매핑 / 검사·처치=fee_schedule_id 직접) |
+| `fee_mapping` | 수가매핑 | `fee_mappings`(0021·5.10)·임상 행위→수가코드 규칙(진찰=비항등 매핑 / 검사·처치=fee_schedule_id 직접). **source_event** = `encounter_start`(레거시 폴백)·`encounter_start_initial`(초진 AA154)·`encounter_start_repeat`(재진 AA254)·초진/재진 동적 7.1(0045) |
 | `encounter` | 내원 | 파이프라인 허브(예약→접수→진행중→완료) |
 | `medical_record` | 진료기록 | SOAP, 한 내원 1:N |
 | `encounter_diagnosis` | 내원진단 | `encounter_diagnoses`(0014)·KCD `diagnosis_id` FK·`is_primary` 주/부상병·활성 주상병 ≤1(부분 unique) |
@@ -44,8 +44,8 @@
 | `appointment` | 예약 | 슬롯 기반 |
 | `doctor_schedule` | 근무표 | 요일·시간대·진료실 |
 | `doctor_time_off` | 휴진/예외 | 휴가·학회 |
-| `payment` | 수납 | 헤더 |
-| `payment_detail` | 수납상세 | 라인 항목 |
+| `payment` | 수납 | 헤더 — `payments`(0045·7.1)·내원 1:1(encounter_id UNIQUE)·status draft/finalized/cancelled·billing_type postpaid/prepaid·금액 집계 컬럼은 7.2 집계/7.3 산정/7.4 결제가 채움 |
+| `payment_detail` | 수납상세 | 라인 항목 — `payment_details`(0045·7.1)·payment 1:N(ON DELETE CASCADE)·`fee_item_id` 집계원·스냅샷(code·name·금액·coverage)·`unique(payment_id,fee_item_id)`·`amount=qty*unit`·7.2 가 fee_items 집계 적재 |
 | `notification_log` | 알림로그 | SMS 시뮬 발송이력 |
 
 ## 식별 번호 · 민감정보
@@ -459,7 +459,7 @@
 | 식별자 | 종류 | 의미 |
 |---|---|---|
 | `fee_items` | 테이블(0021) | 수가항목 — 내원별 자동 적재(`encounter_id` 1:N·`fee_schedule_id`·`source_type` encounter/examination/treatment·`source_id` 발생원+멱등키·`quantity`·`unit_amount_krw`/`amount_krw` 금액 스냅샷·`category`/`coverage_type` 분류 스냅샷). **`unique(source_type, source_id)`** 멱등. Epic 7 payment_details 가 집계 |
-| `fee_mappings` | 테이블(0021) | 수가매핑 — 행위→수가코드 규칙 외부화(`source_event` CHECK `encounter_start` 단일·`fee_schedule_id`·`is_active`). 진찰만 비-항등(매핑 필요)·검사/처치는 fee_schedule_id 직접(항등·미경유) |
+| `fee_mappings` | 테이블(0021·**CHECK 확장 7.1**) | 수가매핑 — 행위→수가코드 규칙 외부화(`source_event`·`fee_schedule_id`·`is_active`). 진찰만 비-항등(매핑 필요)·검사/처치는 fee_schedule_id 직접(항등·미경유). ⚠️ `source_event` CHECK = 0021 `encounter_start` 단일 → **0045/7.1 이 initial/repeat 추가**(초진재진 동적·§수납 정산 스키마) |
 | `insert_fee_item` | 함수(0021·SECURITY DEFINER) | fee_schedules 금액·분류 스냅샷 복사 → fee_items 멱등 INSERT(`on conflict do nothing`). 트리거 3종 공유 |
 | `fee_on_encounter_start` / `_examination_performed` / `_treatment_performed` | 트리거 함수(0021·SECURITY DEFINER) | 진찰료(fee_mappings 룩업)·검사료/처치료(NEW.fee_schedule_id 직접) 적재 |
 | `trg_encounters_fee` / `trg_examinations_fee` / `trg_treatment_orders_fee` | 트리거(0021) | **AFTER UPDATE OF status + WHEN**(encounters registered→in_progress·examinations/treatment_orders ordered→performed) = 전이만 1회 포착(중복 적재 방지) |
@@ -623,3 +623,18 @@
 | `AffectedAppointmentsPanel`·`fetchAffectedAppointments`·`recordChangeNotice` | 웹(`components/admin/`·`lib/scheduling/appointments.ts`) | 영향 예약 슬라이드오버(목록형·재배정 모드=의사 피커[같은 진료과 `bookable-doctors`]+슬롯 재선택→reschedule+notice·취소·안내 모드=cancel+notice·booking-detail 미러·이중제출 락·409 인라인 칩). `schedule-manager` = 휴진 등록(onSaved) 후 영향>0 패널 자동 오픈 + 휴진 행 "영향 예약" 액션(재방문) |
 
 > **휴진 재배정 경계(Story 6.8 확정·Epic 6 캡스톤):** 영향 조회=신규 read(booked∩겹침·환자명·`appointment.read`)·재배정=6.4 `reschedule` 재사용(+의사 변경 시 department_id 동기화로 deferred 청산)·안내=6.6 `notification_logs` 이음매 확장(reschedule_notice/cancellation_notice·시뮬·멱등·마스킹·비-식별·`notification.send`·best-effort). 주 surface=관리자 근무 스케줄(휴진 등록=`master.manage` admin). 신규 권한·테이블 0(기존 appointment.read/update·notification.send 재사용 → admin grant 재실행 불요). **자동 일괄 취소/이동·환자 수신함 UI·실 SMS·새 의사 진료과 멤버십 서버검증(`_assert_doctor_in_department`)·`reminder_kind`→`notification_kind` 리네임 = 의도적 범위 밖(이월).**
+
+## 수납 · 정산 스키마 (Story 7.1, `0045_payments.sql`)
+
+> ⚠️ **마이그 번호 0045**: Epic 7 마이그 블록 0045~0059(Epic 6 워크트리 0030~0037 다음). 에픽/아키 stale `0012_billing` 정정 — 누적 시프트(0015·0021 선례 동형). **2계층 수가 모델**(glossary: `fee_item`≠`payment_detail`): 임상 적재 `fee_items`(0021·5.10) → 수납 집계 `payment_details`(0045·7.1·집계 RPC=7.2). 본 스토리 = 스키마 + 초진/재진 동적 매핑 + 5.10 이월 흡수. **집계=7.2·본인부담 산정=7.3·finalize=7.4·문서=7.5~7.7.**
+
+| 식별자 | 종류 | 의미 |
+|---|---|---|
+| `payments` | 테이블(0045) | 수납 헤더 — 내원 1:1(`encounter_id` UNIQUE FK)·`status`(draft/finalized/cancelled)·`billing_type`(postpaid/prepaid·선후수납 7.8)·금액 6컬럼(total/covered/non_covered/copay/insurer/paid `_krw` int≥0·default 0)·결제 6컬럼(payment_method card/cash/transfer·payment_no UNIQUE 영수증번호·finalized_at/by·cancelled_at·cancel_reason). **금액·결제 컬럼=7.2/7.3/7.4 가 채움**(본 파일=기본값 0/NULL) |
+| `payment_details` | 테이블(0045) | 수납상세 라인 — `payment_id` FK **ON DELETE CASCADE**·`fee_item_id` FK(nullable=수기 라인)·스냅샷(fee_schedule_id·code·name·category·quantity·unit_amount_krw·amount_krw·coverage_type)·본인부담(copay_rate numeric(4,3)·copay_amount_krw·insurer_amount_krw·7.3 채움). **`unique(payment_id, fee_item_id)`** 집계 멱등·**`check(amount_krw=quantity*unit_amount_krw)`** |
+| `payment.read` | 권한(0045 신규) | 수납 조회(원무 정산·의사·환자 포털 Epic 8 소비) — **admin 부트 grant 재실행**(회귀 회피). doctor·reception seed grant·403 baseline=nurse. 쓰기 권한(finalize)=7.4 소관 |
+| `fee_on_encounter_start` 재정의(0045) | 트리거 함수 | **초진/재진 동적 판정**(0021 단일 매핑 대체): 환자 과거 완료 내원 존재 → 재진(`encounter_start_repeat`→AA254) / 없으면 초진(`encounter_start_initial`→AA154)·분기 부재 시 레거시 `encounter_start` 폴백. 트리거 부착(trg_encounters_fee)은 0021 불변 |
+| `insert_fee_item` 재정의(0045) | 함수(SECURITY DEFINER) | **만료·비활성 수가 적재 제외**(5.10 이월 흡수): 룩업 WHERE 에 `is_active·effective_from≤current_date·(effective_to null or ≥current_date)` 추가 → 만료/폐지 EDI 코드 신규 적재 차단. PUBLIC EXECUTE 회수 방어적 재선언(위조 적재 차단) |
+| `fee_items` amount CHECK(0045) | 제약 | `check(amount_krw=quantity*unit_amount_krw)` 소급 추가(5.10 이월 흡수·quantity=1 기존 행 충족·무회귀) |
+
+> **수납 스키마 경계(Story 7.1 확정):** **신규 마이그 1건(0045)·신규 권한 1(payment.read)·admin 부트 grant 재실행.** 순수 DB 토대 스토리(5.10/5.1 동형·운영 코드 0). **설계 결정(사용자 확정)**: ① 초진/재진=동적 판정(이력 유무)·30일 재진규칙/진료과 가산=이월 ② 본인부담=보험유형별(컬럼만·산정 로직 7.3) ③ 약제비=원외처방 스코프아웃(처방 발행 fee_item 0·drugs 약가 컬럼 미추가). **5.10 이월 2건 흡수**: 만료수가 적재제외(insert_fee_item)·amount CHECK(fee_items+payment_details). **이월 지속(만기 아님)**: 종결 내원 수가 적재 게이트·앱 낙관적 잠금·is_active soft-delete=DB 최종선. **미구현(후속)**: 집계(fee_items→payment_details)=7.2·본인부담 산정=7.3·finalize/결제/complete_encounter=7.4·진료비 문서=7.5~7.7.

@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-23T00:00:00+0000
+last_updated: 2026-06-23T15:00:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -117,8 +117,8 @@ development_status:
   epic-6-retrospective: done
 
   # ── Epic 7: 수납 · 정산 · 표준 문서 ──
-  epic-7: backlog
-  7-1-수납-스키마-수가-매핑-db: backlog
+  epic-7: in-progress
+  7-1-수납-스키마-수가-매핑-db: done
   7-2-수납-건-생성-집계: backlog
   7-3-급여-비급여-구분-본인부담-산정: backlog
   7-4-수납-처리-내원-완료: backlog
