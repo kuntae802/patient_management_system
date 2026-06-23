@@ -69,14 +69,14 @@
 
 ## enum — 오더 생명주기 (유형별, Story 5.1 `0015_orders.sql` 확정)
 
-- 처방 `prescriptions.status`: `issued`(발행) → `dispensed`(발급, 원외 약국·Epic 7 7.7). 초기 `issued`.
+- 처방 `prescriptions.status`: `issued`(발행) → `dispensed`(발급, 원외 약국). 초기 `issued`. **발급 전이=`dispense_prescription` RPC(0050·Story 7.7)·게이트 `prescription.dispense`(원무)·`dispensed_at` 기록·비가역 1방향.**
 - 검사·영상 `examinations.status`: `ordered`(지시) → `performed`(수행) → `completed`(판독/완료). 초기 `ordered`.
 - 처치 `treatment_orders.status`: `ordered`(지시) → `performed`(수행) → `completed`(완료·예약). 초기 `ordered`.
 
 > **(gap ⑤ 청산)** 오더 상태 어휘 통일·전이표 full matrix를 `0015_orders.sql`(Story 5.1)이 확정. 유형별 per-table
 > 상태머신(통합 orders 테이블 없음 — `order`=총칭 추상). forward-only(역행·건너뛰기·재수행 없음), 위반 = `PT409`(→409,
 > 0010 어휘 재사용·신규 SQLSTATE 불요). 전진 RPC = `perform_examination`/`complete_examination`/`perform_treatment_order`
-> (소스상태 precondition = FR-093 재수행 차단). `dispense_prescription`(처방)·`complete_treatment_order`(처치)는 예약(Epic 7/미래).
+> (소스상태 precondition = FR-093 재수행 차단). `dispense_prescription`(처방·`issued→dispensed`)=**Story 7.7 가동**(0050). `complete_treatment_order`(처치)는 예약(미래).
 
 ## enum · CHECK — 신원·RBAC·감사 (Story 1.3, `0002`~`0004`)
 
@@ -701,7 +701,14 @@
 | `ReceiptDocument` / `aggregateByCategory` | 컴포넌트·함수(web·receipt-document.tsx) | Batang serif(`font-legal-serif`·`.receipt-paper`) 법정 서식 — 요양기관·환자 masked RRN·항목별 금액표(category 집계)·소계=헤더 정합·납부 3행·발급/서명. `@media print`(.receipt-paper 만 출력) |
 | `StatementDocument` | 컴포넌트(web·statement-document.tsx·Story 7.6) | 진료비 세부산정내역서 법정 서식(FR-114) — 라인별 10컬럼(항목분류·일자·코드·명칭·단가·횟수·일수·금액·본인부담·공단부담)·합계=라인 직접 합(헤더 정합). 일자=진료일·일수=1(외래 단일내원). `ReceiptResponse` 재사용(동일 데이터·다른 렌더)·`.receipt-paper` 재사용(print 타깃·CSS 0) |
 | `LegalDocumentHeader` / `LegalDocumentFooter` / `Won` | 컴포넌트(web·legal-document.tsx·Story 7.6) | 영수증·세부내역서 공유 골격 — 문서 제목 바·요양기관/환자(masked RRN) 헤더·발급/서명·법적 고지(중복 제거). `formatKstDate`/`PAYMENT_METHOD_LABEL`=`lib/billing/format.ts` 공용 |
+| `dispense_prescription` | RPC(0050·Story 7.7) | 원외처방전 발급 전이 — `issued→dispensed`+`dispensed_at`. SECURITY DEFINER·게이트 `prescription.dispense`·소스상태 issued 선검사(재발급 PT409)·비가역 1방향. 발급자=`trg_prescriptions_audit` actor 자동 기록(`dispensed_by` 컬럼 없음) |
+| `log_prescription_document_export` | RPC(0050·Story 7.7) | 처방전 인쇄/내보내기 = `audit_logs` 'read'(target=`prescriptions`·`document_type='prescription'`). `log_payment_document_export` 미러하되 **finalized 게이트 없음**(처방=payment 무관)·게이트 `prescription.dispense`·service_role EXECUTE |
+| `prescription.dispense` | 권한(0050·Story 7.7) | 원외처방전 발급·출력 게이트 — reception(+admin) 보유. 발행(`prescription.create`·의사)·조회(`order.read`)와 별개(비중첩 baseline) |
+| `PrescriptionDocumentResponse` (+ `…Item`/`…Drug`/`…Prescriber`/`…Diagnosis`) | 응답 스키마(orders.py·Story 7.7) | 원외처방전 문서 데이터 — clinic·patient(masked RRN·생년월일·성별)·encounter(진료과/담당의)·처방 1:N(발행의 면허 `license_no`/`license_type`·근거 진단 KCD `diagnosis`·약품 라인 `drugs`). `fetch_prescription_document`(db) 단일 조립·payment 무관·약가 없음 |
+| `PrescriptionDocument` (web) | 컴포넌트(web·prescription-document.tsx·Story 7.7) | 원외처방전 법정 서식 — `.receipt-paper`/`font-legal-serif` 재사용(CSS 0). 요양기관·환자(masked RRN)·질병분류기호(KCD)·처방 의약품 표(명칭·1회량·1일횟수·총일수·용법)·처방의 면허·서명·교부번호(파생)·사용기간(상수). `billing-detail` 처방전 섹션이 소비(발급 확정·출력 미리보기·beforeprint 감사) |
 
 > **진료비 계산서·영수증 경계(Story 7.5 확정):** **신규 마이그 1건(0049)·신규 권한 0**(`payment.read` 재사용 — clinic_profile authenticated SELECT·receipt/export 게이트). 문서 데이터 조립=**`fetch_receipt` FastAPI**(복잡 read·문서)·감사=**`log_payment_document_export` DB RPC 소유**(우회 불가)·인쇄/PDF=**브라우저**(window.print). 주민번호 masked 만(full reveal 이월). **흡수/확인**: deferred-work L370 익명 수기 라인(현재 자동 라인 전부 name/code 보유·익명 없음)·L224 내보내기 감사가 after_data.document_type 로 reveal 과 구분. **신규 이월**: full RRN 문서 reveal·서버측 영수증 PDF 생성·clinic_profile 관리 UI(seed 만). **미구현(후속)**: 세부산정내역서(라인별)=7.6·원외처방전=7.7·선/부분수납=7.8·취소노쇼=7.9·부분수행=7.10.
 
 > **진료비 세부산정내역서 경계(Story 7.6 확정):** **신규 마이그 0·신규 엔드포인트 0·신규 권한 0·신규 라이브러리 0**(Epic 7 첫 마이그-0 스토리). 7.5 인프라 재사용: `ReceiptResponse`/`fetch_receipt`(동일 데이터·라인 전 컬럼·진료기간)·`log_payment_document_export`(제네릭 `document_type` → 'statement' DDL 변경 0)·`.receipt-paper` `@media print`(CSS 0). 실제 변경 = `DocumentExportRequest`/web `DocumentType` Literal 확장 + 신규 web 컴포넌트(`statement-document.tsx`·`legal-document.tsx` 공유 골격) + `billing-detail` 미리보기 **문서 탭 토글**(beforeprint 감사 = 활성 탭 document_type). **설계 결정(사용자 확정 2026-06-24·AskUserQuestion 3건)**: ① 데이터=receipt 엔드포인트 재사용 ② UI=문서 탭 토글(목업) ③ 일자=진료일·일수=1(fee_items 라인별 임상 날짜 없음·외래 단일내원). 합계=라인 직접 합(헤더 정합·7.5 자기정합 patch 계승). 주민번호 masked 만(7.5 계승). **신규 이월**: 라인별 임상 일자/일수(다일·입원 시 payment_details/fee_items 컬럼 추가)·급여/비급여 구분 소계(FR-114 범위 밖). **미구현(후속)**: 원외처방전=7.7·선/부분수납=7.8·취소노쇼=7.9·부분수행=7.10.
+
+> **원외처방전 출력·발급 경계(Story 7.7 확정):** **수납(payment) 문서가 아니라 처방(prescription) 문서** — 7.5/7.6과 달리 데이터(payment→prescription)·감사 스코프(payments→prescriptions)·생명주기(finalize→dispense)가 근본 다름. **신규 마이그 1건(0050)·신규 권한 1(`prescription.dispense`·reception+admin·admin 부트 grant 재실행)·신규 라이브러리 0**. 0015 처방 상태머신(`issued→dispensed` CHECK·트리거·`dispensed_at`·`trg_prescriptions_audit`)은 **이미 존재**(재정의 금지) — 5.1이 이월한 `dispense_prescription` RPC + 권한 게이트를 7.7이 청산. 신규: `dispense_prescription`/`log_prescription_document_export` RPC(0050·후자 **finalized 게이트 없음**=payment 무관)·`fetch_prescription_document`(조립·license/KCD/drugs 조인)·3 엔드포인트(GET prescription-document·POST dispense·POST document/export)·web `lib/billing/prescriptions.ts`·`prescription-document.tsx`·billing-detail 처방전 섹션. 인쇄 인프라(`.receipt-paper`·`@media print`·`font-legal-serif`·`formatKstDate`)는 재사용. **설계 결정(사용자 확정 2026-06-24·AskUserQuestion 4건)**: ① 발급=명시적 "발급 확정" 버튼(인쇄=감사·발급=상태전이 분리·비가역) ② 권한=`prescription.dispense` 신규(payment.read 재사용 안 함) ③ 진입=수납 화면 처방전 섹션(finalize 무관) ④ 발급자=감사로그 actor만(`dispensed_by` 컬럼 없음). 약가 없음(원외처방전=약품 목록만·약제비=영구 스코프아웃). 주민번호 masked 만. **신규 이월**: 교부번호 저장 시퀀스(현 파생 표시)·처방전 재발급/재인쇄 정책(현 1방향 dispense·재인쇄=감사만)·사용기간 상수→정책화. **미구현(후속)**: 선/부분수납=7.8·취소노쇼=7.9·부분수행=7.10.

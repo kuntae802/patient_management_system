@@ -260,7 +260,7 @@
 
 - **신규 FK 의 active/effective 마스터 불변식 DB 미강제** [supabase/migrations/0015_orders.sql 전 FK] — `drug_id`/`fee_schedule_id`/`equipment_id`/`encounter_id`/`encounter_diagnosis_id` FK 는 행 존재만 검증하고 `is_active`/`effective_to` 는 보지 않는다(0007 마스터는 soft-delete + 유효기간). 결과: (a) 비활성·만료된 약품/수가로 오더 생성 가능, (b) 라이브 오더가 참조하는 마스터가 soft-delete 될 수 있음. "현재 유효 마스터" 불변식은 전적으로 앱 레이어(5.2/5.3/5.4 `_require_*` + 활성 검사)에 위임 — DB 권위 레벨엔 부재. walk-in `insert_walk_in_encounter` is_active TOCTOU·is_active soft-delete 일관정책 이월과 **동일 묶음**. 해소 경로: 활성-only 부분 FK/트리거를 DB 측에 두는 전역 is_active 하드닝 스토리.
 
-- **`issued→dispensed` 전이 권한 게이트 부재** [supabase/migrations/0015_orders.sql] — 처방 발급 전이는 트리거가 허용(매트릭스 내)하나, 모든 다른 전이(perform/complete)와 달리 **권한 체크·전용 RPC 가 없다**. 현재 `prescriptions` 는 authenticated SELECT-only 라 service_role 만 도달 가능(노출 제한적). dispense 동작·권한(`prescription.dispense` 류)·RPC = **Epic 7(7.7 원외처방전 출력·발급)** 소유. 그때 per-action 권한 모델로 정합.
+- ~~**`issued→dispensed` 전이 권한 게이트 부재**~~ **✅ 해소(Story 7.7·0050)** [supabase/migrations/0015_orders.sql → 0050_prescription_dispense.sql] — 처방 발급 전이가 트리거는 허용하나 권한 체크·전용 RPC 가 없던 갭. 7.7 이 `dispense_prescription(uuid)` RPC(SECURITY DEFINER·`has_permission('prescription.dispense')` 자가 게이트·소스상태 issued 선검사·`dispensed_at`·재발급 PT409) + `prescription.dispense` 권한(reception+admin·admin 부트 grant 재실행) 신설로 청산. 발급=명시적 액션 엔드포인트(`POST .../prescriptions/{id}/dispense`)로만 도달·비가역 1방향. per-action 권한 모델 정합.
 
 - **`_assert_sqlstate` 가 SQLSTATE 클래스만 비교(메시지 미비교)** [api/tests/test_orders_db.py] — 여러 코드 경로가 `PT409` 를 던진다(트리거 초기상태 가드·전이 매트릭스·RPC 소스상태 precondition). 테스트는 SQLSTATE 클래스만 단언하므로, 실패가 *다른* PT409 경로로 이동하는 회귀(예: RPC precondition 제거됐으나 트리거 매트릭스가 잡음)를 구분하지 못할 수 있다. `test_encounters_db._assert_sqlstate` 계승 패턴(코드베이스 전반 동형). **보강 경로**: 에러 메시지 substring 단언 추가 또는 re-perform 후 `performed_by` 보존 단언(같은 묶음=위 attribution 불변성). 현 커버리지는 동작은 검증(PT409 발생)하되 발생원은 미특정.
 
@@ -425,3 +425,24 @@
 
 - **라인별 임상 일자/일수 미보유(진료일·1 고정)** [supabase/migrations/0021_billing.sql `fee_items`·0045 `payment_details`·web statement-document.tsx] — 세부산정내역서 FR-114 의 "일자·일수" 컬럼을 내원 진료일(`encounter.treatment_started_on`·KST·전 라인 동일)과 1(상수)로 채운다. `fee_items`/`payment_details` 에 라인별 임상 수행 날짜(`created_at`=집계시각)·투약/입원 일수 컬럼이 없기 때문(외래 단일내원 모델·약제비=원외 스코프아웃이라 투약일수 무의미). **다일 진료·입원·다회 방문 청구**가 도입되면 `payment_details`(+`build_payment`·`fee_items`)에 `service_date`·`days` 컬럼 추가(마이그·Epic 5 적재 경로 재작업)해 라인별 실제 일자/일수를 산정. 설계 결정 ③.
 - **세부산정내역서 급여/비급여 구분 소계 부재(합계 1행만)** [web statement-document.tsx] — 현재 tfoot 은 전 라인 단일 합계(Σ금액·Σ본인부담·Σ공단부담)만 렌더. 표준 양식 일부는 급여/비급여 구분 소계 또는 항목분류별 중간 소계를 둔다. FR-114 는 "라인별 + 10컬럼"만 요구해 범위 밖(스코프 규율) — 영수증(7.5)의 대분류 집계표가 이미 구분 합계를 제공. 양식 정교화 요구 시 구분/그룹 소계 행 추가.
+
+## Deferred from: dev of 7-7-원외처방전-출력-발급 (2026-06-24)
+
+> 설계 결정(사용자 확정·AskUserQuestion 4건): ① 발급=명시적 "발급 확정" 버튼(인쇄=감사·발급=상태전이 분리·비가역 1방향) ② 권한=`prescription.dispense` 신규(payment.read 재사용 안 함) ③ 진입=수납 화면 처방전 섹션(finalize 무관) ④ 발급자=감사로그 actor만(`dispensed_by` 컬럼 없음). 7.7 은 마이그 1건(0050)·신규 권한 1·라이브러리 0. 0015 처방 상태머신 재사용(재정의 0).
+>
+> **청산(7.7)**: 위 L263 `issued→dispensed` 전이 권한 게이트 부재(5.1 이월) = `dispense_prescription` RPC + `prescription.dispense` 권한으로 해소.
+>
+> **확인(7.7)**: full RRN 문서 reveal(L407)=처방전도 masked only(동일 이월 묶음) · dev of 7-5 서버측 PDF(L408)/파일명 PII(L410) 이월은 처방전에도 동일 적용(브라우저 인쇄·beforeprint 감사 공유) · 클라 내보내기 감사 best-effort(L417)=처방전 beforeprint 도 동일 메커니즘(7.7 신규 아님).
+
+- **교부번호 저장 시퀀스 부재(파생 표시)** [web prescription-document.tsx `issueNo`·api fetch_prescription_document] — 원외처방전의 교부번호를 처방 식별자 기반 파생값(`RX-{prescription_id[:8]}`·불투명·PII 없음·결정론적)으로 표시한다. 정식 법정 교부번호는 채번 시퀀스(요양기관·일자별 일련번호, `payment_no_seq`(0048) 류)가 통상이나 외래 데모 스코프엔 과함. **다기관·청구 연동·정식 교부번호 요구 시** `prescription_no_seq` 시퀀스 + `prescriptions.dispense_no` 컬럼(발급 시 채번) 추가(마이그). 현 파생 표시는 단일 요양기관 데모에 충분.
+- **처방전 재발급/재인쇄 정책 부재** [supabase/migrations/0050·web billing-detail.tsx] — 발급은 `issued→dispensed` 1방향(0015 트리거가 역행·재전이 PT409 차단). 이미 발급된 처방의 **재발급**(예: 환자 분실 재교부)·발급 취소 경로는 없다. 출력(인쇄)은 발행/발급 무관 자유(인쇄=감사만·상태 무변경)이므로 재인쇄는 가능하나 별도 "재발급" 도장/일련번호 갱신은 미지원. 재발급 정책(새 교부번호·감사 사유) 요구 시 별도 액션·상태 모델 확장. 현 모델=1회 발급(원외 약국 제출).
+- **사용기간 상수(교부일로부터 3일 고정)** [web prescription-document.tsx] — 처방전 사용기간을 상수 "교부일로부터 3일"로 표시(한국 표준 처방전 일반값). 실제 사용기간은 처방 의약품·질환·의사 판단에 따라 가변(통상 3~7일·장기처방 별도). 사용기간 정책화(처방 헤더 컬럼 또는 `clinic_profile` 기본값 + 처방별 오버라이드) 요구 시 입력 UI(5.2 처방 발행)·컬럼·문서 렌더 연동. 현 상수는 데모 충분.
+- **처방 의사 면허번호 데모 시드값** [supabase/seed.sql 데모 의사 EMP0002 `license_no='12345'`] — 원외처방전 법정 서식의 처방 의료인 면허번호를 데모 의사에 시드값(12345)으로 채운다(처방전이 "—" 없이 완성되도록). 실제 직원 면허 관리 UI(입력·검증)는 스코프 밖(Story 1.8 직원 계정 관리의 확장 후보) — 현재 면허번호는 seed/DB 직접 설정만. 면허번호 미설정 의사의 처방전은 면허번호 "—" 표시(렌더는 정상·법적 완전성만 결여).
+
+## Deferred from: code review of 7-7-원외처방전-출력-발급 (2026-06-24)
+
+> 3레이어 적대적 리뷰(Blind·Edge·Auditor) 결과 patch 0·decision-needed 0·dismiss ~15. AC1~12 전부 SATISFIED·설계 결정 4건 준수. 아래는 by-design/엣지로 미룬 항목.
+
+- **dispense/export RPC·`_require_prescription_owned` 가 `is_active` 미필터** [supabase/migrations/0050_prescription_dispense.sql `dispense_prescription`/`log_prescription_document_export`·api/app/core/db.py `_require_prescription_owned`] — 세 경로 모두 `prescriptions` 존재만 검사하고 `is_active`를 보지 않는다(`fetch_prescription_document` 는 `is_active=true` 만 노출). 소프트삭제(정정)된 처방이라도 직접 API(`POST .../{rid}/dispense`·`.../document/export`)로 `issued→dispensed` 전이·내보내기 감사가 가능하다(전이된 비활성 행은 문서에 안 보임). UI는 활성 처방 id만 surface 하므로 정상 경로 안전·직접 API/stale 탭 엣지. **기존 "오더 is_active/내원상태 게이트 미강제"(deferred dev of 5.2/5.3/5.4: L277/290/299·"마스터·내원 불변식 일관 정책 스토리"로 일괄)와 동일 클래스** → 그 스토리에서 dispense/export 도 함께 `and is_active = true` 가드 추가. Edge Low.
+- **처방전 섹션이 build_payment 실패 시 미표시** [web/src/components/reception/billing-detail.tsx] — 처방전 섹션·발급 confirm 이 `payment !== null` 렌더 분기 안에 있어, `build_payment`(load) 실패/스켈레톤 상태에서는 `fetchPrescriptionDocument` 가 성공해도 섹션이 렌더되지 않는다. 설계 결정 ③ "finalize 무관"은 충족(draft payment 에서 노출·테스트됨)이나 "payment 로드 실패" 엣지는 결합. billing-detail 진입 = 수납 워크리스트(fee_items 있는 in_progress 내원)이고 build_payment 는 멱등이라 정상 경로 실패 희귀. 해소: 처방전 섹션을 payment 로드와 독립 렌더(또는 payment 실패 시 fallback). Edge Med(실 도달 낮음).
+- **처방 문서 fetch 가 모든 에러를 무음 삼킴** [web/src/components/reception/billing-detail.tsx `loadPrescriptions`] — `try { setPrescriptionDoc(await fetch...) } catch { setPrescriptionDoc(null) }` 가 403(doctor·의도)뿐 아니라 500(`clinic_profile_missing` fail-loud)·네트워크 오류도 삼켜 섹션이 조용히 사라진다. best-effort 보조 fetch·clinic_profile 항상 시드(500=배포 misconfig·receipt 경로 handleOpenReceipt 가 toast 로 노출)이라 영향 낮음. 해소: 403/404만 무음·500은 surface(toast 또는 인디케이터). Blind Med.
