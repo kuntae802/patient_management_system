@@ -31,6 +31,8 @@ export type Payment = {
   status: string; // draft=집계중(7.2)·finalized=결제완료(7.4)·cancelled
   billing_type: string; // postpaid 후수납 / prepaid 선수납(7.8)
   insurance_type: string; // 환자 보험유형(본인부담 산정 근거 표시·7.3·insuranceLabel 로 한글화)
+  patient_name: string; // 신원 재진술 confirm·상시 배너(7.4·비-RRN denormalized)
+  chart_no: string; // 차트번호(신원 재진술용)
   total_amount_krw: number;
   covered_amount_krw: number;
   non_covered_amount_krw: number;
@@ -81,4 +83,21 @@ export async function buildPayment(encounterId: string): Promise<Payment> {
 /** 한 내원의 수납 건 조회(헤더 + 라인, GET). 게이트 payment.read. 빌드 전 → 404. */
 export async function fetchPayment(encounterId: string): Promise<Payment> {
   return apiFetch<Payment>(`/v1/encounters/${encounterId}/payment`);
+}
+
+/** 결제 수단 — 카드/현금/계좌이체(DB CHECK·Pydantic Literal 거울). */
+export type PaymentMethod = "card" | "cash" | "transfer";
+
+/**
+ * 수납 finalize(결제 기록 + 내원 완료, POST). 게이트 payment.manage. draft → finalized 전이 +
+ * complete_encounter(내원 in_progress→completed) 원자 호출. 주상병 미지정 → 422, 비-draft → 409.
+ */
+export async function finalizePayment(
+  encounterId: string,
+  paymentMethod: PaymentMethod,
+): Promise<Payment> {
+  return apiFetch<Payment>(`/v1/encounters/${encounterId}/payment/finalize`, {
+    method: "POST",
+    body: JSON.stringify({ payment_method: paymentMethod }),
+  });
 }

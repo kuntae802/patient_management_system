@@ -2,18 +2,84 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 
+import { ConfirmDialog } from "@/components/admin/confirm-dialog";
 import { PayChip } from "@/components/encounters/order-item-meta";
 import { ApiError } from "@/lib/api/client";
+import { formatAuditTime } from "@/lib/admin/audit";
 import { formatKrw } from "@/lib/admin/masters";
-import { buildPayment, type Payment, type PaymentDetail } from "@/lib/billing/payments";
+import {
+  buildPayment,
+  finalizePayment,
+  type Payment,
+  type PaymentDetail,
+  type PaymentMethod,
+} from "@/lib/billing/payments";
 import { insuranceLabel } from "@/lib/reception/patients";
+import { cn } from "@/lib/utils";
 
-// 수납 집계 상세(Story 7.2/7.3 / FR-110·FR-111·UX-DR14) — 진입 시 build_payment(POST·payment.manage)
-// 멱등 호출 → 자동발생 수가(fee_items)를 draft 수납 건으로 집계 + 보험유형별 본인부담 산정(price_payment).
-// 헤더 요약(본인부담금 headline + 총/급여/비급여/공단부담 + "자동 산정" teal 마커·보험유형 근거) +
-// 분류별 라인(code·행위명·pay-chip·금액·"자동" 마커). finalize·결제·내원완료=7.4(버튼 없음).
-// useState 단일 로드(TanStack 미사용). 금액 KRW 정수·tabular-nums·"원".
+// 수납 집계·결제 상세(Story 7.2/7.3/7.4 / FR-110·FR-111·FR-112·UX-DR14·UX-DR21) — 진입 시 build_payment
+// (POST·payment.manage) 멱등 호출 → 자동발생 수가 집계 + 본인부담 산정. 헤더 요약(본인부담금 headline +
+// 총/급여/비급여/공단부담 + "자동 산정" teal 마커·보험유형 근거) + 분류별 라인 + **결제(결제수단 토글 →
+// 신원 재진술 confirm → finalize: 결제 기록 + 내원 완료)**. finalized 시 영수증번호·완료 패널.
+// 상시 신원 배너(이름·차트번호·UX-DR21). useState 단일 로드(TanStack 미사용). 금액 KRW 정수·tabular-nums·"원".
+
+/** 결제 수단 선택지(카드/현금/계좌이체 — DB CHECK·Pydantic Literal 거울). */
+const PAYMENT_METHODS: { value: PaymentMethod; label: string }[] = [
+  { value: "card", label: "카드" },
+  { value: "cash", label: "현금" },
+  { value: "transfer", label: "계좌이체" },
+];
+
+/** 결제 수단 라벨(완료 패널·confirm 표시). */
+function paymentMethodLabel(method: string | null): string {
+  return PAYMENT_METHODS.find((m) => m.value === method)?.label ?? method ?? "—";
+}
+
+/** 결제상태 배지 A3(UX-DR14·색비의존 — 글리프+라벨). 미수납=로즈·완료=그린·취소=취소선. */
+function PaymentStatusBadge({ status, className }: { status: string; className?: string }) {
+  const meta =
+    status === "finalized"
+      ? { label: "완료", glyph: "✓", cls: "border-status-done/40 bg-status-done/12 text-status-done-ink" }
+      : status === "cancelled"
+        ? {
+            label: "취소",
+            glyph: "✕",
+            cls: "border-status-cancelled/40 bg-status-cancelled/12 text-status-cancelled line-through",
+          }
+        : {
+            label: "미수납",
+            glyph: "○",
+            cls: "border-status-cancelled/40 bg-status-cancelled/12 text-status-cancelled",
+          };
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11.5px] font-medium",
+        meta.cls,
+        className,
+      )}
+    >
+      <span aria-hidden className="text-[9px] leading-none">
+        {meta.glyph}
+      </span>
+      {meta.label}
+    </span>
+  );
+}
+
+/** finalize 실패 → 사용자 메시지(에러 code 매핑). 주상병 미지정·권한·이중결제·일반. */
+function finalizeErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === "primary_diagnosis_required")
+      return "주상병이 지정되지 않았습니다. 의사 진단 완료 후 다시 시도하세요.";
+    if (err.code === "forbidden") return "수납 권한이 없습니다.";
+    if (err.code === "invalid_transition") return "이미 처리되었거나 정산할 수 없는 수납입니다.";
+    return err.message;
+  }
+  return "결제 처리에 실패했습니다.";
+}
 
 /** 분류 라벨(스냅샷 category) — null/빈값은 "기타". */
 function categoryLabel(category: string | null): string {
@@ -61,10 +127,14 @@ function AmountCell({ label, amount }: { label: string; amount: number }) {
 export function BillingDetail({ encounterId }: { encounterId: string }) {
   const [payment, setPayment] = useState<Payment | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [method, setMethod] = useState<PaymentMethod>("card");
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
 
   const load = useCallback(async () => {
     try {
       // 진입 시 자동 집계(멱등 빌드) — 그 사이 수행된 오더의 수가까지 영속 집계 후 표시.
+      // finalized 수납이면 build/price 는 status≠draft no-op → 완료 상태 그대로 반환.
       const built = await buildPayment(encounterId);
       setPayment(built);
       setError(null);
@@ -83,6 +153,22 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- load 의 setState 는 await 이후
     void load();
   }, [load]);
+
+  // 결제·내원 완료(finalize) — 신원 재진술 confirm 후 호출. mutation 중 가드(이중제출 방지·UX-DR21).
+  async function handleFinalize() {
+    if (!payment || finalizing) return;
+    setFinalizing(true);
+    try {
+      const result = await finalizePayment(payment.encounter_id, method);
+      setPayment(result);
+      setShowConfirm(false);
+      toast.success(`결제·내원 완료되었습니다 · 영수증 ${result.payment_no ?? ""}`);
+    } catch (err) {
+      toast.error(finalizeErrorMessage(err));
+    } finally {
+      setFinalizing(false);
+    }
+  }
 
   return (
     <div className="space-y-5">
@@ -108,6 +194,15 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
         <DetailSkeleton />
       ) : (
         <>
+          {/* 상시 신원 배너(UX-DR21) — 결제 확정 전 잘못 열린 탭 오류 차단(이름·차트번호 + 결제상태). */}
+          <section className="flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-3">
+            <span className="text-[13px] font-semibold text-foreground">{payment.patient_name}</span>
+            <span className="text-[12px] text-muted-foreground tabular-nums">
+              차트 {payment.chart_no}
+            </span>
+            <PaymentStatusBadge status={payment.status} className="ml-auto" />
+          </section>
+
           {/* 헤더 요약 — 본인부담금(환자 청구액) headline + 총/급여/비급여/공단부담 + "자동 산정" 마커·보험유형 근거. */}
           <section className="rounded-xl border border-border bg-card p-4">
             <div className="mb-3 flex items-center gap-2">
@@ -132,7 +227,7 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
               <AmountCell label="공단부담금" amount={payment.insurer_amount_krw} />
             </div>
             <p className="mt-2 text-[10.5px] text-muted-foreground">
-              {insuranceLabel(payment.insurance_type)} 기준 급여 본인부담률을 적용해 산정했습니다. 결제·내원 완료는 다음 단계에서 진행합니다.
+              {insuranceLabel(payment.insurance_type)} 기준 급여 본인부담률을 적용해 산정했습니다.
             </p>
           </section>
 
@@ -179,6 +274,83 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
               </div>
             )}
           </section>
+
+          {/* 결제 — draft: 결제수단 토글 + "결제·내원 완료"(신원 재진술 confirm). finalized: 완료 패널. */}
+          {payment.status === "draft" ? (
+            <section className="space-y-3 rounded-xl border border-border bg-card p-4">
+              <h3 className="text-[13px] font-semibold text-foreground">결제</h3>
+              <div role="radiogroup" aria-label="결제 수단" className="flex gap-2">
+                {PAYMENT_METHODS.map((m) => (
+                  <button
+                    key={m.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={method === m.value}
+                    onClick={() => setMethod(m.value)}
+                    className={cn(
+                      "flex-1 rounded-md border px-3 py-2 text-[12.5px] font-medium transition-colors",
+                      method === m.value
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border bg-card text-foreground hover:bg-muted",
+                    )}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowConfirm(true)}
+                disabled={finalizing}
+                className="w-full rounded-lg bg-primary px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-primary-hover disabled:opacity-60"
+              >
+                결제·내원 완료
+              </button>
+              <p className="text-[10.5px] text-muted-foreground">
+                확정 시 본인부담금 {formatKrw(payment.copay_amount_krw)}원이 결제되고 내원이 완료됩니다.
+                완료 후 취소할 수 없습니다.
+              </p>
+            </section>
+          ) : payment.status === "finalized" ? (
+            <section className="space-y-2 rounded-xl border border-status-done/40 bg-status-done/5 p-4">
+              <div className="flex items-center gap-2">
+                <h3 className="text-[13px] font-semibold text-foreground">결제 완료</h3>
+                <PaymentStatusBadge status="finalized" />
+              </div>
+              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-[12.5px]">
+                <dt className="text-muted-foreground">영수증번호</dt>
+                <dd className="font-medium text-foreground tabular-nums">{payment.payment_no}</dd>
+                <dt className="text-muted-foreground">결제수단</dt>
+                <dd className="text-foreground">{paymentMethodLabel(payment.payment_method)}</dd>
+                <dt className="text-muted-foreground">납부액</dt>
+                <dd className="text-foreground tabular-nums">
+                  {formatKrw(payment.paid_amount_krw)} <span className="text-[10.5px]">원</span>
+                </dd>
+                <dt className="text-muted-foreground">결제일시</dt>
+                <dd className="text-foreground tabular-nums">
+                  {payment.finalized_at ? formatAuditTime(payment.finalized_at) : "—"}
+                </dd>
+              </dl>
+              <button
+                type="button"
+                disabled
+                aria-disabled
+                className="w-full rounded-lg border border-border bg-muted px-4 py-2.5 text-[12.5px] font-medium text-muted-foreground disabled:opacity-70"
+              >
+                문서 출력 (준비 중)
+              </button>
+            </section>
+          ) : null}
+
+          {/* 신원 재진술 confirm(UX-DR21·수동 확인) — 이름·차트번호·본인부담금 재진술. */}
+          <ConfirmDialog
+            open={showConfirm}
+            title="결제·내원 완료 확인"
+            description={`환자 ${payment.patient_name} · 차트 ${payment.chart_no} · 본인부담금 ${formatKrw(payment.copay_amount_krw)}원을 ${paymentMethodLabel(method)}(으)로 결제하고 내원을 완료합니다. 완료 후 취소할 수 없습니다.`}
+            confirmLabel="결제·내원 완료"
+            onConfirm={() => void handleFinalize()}
+            onCancel={() => setShowConfirm(false)}
+          />
         </>
       )}
     </div>
