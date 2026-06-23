@@ -4034,3 +4034,136 @@ async def call_complete_examination(
         return dict(full)
 
     return await _run_authed(sub, _op)
+
+
+# ── 수납(billing) 집계·조회 — Story 7.2 / FR-110 ──────────────────────────────
+# 집계 로직(fee_items → payment_details + 헤더 롤업)은 build_payment DB 함수가 소유(project-context
+# "수가/정산 로직=DB"). 여기 db 계층은 호출·조회·권한 재평가만. 쓰기=payment.manage·조회=read.
+# (라우터 게이트 + 쓰기는 동일 txn 재평가 TOCTOU). 금액=KRW 정수. 컬럼은 고정 리터럴(SQLi 무관).
+_PAYMENT_COLUMNS = (
+    "id, encounter_id, status, billing_type, total_amount_krw, covered_amount_krw, "
+    "non_covered_amount_krw, copay_amount_krw, insurer_amount_krw, paid_amount_krw, "
+    "payment_method, payment_no, finalized_at, finalized_by, cancelled_at, cancel_reason, "
+    "created_at, updated_at"
+)
+_PAYMENT_DETAIL_COLUMNS = (
+    "id, payment_id, fee_item_id, fee_schedule_id, code, name, category, quantity, "
+    "unit_amount_krw, amount_krw, coverage_type, copay_rate, copay_amount_krw, "
+    "insurer_amount_krw, created_at, updated_at"
+)
+# 워크리스트(정산 대상) — 내원 + denormalized 표시 + 예상 총액(Σ fee_items 라이브). raw PII 제외.
+_BILLING_WORKLIST_COLUMNS = (
+    "e.id as encounter_id, e.encounter_no, e.consult_started_at, e.status, "
+    "p.name as patient_name, p.chart_no, d.name as department_name, "
+    "coalesce((select sum(fi.amount_krw) from public.fee_items fi "
+    "where fi.encounter_id = e.id), 0) as estimated_total_krw"
+)
+
+
+async def _require_payment_manage(conn: asyncpg.Connection) -> None:
+    """쓰기 직전 동일 txn 에서 payment.manage 재평가(평가↔쓰기 TOCTOU 차단). 미보유 → 403.
+
+    라우터 require_permission 게이트는 방어심층 — 진짜 권위는 이 동일 트랜잭션 재평가(insert_patient
+    선례). 집계 빌드(build_payment)는 SECURITY DEFINER 함수라 RLS 우회 → 권한은 여기서 강제.
+    """
+    if not bool(await conn.fetchval("select public.has_permission('payment.manage')")):
+        raise ForbiddenError(detail={"required_permission": "payment.manage"})
+
+
+async def _fetch_payment_details(
+    conn: asyncpg.Connection, payment_id: UUID
+) -> list[asyncpg.Record]:
+    """한 수납 건의 상세 라인(집계순=적재순) — 쓰기 후 응답·조회 공용. 진찰료가 먼저(적재 순)."""
+    return await conn.fetch(
+        f"select {_PAYMENT_DETAIL_COLUMNS} from public.payment_details "
+        f"where payment_id = $1 order by created_at asc, id asc",
+        payment_id,
+    )
+
+
+async def build_payment(sub: UUID, encounter_id: UUID) -> dict[str, object]:
+    """수납 건 집계 빌드(진입 시 자동 집계, 멱등) — build_payment RPC 호출 후 헤더 + 라인 반환.
+
+    fee_items → payment_details 적재 + 헤더 롤업은 DB 함수가 원자적 수행(NFR-041). 재호출 시 신규
+    수가만 추가(unique 멱등). 미존재 내원 → 404, 권한 미보유 → 403(INSERT 직전 재평가 TOCTOU).
+    반환 = {헤더..., "details": [라인 dict...]} (서비스가 PaymentResponse 로 매핑).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        await _require_payment_manage(conn)
+        exists = await conn.fetchval(
+            "select true from public.encounters where id = $1", encounter_id
+        )
+        if exists is None:
+            raise NotFoundError(
+                "내원을 찾을 수 없습니다.", detail={"encounter_id": str(encounter_id)}
+            )
+        payment_id = await conn.fetchval("select public.build_payment($1)", encounter_id)
+        assert payment_id is not None  # build_payment 는 항상 payment_id 반환(헤더 upsert)
+        header = await conn.fetchrow(
+            f"select {_PAYMENT_COLUMNS} from public.payments where id = $1", payment_id
+        )
+        assert header is not None
+        details = await _fetch_payment_details(conn, payment_id)
+        return {**dict(header), "details": [dict(r) for r in details]}
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_payment(sub: UUID, encounter_id: UUID) -> dict[str, object]:
+    """한 내원의 수납 건 조회(헤더 + 라인). 빌드 전(헤더 없음) → 404. 게이트=라우터 payment.read.
+
+    service_role 경로라 RLS 우회 — 조회 권위는 라우터 require_permission('payment.read')
+    (읽기 TOCTOU 저위험 → 재평가 불요, fetch_encounter 동형). RLS 는 web 직접조회 방어심층(0045).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        header = await conn.fetchrow(
+            f"select {_PAYMENT_COLUMNS} from public.payments where encounter_id = $1",
+            encounter_id,
+        )
+        if header is None:
+            raise NotFoundError(
+                "수납 건을 찾을 수 없습니다.", detail={"encounter_id": str(encounter_id)}
+            )
+        details = await _fetch_payment_details(conn, header["id"])
+        return {**dict(header), "details": [dict(r) for r in details]}
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_billing_worklist(
+    sub: UUID,
+    *,
+    on_date: date,
+    page: int = 1,
+    page_size: int = 200,
+) -> tuple[list[asyncpg.Record], int]:
+    """수납 워크리스트(정산 대상 내원 — in_progress·오늘·진료과 무관) + 전체 건수(Story 7.2).
+
+    원무는 병원 단위 정산 → 진료과 미스코프(대기 현황판과 달리 department_id 필터 없음). 일자는
+    created_at 의 KST 날짜(fetch_encounters 미러). estimated_total = Σ fee_items(라이브 프리뷰).
+    정렬 = 진찰 시작순(정산 흐름). 게이트=라우터 payment.read(읽기 TOCTOU 저위험). 반환 (행, total).
+    """
+    list_sql = (
+        f"select {_BILLING_WORKLIST_COLUMNS} from public.encounters e "
+        "join public.patients p on p.id = e.patient_id "
+        "join public.departments d on d.id = e.department_id "
+        "where e.status = 'in_progress' and e.is_active = true "
+        "and (e.created_at at time zone 'Asia/Seoul')::date = $1 "
+        "order by e.consult_started_at asc nulls last, e.encounter_no asc "
+        "limit $2 offset $3"
+    )
+    count_sql = (
+        "select count(*) from public.encounters e "
+        "where e.status = 'in_progress' and e.is_active = true "
+        "and (e.created_at at time zone 'Asia/Seoul')::date = $1"
+    )
+    offset = (page - 1) * page_size
+
+    async def _op(conn: asyncpg.Connection) -> tuple[list[asyncpg.Record], int]:
+        rows = await conn.fetch(list_sql, on_date, page_size, offset)
+        total = int(await conn.fetchval(count_sql, on_date) or 0)
+        return rows, total
+
+    return await _run_authed(sub, _op)

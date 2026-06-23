@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     admin,
     auth,
+    billing,
     encounters,
     masters,
     nursing,
@@ -47,3 +48,6 @@ api_router.include_router(radiology.router)
 
 # 근무표·휴진 관리(Story 6.1). 외부 경로: /patient_management_system/api/v1/scheduling/*
 api_router.include_router(scheduling.router)
+
+# 수납 집계·조회(Story 7.2). 경로: /…/encounters/{id}/payment · /…/billing/worklist
+api_router.include_router(billing.router)
