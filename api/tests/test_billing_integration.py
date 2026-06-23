@@ -323,3 +323,133 @@ def test_worklist_forbidden_nurse(client, nurse_token):
     """nurse(payment.read 미보유) 워크리스트 → 403."""
     res = client.get("/v1/billing/worklist", headers=_bearer(nurse_token))
     assert res.status_code == 403, res.text
+
+
+# ── Story 7.4: 수납 finalize(결제·내원 완료) POST ─────────────────────────────
+
+
+def _finalize_url(encounter_id: str) -> str:
+    return f"/v1/encounters/{encounter_id}/payment/finalize"
+
+
+def _encounter_status(psql: Psql, eid: str) -> str:
+    return psql.scalar(f"select status from public.encounters where id='{eid}'")
+
+
+def _setup_finalizable_encounter(
+    psql: Psql, doctor_id: str, *, primary: bool = True, insurance: str = "health_insurance"
+) -> str:
+    """in_progress 내원 + 진찰료 자동(AA154 초진 17610) + 주상병(완료 게이트용). encounter_id 반환.
+
+    finalize 는 complete_encounter(주상병 게이트 PT422) 호출 → primary=True 기본. primary=False
+    = 422 baseline. begin/commit(doctor claims — start_consult·진단 부착 우회)."""
+    pid, eid = str(uuid.uuid4()), str(uuid.uuid4())
+    claims = '{"sub":"' + doctor_id + '","role":"authenticated"}'
+    sql = (
+        "begin;"
+        + _patient_sql(pid, insurance=insurance)
+        + "insert into public.encounters(id, patient_id, department_id, visit_type, status) "
+        f"values ('{eid}','{pid}',{_DEPT},'walk_in','registered');"
+        f"select set_config('request.jwt.claims', '{claims}', true);"
+        f"select set_config('app.actor_id', '{doctor_id}', true);"
+        f"select public.start_consult('{eid}');"
+    )
+    if primary:
+        sql += (
+            "insert into public.encounter_diagnoses"
+            "(encounter_id, diagnosis_id, is_primary, recorded_by, is_active) "
+            f"values ('{eid}',(select id from public.diagnoses limit 1),true,'{doctor_id}',true);"
+        )
+    sql += "commit;"
+    proc = psql.run(sql)
+    assert proc.returncode == 0, proc.stderr
+    return eid
+
+
+def test_finalize_payment_completes_encounter(client, reception_token, doctor_id, psql):
+    """reception finalize → 200 finalized·영수증·결제수단·paid=copay(5280)·신원·completed."""
+    eid = _setup_finalizable_encounter(psql, doctor_id)
+    res = client.post(
+        _finalize_url(eid), headers=_bearer(reception_token), json={"payment_method": "card"}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "finalized"
+    assert body["payment_method"] == "card"
+    assert body["payment_no"] and body["payment_no"].startswith("R-")
+    # 건강보험 초진 AA154 17610 × 0.3 = 5283 → copay 5280(절사)·전액 정산 paid=copay.
+    assert body["copay_amount_krw"] == 5280
+    assert body["paid_amount_krw"] == 5280
+    assert body["finalized_at"] and body["finalized_by"]
+    assert body["patient_name"] and body["chart_no"]  # 신원 재진술 confirm 용 노출
+    assert _encounter_status(psql, eid) == "completed"  # complete_encounter 전이(reception grant)
+
+
+def test_finalize_payment_missing_primary_diagnosis_422(client, reception_token, doctor_id, psql):
+    """주상병 미부착 내원 finalize → 422 primary_diagnosis_required·내원 in_progress 유지(롤백)."""
+    eid = _setup_finalizable_encounter(psql, doctor_id, primary=False)
+    res = client.post(
+        _finalize_url(eid), headers=_bearer(reception_token), json={"payment_method": "card"}
+    )
+    assert res.status_code == 422, res.text
+    assert res.json()["error"]["code"] == "primary_diagnosis_required", res.text
+    assert _encounter_status(psql, eid) == "in_progress"  # 결제·완료 원자 롤백
+
+
+def test_finalize_payment_double_409(client, reception_token, doctor_id, psql):
+    """이미 결제된 수납 재finalize → 409 invalid_transition(이중결제 차단)·첫 결제 불변."""
+    eid = _setup_finalizable_encounter(psql, doctor_id)
+    first = client.post(
+        _finalize_url(eid), headers=_bearer(reception_token), json={"payment_method": "card"}
+    )
+    assert first.status_code == 200, first.text
+    second = client.post(
+        _finalize_url(eid), headers=_bearer(reception_token), json={"payment_method": "cash"}
+    )
+    assert second.status_code == 409, second.text
+    assert second.json()["error"]["code"] == "invalid_transition", second.text
+    # 이중결제 차단 핵심: 2차 실패가 1차 결제를 덮어쓰지 않음(영수증번호·결제수단·납부액 불변).
+    after = client.get(_payment_url(eid), headers=_bearer(reception_token))
+    assert after.status_code == 200, after.text
+    body = after.json()
+    assert body["status"] == "finalized"
+    assert body["payment_method"] == "card"  # 'cash' 로 덮어쓰이지 않음
+    assert body["payment_no"] == first.json()["payment_no"]
+    assert body["paid_amount_krw"] == first.json()["paid_amount_krw"]
+
+
+def test_finalize_payment_invalid_method_422(client, reception_token, doctor_id, psql):
+    """결제수단 Literal 위반(bitcoin) → 422(Pydantic 1차 검증)."""
+    eid = _setup_finalizable_encounter(psql, doctor_id)
+    res = client.post(
+        _finalize_url(eid), headers=_bearer(reception_token), json={"payment_method": "bitcoin"}
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_finalize_payment_forbidden_doctor(client, doctor_token, doctor_id, psql):
+    """doctor(payment.manage 미보유) finalize → 403(쓰기 권한 분리·encounter.complete 무관)."""
+    eid = _setup_finalizable_encounter(psql, doctor_id)
+    res = client.post(
+        _finalize_url(eid), headers=_bearer(doctor_token), json={"payment_method": "card"}
+    )
+    assert res.status_code == 403, res.text
+
+
+def test_finalize_payment_forbidden_nurse(client, nurse_token, doctor_id, psql):
+    """nurse(payment.* 미보유) finalize → 403."""
+    eid = _setup_finalizable_encounter(psql, doctor_id)
+    res = client.post(
+        _finalize_url(eid), headers=_bearer(nurse_token), json={"payment_method": "card"}
+    )
+    assert res.status_code == 403, res.text
+
+
+def test_finalize_payment_nonexistent_404(client, reception_token):
+    """미존재 내원 finalize → 404."""
+    res = client.post(
+        _finalize_url(str(uuid.uuid4())),
+        headers=_bearer(reception_token),
+        json={"payment_method": "card"},
+    )
+    assert res.status_code == 404, res.text

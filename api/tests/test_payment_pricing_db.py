@@ -278,10 +278,11 @@ def test_price_payment_noop_when_not_draft(psql: Psql):
         "begin;"
         + _patient_sql(pid, insurance="health_insurance")
         + _encounter_sql(eid, pid)
+        # finalized 행은 payments_finalized_consistency CHECK(0048) 충족 — 결제 컬럼 동반 INSERT.
         + "insert into public.payments(id, encounter_id, status, total_amount_krw, "
-        "covered_amount_krw) "
-        f"values ('{payid}','{eid}','finalized',12590,12590);"
-        + "insert into public.payment_details"
+        "covered_amount_krw, payment_no, payment_method, finalized_at, finalized_by) "
+        f"values ('{payid}','{eid}','finalized',12590,12590,'R-TEST-{pdid[:6]}','card',now(),"
+        "(select id from public.users limit 1));" + "insert into public.payment_details"
         "(id, payment_id, quantity, unit_amount_krw, amount_krw, coverage_type, copay_amount_krw) "
         f"values ('{pdid}','{payid}',1,12590,12590,'covered',0);"
         + _price(eid)

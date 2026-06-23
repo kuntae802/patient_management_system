@@ -197,8 +197,11 @@ def test_build_payment_noop_when_not_draft(psql: Psql):
         + _patient_sql(pid)
         + _encounter_sql(eid, pid)
         + _fee_item_sql(fi1, eid, amount=12590)
-        + "insert into public.payments(id, encounter_id, status) "
-        f"values ('{uuid.uuid4()}','{eid}','finalized');"
+        # finalized 행은 payments_finalized_consistency CHECK(0048) 충족 — 결제 컬럼 동반.
+        + "insert into public.payments(id, encounter_id, status, payment_no, payment_method, "
+        "finalized_at, finalized_by) "
+        f"values ('{uuid.uuid4()}','{eid}','finalized','R-TEST-{eid[:6]}','card',now(),"
+        "(select id from public.users limit 1));"
         + _build(eid)
         + "select 'V:lines='||(select count(*) from public.payment_details pd "
         "  join public.payments p on p.id=pd.payment_id where p.encounter_id='" + eid + "')::text"
@@ -221,9 +224,11 @@ def test_build_payment_noop_preserves_existing_lines(psql: Psql):
         + _patient_sql(pid)
         + _encounter_sql(eid, pid)
         + _fee_item_sql(fi1, eid, amount=12590)  # 미집계 수가(finalized 라 적재 안 됨)
-        + "insert into public.payments(id, encounter_id, status, total_amount_krw) "
-        f"values ('{payid}','{eid}','finalized',5000);"
-        + "insert into public.payment_details"
+        # finalized 행은 payments_finalized_consistency CHECK(0048) 충족 — 결제 컬럼 동반.
+        + "insert into public.payments(id, encounter_id, status, total_amount_krw, payment_no, "
+        "payment_method, finalized_at, finalized_by) "
+        f"values ('{payid}','{eid}','finalized',5000,'R-TEST-{payid[:6]}','card',now(),"
+        "(select id from public.users limit 1));" + "insert into public.payment_details"
         "(id, payment_id, quantity, unit_amount_krw, amount_krw, coverage_type) "
         f"values ('{pdid}','{payid}',1,5000,5000,'covered');"
         + _build(eid)
