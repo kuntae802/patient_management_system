@@ -466,13 +466,18 @@ def _export_url(encounter_id: str) -> str:
     return f"/v1/encounters/{encounter_id}/payment/receipt/export"
 
 
-def _export_audit_count(psql: Psql, eid: str) -> int:
-    """한 내원의 문서 내보내기('document_export') 감사 행 수 — payment_id 대상 'read' 이벤트."""
+def _export_audit_count(psql: Psql, eid: str, document_type: str | None = None) -> int:
+    """한 내원의 문서 내보내기('document_export') 감사 행 수 — payment_id 대상 'read' 이벤트.
+
+    document_type 지정 시 해당 문서 유형(receipt/statement)만 카운트(after_data 구분성 검증).
+    """
+    doc_filter = f"and a.after_data->>'document_type'='{document_type}' " if document_type else ""
     return int(
         psql.scalar(
             "select count(*) from public.audit_logs a "
             "where a.action='read' and a.target_table='payments' "
             "and a.after_data->>'event'='document_export' "
+            f"{doc_filter}"
             f"and a.target_id=(select id::text from public.payments where encounter_id='{eid}');"
         )
     )
@@ -576,6 +581,27 @@ def test_export_default_document_type(client, reception_token, doctor_id, psql):
     res = client.post(_export_url(eid), headers=_bearer(reception_token), json={})
     assert res.status_code == 204, res.text
     assert _export_audit_count(psql, eid) == 1
+
+
+def test_export_statement_records_audit_204(client, reception_token, doctor_id, psql):
+    """세부산정내역서(Story 7.6) 내보내기 → 204 + audit 'read' 1건(document_type='statement').
+
+    영수증(receipt)과 동일 엔드포인트·RPC(log_payment_document_export·제네릭 text)이나 after_data 의
+    document_type 으로 구분 기록된다(receipt 1 + statement 1 = 총 2·각 유형 1)."""
+    eid = _setup_finalizable_encounter(psql, doctor_id)
+    _finalize(client, reception_token, eid)
+    res = client.post(
+        _export_url(eid), headers=_bearer(reception_token), json={"document_type": "statement"}
+    )
+    assert res.status_code == 204, res.text
+    assert _export_audit_count(psql, eid, "statement") == 1
+    assert _export_audit_count(psql, eid, "receipt") == 0
+    # 영수증 내보내기도 하면 유형별 1건씩 분리 카운트(총 2).
+    client.post(
+        _export_url(eid), headers=_bearer(reception_token), json={"document_type": "receipt"}
+    )
+    assert _export_audit_count(psql, eid, "receipt") == 1
+    assert _export_audit_count(psql, eid) == 2
 
 
 def test_export_forbidden_nurse(client, nurse_token, reception_token, doctor_id, psql):

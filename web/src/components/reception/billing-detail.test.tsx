@@ -310,4 +310,36 @@ describe("BillingDetail", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "결제·내원 완료" }));
     await waitFor(() => expect(toastError).toHaveBeenCalled());
   });
+
+  // ── Story 7.6: 진료비 세부산정내역서 문서 탭 ────────────────────────────────
+
+  it("미리보기 = 문서 탭 2개(영수증 기본·세부산정내역서 전환 시 라인별 표 렌더)", async () => {
+    mockBuild.mockResolvedValue(makePayment({ status: "finalized", paid_amount_krw: 5280 }));
+    mockFetchReceipt.mockResolvedValue(makeReceipt());
+    render(<BillingDetail encounterId="enc-1" />);
+    await userEvent.click(await screen.findByRole("button", { name: /문서 출력/ }));
+    // 기본 탭 = 영수증(7.5).
+    expect(await screen.findByText("진료비 계산서 · 영수증")).toBeInTheDocument();
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs).toHaveLength(2);
+    // 세부산정내역서 탭 클릭 → 라인별 표(StatementDocument) 렌더·영수증 미렌더.
+    await userEvent.click(screen.getByRole("tab", { name: "세부산정내역서" }));
+    expect(await screen.findByText("진료비 세부산정내역서")).toBeInTheDocument();
+    expect(screen.getByText("항목분류")).toBeInTheDocument(); // FR-114 라인별 컬럼
+    expect(screen.queryByText("진료비 계산서 · 영수증")).not.toBeInTheDocument();
+  });
+
+  it("세부산정내역서 탭 활성 시 beforeprint → exportReceipt(eid, 'statement') 감사", async () => {
+    mockBuild.mockResolvedValue(makePayment({ status: "finalized", paid_amount_krw: 5280 }));
+    mockFetchReceipt.mockResolvedValue(makeReceipt());
+    mockExportReceipt.mockResolvedValue(undefined);
+    render(<BillingDetail encounterId="enc-1" />);
+    await userEvent.click(await screen.findByRole("button", { name: /문서 출력/ }));
+    await screen.findByText("진료비 계산서 · 영수증");
+    // 세부산정내역서 탭으로 전환 → beforeprint 감사 document_type 도 statement.
+    await userEvent.click(screen.getByRole("tab", { name: "세부산정내역서" }));
+    await screen.findByText("진료비 세부산정내역서");
+    window.dispatchEvent(new Event("beforeprint"));
+    await waitFor(() => expect(mockExportReceipt).toHaveBeenCalledWith("enc-1", "statement"));
+  });
 });
