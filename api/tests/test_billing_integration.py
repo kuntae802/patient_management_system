@@ -116,22 +116,24 @@ def _fee_item_sql(eid: str, *, amount: int, coverage: str, code: str) -> str:
     )
 
 
-def _patient_sql(pid: str) -> str:
+def _patient_sql(pid: str, *, insurance: str = "health_insurance") -> str:
     return (
         "insert into public.patients(id, name, birth_date, sex, resident_no_enc, "
         "resident_no_hash, resident_no_masked, insurance_type) values "
         f"('{pid}','집계통합TEST','1990-01-01','male','\\x00'::bytea,"
-        f"'__enc_{pid}__','900101-1******','health_insurance');"
+        f"'__enc_{pid}__','900101-1******','{insurance}');"
     )
 
 
-def _setup_billable_encounter(psql: Psql, *, with_fees: bool = True) -> str:
+def _setup_billable_encounter(
+    psql: Psql, *, with_fees: bool = True, insurance: str = "health_insurance"
+) -> str:
     """내원(registered) + 수가 fee_items 커밋 — encounter_id 반환. build_payment 는 상태 무관 집계.
 
-    급여 12590 + 비급여 3200 = total 15790. with_fees=False 면 빈 내원. 수가는 직접 적재
-    (start_consult 미경유 → 진찰료 자동발생 없음·금액 통제)."""
+    급여 12590 + 비급여 3200 = total 15790. with_fees=False 면 빈 내원. insurance = 환자 보험유형
+    (본인부담 산정 분기). 수가는 직접 적재(start_consult 미경유 → 진찰료 자동발생 없음)."""
     pid, eid = str(uuid.uuid4()), str(uuid.uuid4())
-    sql = _patient_sql(pid) + (
+    sql = _patient_sql(pid, insurance=insurance) + (
         "insert into public.encounters(id, patient_id, department_id, visit_type, status) "
         f"values ('{eid}','{pid}',{_DEPT},'walk_in','registered');"
     )
@@ -182,9 +184,38 @@ def test_build_payment_aggregates(client, reception_token, psql):
     # 자동 집계 라인 = 전부 fee_item_id 보유("자동" 마커 근거) + code 스냅샷.
     assert all(d["fee_item_id"] for d in body["details"])
     assert all(d["code"] for d in body["details"])
-    # 본인부담 산정은 7.3 — 7.2 단계는 0.
-    assert body["copay_amount_krw"] == 0
+    # 본인부담 산정(7.3) = build→price 원자 호출로 함께 채워짐(건강보험: 급여 12590×0.3 절사 3770
+    #   + 비급여 3200 전액 → copay 6970·insurer 8820·total=copay+insurer).
+    assert body["insurance_type"] == "health_insurance"
+    assert body["copay_amount_krw"] == 6970
+    assert body["insurer_amount_krw"] == 8820
+    assert body["total_amount_krw"] == body["copay_amount_krw"] + body["insurer_amount_krw"]
+
+
+def test_build_payment_prices_self_pay_full(client, reception_token, psql):
+    """일반(self_pay) 환자 → 급여라도 전액 본인부담(copay=total·insurer 0·insurance_type 노출)."""
+    eid = _setup_billable_encounter(psql, insurance="self_pay")
+    res = client.post(_payment_url(eid), headers=_bearer(reception_token))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["insurance_type"] == "self_pay"
+    assert body["copay_amount_krw"] == 15790  # 급여+비급여 전액 본인
     assert body["insurer_amount_krw"] == 0
+    # 라인 불변식: amount = copay + insurer.
+    assert all(
+        d["amount_krw"] == d["copay_amount_krw"] + d["insurer_amount_krw"] for d in body["details"]
+    )
+
+
+def test_build_payment_prices_auto_insurance_zero_copay(client, reception_token, psql):
+    """자동차보험 환자 → 급여는 보험사 전액(copay 0)·비급여만 본인(3200)."""
+    eid = _setup_billable_encounter(psql, insurance="auto_insurance")
+    res = client.post(_payment_url(eid), headers=_bearer(reception_token))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["insurance_type"] == "auto_insurance"
+    assert body["copay_amount_krw"] == 3200  # 비급여만 본인(급여 12590 = 보험사)
+    assert body["insurer_amount_krw"] == 12590
 
 
 def test_build_payment_idempotent(client, reception_token, psql):
@@ -233,13 +264,18 @@ def test_build_payment_forbidden_nurse(client, nurse_token, psql):
 
 
 def test_get_payment_after_build(client, reception_token, psql):
-    """빌드 후 GET → 200 헤더 + 라인(빌드 결과와 동일 총액)."""
+    """빌드 후 GET → 200 헤더 + 라인(빌드 결과와 동일 총액 + 영속된 본인부담 산정·보험유형)."""
     eid = _setup_billable_encounter(psql)
     client.post(_payment_url(eid), headers=_bearer(reception_token))
     res = client.get(_payment_url(eid), headers=_bearer(reception_token))
     assert res.status_code == 200, res.text
-    assert res.json()["total_amount_krw"] == 15790
-    assert len(res.json()["details"]) == 2
+    body = res.json()
+    assert body["total_amount_krw"] == 15790
+    assert len(body["details"]) == 2
+    # 산정 결과 영속(POST 의 build→price) — GET 도 동일 copay/insurer·insurance_type 노출.
+    assert body["insurance_type"] == "health_insurance"
+    assert body["copay_amount_krw"] == 6970
+    assert body["insurer_amount_krw"] == 8820
 
 
 def test_get_payment_before_build_404(client, reception_token, psql):
