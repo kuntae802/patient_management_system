@@ -7,10 +7,12 @@ import { PayChip } from "@/components/encounters/order-item-meta";
 import { ApiError } from "@/lib/api/client";
 import { formatKrw } from "@/lib/admin/masters";
 import { buildPayment, type Payment, type PaymentDetail } from "@/lib/billing/payments";
+import { insuranceLabel } from "@/lib/reception/patients";
 
-// 수납 집계 상세(Story 7.2 / FR-110·UX-DR14) — 진입 시 build_payment(POST·payment.manage) 멱등 호출 →
-// 자동발생 수가(fee_items)를 draft 수납 건으로 집계·표시. 헤더 요약(총/급여/비급여 + "자동 산정" teal
-// 마커) + 분류별 라인(code·행위명·pay-chip·금액·"자동" 마커). 본인부담 산정=7.3·finalize·결제=7.4(버튼 없음).
+// 수납 집계 상세(Story 7.2/7.3 / FR-110·FR-111·UX-DR14) — 진입 시 build_payment(POST·payment.manage)
+// 멱등 호출 → 자동발생 수가(fee_items)를 draft 수납 건으로 집계 + 보험유형별 본인부담 산정(price_payment).
+// 헤더 요약(본인부담금 headline + 총/급여/비급여/공단부담 + "자동 산정" teal 마커·보험유형 근거) +
+// 분류별 라인(code·행위명·pay-chip·금액·"자동" 마커). finalize·결제·내원완료=7.4(버튼 없음).
 // useState 단일 로드(TanStack 미사용). 금액 KRW 정수·tabular-nums·"원".
 
 /** 분류 라벨(스냅샷 category) — null/빈값은 "기타". */
@@ -106,20 +108,31 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
         <DetailSkeleton />
       ) : (
         <>
-          {/* 헤더 요약 — 총/급여/비급여 + "자동 산정" 마커. 본인부담·공단부담 산정은 7.3. */}
+          {/* 헤더 요약 — 본인부담금(환자 청구액) headline + 총/급여/비급여/공단부담 + "자동 산정" 마커·보험유형 근거. */}
           <section className="rounded-xl border border-border bg-card p-4">
             <div className="mb-3 flex items-center gap-2">
               <h2 className="text-[14px] font-semibold text-foreground">수납 집계</h2>
               <AutoTag />
-              <span className="ml-auto text-[11px] text-muted-foreground">자동 산정 수가</span>
+              <span className="ml-auto text-[11px] font-medium text-muted-foreground">
+                {insuranceLabel(payment.insurance_type)}
+              </span>
             </div>
-            <div className="grid grid-cols-3 gap-2">
+            {/* 본인부담금 = 환자 실청구액(headline 강조·산정 결과의 핵심). */}
+            <div className="mb-3 rounded-md border border-primary/30 bg-primary/5 px-4 py-3">
+              <p className="text-[11px] text-muted-foreground">본인부담금 (환자 청구)</p>
+              <p className="mt-0.5 text-[22px] font-bold text-foreground tabular-nums">
+                {formatKrw(payment.copay_amount_krw)}{" "}
+                <span className="text-[12px] font-normal">원</span>
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <AmountCell label="총 진료비" amount={payment.total_amount_krw} />
               <AmountCell label="급여" amount={payment.covered_amount_krw} />
               <AmountCell label="비급여" amount={payment.non_covered_amount_krw} />
+              <AmountCell label="공단부담금" amount={payment.insurer_amount_krw} />
             </div>
             <p className="mt-2 text-[10.5px] text-muted-foreground">
-              본인부담금·공단부담금 산정과 결제는 다음 단계에서 진행합니다.
+              {insuranceLabel(payment.insurance_type)} 기준 급여 본인부담률을 적용해 산정했습니다. 결제·내원 완료는 다음 단계에서 진행합니다.
             </p>
           </section>
 

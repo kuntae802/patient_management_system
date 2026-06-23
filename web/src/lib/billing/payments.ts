@@ -30,11 +30,12 @@ export type Payment = {
   encounter_id: string;
   status: string; // draft=집계중(7.2)·finalized=결제완료(7.4)·cancelled
   billing_type: string; // postpaid 후수납 / prepaid 선수납(7.8)
+  insurance_type: string; // 환자 보험유형(본인부담 산정 근거 표시·7.3·insuranceLabel 로 한글화)
   total_amount_krw: number;
   covered_amount_krw: number;
   non_covered_amount_krw: number;
-  copay_amount_krw: number; // 본인부담 산정=7.3(7.2 단계는 0)
-  insurer_amount_krw: number;
+  copay_amount_krw: number; // 본인부담금(환자 청구액·7.3 산정)
+  insurer_amount_krw: number; // 공단부담금(7.3 산정)
   paid_amount_krw: number;
   payment_method: string | null; // 결제=7.4
   payment_no: string | null;

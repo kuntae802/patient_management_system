@@ -48,6 +48,7 @@ function makePayment(over: Partial<Payment> = {}): Payment {
     encounter_id: "enc-1",
     status: "draft",
     billing_type: "postpaid",
+    insurance_type: "health_insurance",
     total_amount_krw: 17610,
     covered_amount_krw: 17610,
     non_covered_amount_krw: 0,
@@ -82,6 +83,23 @@ describe("BillingDetail", () => {
     expect(await screen.findByText("자동 산정")).toBeInTheDocument(); // UX-DR14 teal 마커
     expect(screen.getByText("20,810")).toBeInTheDocument(); // 총 진료비
     expect(screen.getByText("3,200")).toBeInTheDocument(); // 비급여
+  });
+
+  it("본인부담금·공단부담금 + 보험유형 근거 렌더(7.3)", async () => {
+    mockBuild.mockResolvedValue(
+      makePayment({
+        insurance_type: "health_insurance",
+        total_amount_krw: 15790,
+        covered_amount_krw: 12590,
+        non_covered_amount_krw: 3200,
+        copay_amount_krw: 6970,
+        insurer_amount_krw: 8820,
+      }),
+    );
+    render(<BillingDetail encounterId="enc-1" />);
+    expect(await screen.findByText("6,970")).toBeInTheDocument(); // 본인부담금(환자 청구)
+    expect(screen.getByText("8,820")).toBeInTheDocument(); // 공단부담금
+    expect(screen.getByText("건강보험")).toBeInTheDocument(); // 보험유형 근거 칩
   });
 
   it("상세 라인 — code·행위명·금액·pay-chip(급여) 렌더", async () => {
