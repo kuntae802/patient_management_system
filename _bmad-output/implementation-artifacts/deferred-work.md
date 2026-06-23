@@ -454,3 +454,9 @@
 - **과납 finalize 후 영수증(7.5/7.6) 납부할 금액 음수 표시** [web/src/components/reception/receipt-document.tsx·statement-document.tsx] — 선납>본인부담금(과납)으로 finalize 시 `paid > copay` 영속 → `due_amount_krw = copay - paid < 0`. 법정 영수증의 3행 합계가 음수 "납부할 금액"을 렌더(법정 서식에 환급 개념 없음). billing-detail 은 "환급 대상"으로 표시(설계 결정 ④)하나 출력 문서는 미대응. **7.9 환급 처리 시 영수증/내역서에 환급 표기 도입**(과납 표시-only·환급=7.9 명시 이월). 과납 자체가 fat-finger 엣지. Blind Med.
 - **선납 후 0-수가 내원 정산/환급 경로 없음** [supabase/migrations/0051_payment_prepay.sql `finalize_payment` total≤0 가드] — registered/in_progress 에서 선납만 받고 수가 미발생(0-fee)인 내원은 finalize 불가(total≤0=PT409·complete_encounter in_progress 게이트). 선납금이 draft 에 보류되며 정산·환급 경로 없음. **취소·노쇼 환급=7.9 스코프**(스토리 경계 명시 이월). UI 가 "환급 대상/보류" 상태를 명시하면 개선. Edge Med.
 - **워크리스트 registered 포함 시 page_size=200 상한 초과 가능** [api/app/core/db.py `fetch_billing_worklist`] — 7.8 이 정산 대상에 registered 를 추가해 후보 집합이 커짐 → 하루 registered+in_progress > 200 건이면 page_size=200(단일 로드·TanStack 미사용) 상한에서 일부 행 누락(silent·`total` 은 반환되나 미surface). 정렬 `consult_started_at asc nulls last` 라 in_progress(정산 흐름)는 앞·보존되고 registered(선수납·null) 가 뒤에서 잘림. **기존 페이지네이션 한계(7.2 도입·중소병원 외래 규모에선 200 여유)** → 페이지네이션/필터 토글 도입 시 일괄. Blind Low.
+
+## Deferred from: code review of 7-9-취소-노쇼-정산-수가-미발생 (2026-06-24)
+
+> 3레이어 적대적 리뷰(Blind·Edge·Auditor) 결과 patch 2(적용)·decision-needed 0·defer 1·dismiss ~17. AC1~10 전부 SATISFIED·설계 결정 4건 준수. 아래는 미래 스코프로 미룬 항목.
+
+- **refunded_amount_krw 리포팅 소비처 없음** [api/app/core/db.py·payments.refunded_amount_krw] — 7.9 가 추가한 환급액 컬럼이 현재 write-only다. 순납부(paid − refunded = 0)·환급 총계를 읽는 리포팅/대시보드 쿼리가 없어 컬럼의 "환급 근거·리포팅" 의도(설계 결정 ②)가 아직 소비되지 않는다. 영수증/문서는 환급 개념 미표기(법정 서식·7.8 defer 계승). **환급 리포팅·환급 총계·일별 환급 현황=Epic 8 운영 대시보드 스코프**(FR-230 매출/통계). 컬럼·감사는 영속되므로 데이터 손실 없음·소비만 미래. Blind Low.
