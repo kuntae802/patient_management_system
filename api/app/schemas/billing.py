@@ -150,9 +150,14 @@ class ReceiptResponse(BaseModel):
 
 
 class DocumentExportRequest(BaseModel):
-    """문서 내보내기 감사 요청(Story 7.5) — document_type 만. 7.5=receipt, 7.6=statement 추가."""
+    """문서 내보내기 감사 요청(Story 7.5/7.6) — document_type 만.
 
-    document_type: Literal["receipt"] = "receipt"
+    receipt=진료비 계산서·영수증·statement=세부산정내역서. 기본값 receipt(7.5 호환), 7.6 에서
+    statement 추가. log_payment_document_export(0049·제네릭 text 파라미터)가 동일 RPC 로 수용(DDL
+    변경 0) — document_type 은 audit_logs.after_data 로 구분 기록.
+    """
+
+    document_type: Literal["receipt", "statement"] = "receipt"
 
 
 class BillingWorklistItem(BaseModel):
