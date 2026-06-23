@@ -44,7 +44,7 @@
 | `appointment` | 예약 | 슬롯 기반 |
 | `doctor_schedule` | 근무표 | 요일·시간대·진료실 |
 | `doctor_time_off` | 휴진/예외 | 휴가·학회 |
-| `payment` | 수납 | 헤더 — `payments`(0045·7.1)·내원 1:1(encounter_id UNIQUE)·status draft/finalized/cancelled·billing_type postpaid/prepaid·금액 집계 컬럼은 7.2 집계(`build_payment` 0046·total/covered/non_covered)/7.3 산정/7.4 결제가 채움 |
+| `payment` | 수납 | 헤더 — `payments`(0045·7.1)·내원 1:1(encounter_id UNIQUE)·status draft/finalized/cancelled·billing_type postpaid/prepaid·금액 집계 컬럼은 7.2 집계(`build_payment` 0046·total/covered/non_covered)/7.3 산정/7.4 결제(`finalize_payment` 0048·payment_method·payment_no·finalized_at/by·paid)가 채움 |
 | `payment_detail` | 수납상세 | 라인 항목 — `payment_details`(0045·7.1)·payment 1:N(ON DELETE CASCADE)·`fee_item_id` 집계원·스냅샷(code·name·금액·coverage)·`unique(payment_id,fee_item_id)`·`amount=qty*unit`·**7.2 `build_payment`(0046)가 fee_items→payment_details 멱등 집계 적재** |
 | `notification_log` | 알림로그 | SMS 시뮬 발송이력 |
 
@@ -231,7 +231,7 @@
 | `created_by` | 컬럼(FK users) | 접수 처리 직원 |
 | `register_encounter(uuid)` | RPC(SECURITY DEFINER) | `scheduled→registered`(예약 접수). 권한 `encounter.register`, `registered_at` 기록 |
 | `start_consult(uuid)` | RPC(SECURITY DEFINER) | `registered→in_progress`(진찰 시작). 권한 `encounter.start`, `consult_started_at`+`doctor_id=auth.uid()` |
-| `complete_encounter(uuid)` | RPC(SECURITY DEFINER) | `in_progress→completed`(진료 완료). 권한 `encounter.complete`, `completed_at`. **주상병 게이트(0014 재정의, 4.7): 활성 주상병(`is_primary`) 미지정 시 `PT422`→422 차단**. 부분수행도 여기로 종결(정산 Epic7 FR-119) |
+| `complete_encounter(uuid)` | RPC(SECURITY DEFINER) | `in_progress→completed`(진료 완료). 권한 `encounter.complete`(doctor 4.7·**reception 7.4 grant** — 결제 finalize 가 호출), `completed_at`. **주상병 게이트(0014 재정의, 4.7): 활성 주상병(`is_primary`) 미지정 시 `PT422`→422 차단**. **7.4 `finalize_payment` 가 perform 호출(billing-completes 모델 — 내원은 결제 finalize 가 완료)**. 부분수행도 여기로 종결(정산 Epic7 FR-119) |
 | `cancel_encounter(uuid, text)` | RPC(SECURITY DEFINER) | `scheduled\|registered→cancelled`. 권한 `encounter.cancel`, `cancelled_at`+`cancel_reason`. 수가 미발생 정산 Epic7 FR-118 |
 | `mark_no_show(uuid, text)` | RPC(SECURITY DEFINER) | `scheduled→no_show`. 권한 `encounter.no_show`, `no_show_at` |
 | `enforce_encounter_transition()` | 트리거 함수(plpgsql, DEFINER 아님) | **전이 매트릭스 단일 진실** — BEFORE INSERT(초기상태 가드 scheduled\|registered)/UPDATE(전이 검증). 위반 → SQLSTATE `PT409` |
@@ -630,7 +630,7 @@
 
 | 식별자 | 종류 | 의미 |
 |---|---|---|
-| `payments` | 테이블(0045) | 수납 헤더 — 내원 1:1(`encounter_id` UNIQUE FK)·`status`(draft/finalized/cancelled)·`billing_type`(postpaid/prepaid·선후수납 7.8)·금액 6컬럼(total/covered/non_covered/copay/insurer/paid `_krw` int≥0·default 0)·결제 6컬럼(payment_method card/cash/transfer·payment_no UNIQUE 영수증번호·finalized_at/by·cancelled_at·cancel_reason). **금액·결제 컬럼=7.2/7.3/7.4 가 채움**(본 파일=기본값 0/NULL) |
+| `payments` | 테이블(0045) | 수납 헤더 — 내원 1:1(`encounter_id` UNIQUE FK)·`status`(draft/finalized/cancelled)·`billing_type`(postpaid/prepaid·선후수납 7.8)·금액 6컬럼(total/covered/non_covered/copay/insurer/paid `_krw` int≥0·default 0)·결제 6컬럼(payment_method card/cash/transfer·payment_no UNIQUE 영수증번호·finalized_at/by·cancelled_at·cancel_reason). **금액·결제 컬럼=7.2/7.3/7.4 가 채움**(본 파일=기본값 0/NULL). **7.4 `finalize_payment`(0048)가 결제 컬럼 기록·`payments_finalized_consistency` CHECK(finalized→payment_no/finalized_*/method NOT NULL)** |
 | `payment_details` | 테이블(0045) | 수납상세 라인 — `payment_id` FK **ON DELETE CASCADE**·`fee_item_id` FK(nullable=수기 라인)·스냅샷(fee_schedule_id·code·name·category·quantity·unit_amount_krw·amount_krw·coverage_type)·본인부담(copay_rate numeric(4,3)·copay_amount_krw·insurer_amount_krw·**7.3 `price_payment`(0047) 채움**·라인 `amount=copay+insurer` 정합). **`unique(payment_id, fee_item_id)`** 집계 멱등·**`check(amount_krw=quantity*unit_amount_krw)`** |
 | `payment.read` | 권한(0045 신규) | 수납 조회(원무 정산·의사·환자 포털 Epic 8 소비) — **admin 부트 grant 재실행**(회귀 회피). doctor·reception seed grant·403 baseline=nurse. 쓰기 권한(finalize)=7.4 소관 |
 | `fee_on_encounter_start` 재정의(0045) | 트리거 함수 | **초진/재진 동적 판정**(0021 단일 매핑 대체): 환자 과거 완료 내원 존재 → 재진(`encounter_start_repeat`→AA254) / 없으면 초진(`encounter_start_initial`→AA154)·분기 부재 시 레거시 `encounter_start` 폴백. 트리거 부착(trg_encounters_fee)은 0021 불변 |
@@ -666,3 +666,20 @@
 | `PaymentResponse.insurance_type` | 응답 필드(7.3) | 환자 보험유형 노출(헤더 조회 시 patients 상관 서브쿼리·비-PII 분류 enum) — 수납 상세 화면 산정 근거 표시(`insuranceLabel` 한글화). build_payment·fetch_payment 공통 |
 
 > **본인부담 산정 경계(Story 7.3 확정):** **신규 마이그 1건(0047)·신규 권한 0**(`payment.manage` 재사용 — admin 부트 grant 함정 비해당). 산정 로직=**`price_payment` DB 함수 소유**(project-context). 집계(7.2)에 이어 자동 산정(`POST .../payment` = build→price 원자·새 엔드포인트/서비스/라우터 0·기존 의미 확장). copay 컬럼·web 타입은 7.2 선반영(0→채움). **PayChip 비급여=중립 유지·변경 금지**(5.5 의도적·앰버는 지연/지시 예약 — epics "앰버 잉크" 문구는 본인부담/공단부담 금액 분리표시로 화해·색비의존 UX-DR20). **미구현(단순화 선·이월)**: 산정특례·연령별·의료급여 정액제·30일 재진규칙·진료과/시간대 가산(copay_policies 확장 수용). **후속**: finalize/결제/내원완료=7.4·계산서영수증=7.5·세부산정내역서(라인별 본인부담/공단부담 표)=7.6·원외처방전=7.7.
+
+## 수납 처리 · 내원 완료 (Story 7.4, `0048_payment_finalize.sql`)
+
+> ⚠️ **마이그 번호 0048**: Epic 7 블록 0045~0059(0047 다음). **finalize 레이어**(0045 컬럼 선언 → 0046 라인 적재 → 0047 산정 → 0048 결제·완료). **설계 결정(사용자 확정 2026-06-23·AskUserQuestion 4건)**: ① 완료 전이=**complete_encounter RPC 재사용**(`finalize_payment` 가 perform 호출) + **reception 에 `encounter.complete` grant**(상태머신·주상병 게이트 재구현 0) ② 영수증번호 `payment_no`=**전역 시퀀스 `payment_no_seq` + KST 날짜 프리픽스 `R-YYYYMMDD-NNNNNN`** ③ 결제 금액=**전액 정산만**(`paid_amount_krw=copay_amount_krw` 자동·선/부분수납=7.8) ④ 신원 재진술 confirm=**수동 확인**(이름·차트번호 표시→확인).
+
+> ⚠️ **내원 완료 모델(비자명)**: 진료 후에도 내원이 `in_progress` 로 유지되고(billing 워크리스트=in_progress 필터·7.2) **결제 finalize 가 완료 전이의 트리거**다(billing-completes). 4.7 complete 엔드포인트는 의사용으로 존재하나 표준 외래 흐름은 billing-completes → reception `encounter.complete` grant(seed.sql) 필요.
+
+| 식별자 | 종류 | 의미 |
+|---|---|---|
+| `payment_no_seq` | 시퀀스(0048) | 영수증번호 전역 단조증가 시퀀스(일별 리셋 없음·락 불요). `finalize_payment` 가 `nextval` → `R-YYYYMMDD(KST)-NNNNNN`(6자리 패딩). `payments.payment_no UNIQUE`(0045) 최종선. `revoke all from anon, authenticated`+`grant usage,select to service_role` |
+| `finalize_payment` | 함수(0048·SECURITY DEFINER) | draft 수납 건을 finalized 로 전이 + 내원 완료: 헤더 `for update` 룩업 → status≠draft PT409(이중결제 차단)·total≤0 PT409(빈 내원) → 결제 컬럼 기록(status/payment_method/payment_no 인라인 생성/finalized_at/finalized_by=app.actor_id GUC/paid=copay) → `perform complete_encounter`(in_progress→completed·주상병 게이트 PT422·전이 트리거 재사용). `revoke all from public,anon,authenticated`+`grant execute to service_role`(finalize 위조 차단) |
+| `payments_finalized_consistency` | CHECK(0048) | finalized 행은 `payment_no`·`finalized_at`·`finalized_by`·`payment_method` 모두 NOT NULL(부분 finalize 차단·deferred-work L365 finalized 부분 해소). draft 행 무영향. cancelled 컬럼 일관성=7.9 |
+| `PaymentFinalizeRequest` | 요청 스키마(billing.py) | `payment_method: Literal['card','cash','transfer']`(Pydantic 1차 검증 422·DB 컬럼 CHECK 최종선). 금액 필드 없음(전액 정산·설계 결정 ③) |
+| `PaymentResponse.patient_name`·`chart_no` | 응답 필드(7.4) | 신원 재진술 confirm·상시 배너 표시용(헤더 조회 patients 상관 서브쿼리·denormalized·비-RRN·워크리스트 노출 posture 계승·라우트/로그 미유입) |
+| `POST /v1/encounters/{id}/payment/finalize` | 엔드포인트(billing.py) | 결제·내원 완료 — `build→price→finalize_payment→complete_encounter` 원자 호출(NFR-041). body=PaymentFinalizeRequest·게이트 payment.manage. 주상병 미지정 422·비-draft/정산대상0 409·미존재 404·권한 403 |
+
+> **수납 처리·내원 완료 경계(Story 7.4 확정):** **신규 마이그 1건(0048)·신규 권한 0**(`payment.manage`·`encounter.complete` 재사용 — reception 에 encounter.complete seed grant 추가만·admin 부트 grant 함정 비해당). finalize·완료 전이 로직=**`finalize_payment`/`complete_encounter` DB 함수 소유**(상태머신 재구현 금지·project-context). `payment_no` 생성·`paid=copay`·완료 호출=DB. **흡수**: deferred-work L365 finalized 컬럼 일관성 CHECK·L385 finalize-before-price(build→price 선행). **미구현(후속)**: 진료비 계산서·영수증=7.5·세부산정내역서=7.6·원외처방전=7.7·선/부분수납=7.8·취소노쇼 정산(cancelled 일관성 CHECK 포함)=7.9·부분수행=7.10. finalized 패널 "문서 출력"=다음-액션 placeholder(7.5~7.6).
