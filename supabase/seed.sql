@@ -357,6 +357,20 @@ join public.permissions p on p.code = 'payment.manage'
 where r.code = 'reception'
 on conflict (role_id, permission_id) do nothing;
 
+-- ── (DEV/데모) 원무 역할 → 진료 완료(encounter.complete) 권한 grant (Story 7.4) ──────
+-- 7.4 finalize_payment 가 결제 확정 시 complete_encounter(내원 in_progress→completed)를 호출한다.
+-- 이 PMS 는 진료 후에도 내원이 in_progress 로 유지되고(billing 워크리스트=in_progress 필터·7.2),
+-- **결제 finalize 가 완료 전이의 트리거** → 내원 완료 = 원무 정산 직무의 일부(rbac-ui-exposure-model).
+-- encounter.complete 는 0002 기존(4.7 에서 doctor 에 grant) — 여기선 reception 역할 매핑만(신규 권한 0).
+-- ⚠️ baseline 이동: reception 은 더 이상 encounter.complete 무권한이 아니다(4.7 의 reception 403 가정 갱신).
+-- ★ 프로덕션 런타임 grant 는 1.7 매트릭스 UI 소유 — 로컬 db reset 전용. 멱등.
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code = 'encounter.complete'
+where r.code = 'reception'
+on conflict (role_id, permission_id) do nothing;
+
 -- ════════════════════════════════════════════════════════════════════════════
 -- 마스터 시드 (Story 2.5) — 진료과 · 진료실 · KCD 진단 · EDI 수가 · 약품
 -- ════════════════════════════════════════════════════════════════════════════
