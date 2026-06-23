@@ -33,6 +33,7 @@ export type Payment = {
   insurance_type: string; // 환자 보험유형(본인부담 산정 근거 표시·7.3·insuranceLabel 로 한글화)
   patient_name: string; // 신원 재진술 confirm·상시 배너(7.4·비-RRN denormalized)
   chart_no: string; // 차트번호(신원 재진술용)
+  pending_orders_count: number; // 미수행(ordered) 검사·처치 수 — 부분수행 가시성(7.10·청구 제외)
   total_amount_krw: number;
   covered_amount_krw: number;
   non_covered_amount_krw: number;

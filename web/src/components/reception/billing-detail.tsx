@@ -526,6 +526,22 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
                 수납 상세
               </h3>
             </header>
+            {/* 부분 수행(7.10) — 미수행(ordered) 오더가 있으면 finalize 전 안내. 수행분만 청구(미수행=fee 0
+                구조적 제외). draft 만(종결 후 미표시). 색비의존(⚠ 글리프 + 라벨·앰버 주의 톤). */}
+            {payment.status === "draft" && payment.pending_orders_count > 0 ? (
+              <div className="flex items-start gap-2 border-b border-border bg-status-received/10 px-4 py-2.5 text-[12px] text-status-received-ink">
+                <span aria-hidden className="mt-0.5 shrink-0 font-bold">
+                  ⚠
+                </span>
+                <p>
+                  부분 수행 — 미수행 오더{" "}
+                  <span className="font-semibold tabular-nums">
+                    {payment.pending_orders_count}
+                  </span>
+                  건은 청구에서 제외됩니다(수행분만 정산).
+                </p>
+              </div>
+            ) : null}
             {payment.details.length === 0 ? (
               <p className="px-4 py-6 text-[12.5px] text-muted-foreground">
                 집계된 수가 항목이 없습니다. 진찰·검사·처치 수행 후 자동
