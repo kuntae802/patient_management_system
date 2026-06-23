@@ -6,24 +6,29 @@ import { toast } from "sonner";
 
 import { ConfirmDialog } from "@/components/admin/confirm-dialog";
 import { PayChip } from "@/components/encounters/order-item-meta";
+import { ReceiptDocument } from "@/components/reception/receipt-document";
 import { ApiError } from "@/lib/api/client";
 import { formatAuditTime } from "@/lib/admin/audit";
 import { formatKrw } from "@/lib/admin/masters";
 import {
   buildPayment,
+  exportReceipt,
+  fetchReceipt,
   finalizePayment,
   type Payment,
   type PaymentDetail,
   type PaymentMethod,
+  type Receipt,
 } from "@/lib/billing/payments";
 import { insuranceLabel } from "@/lib/reception/patients";
 import { cn } from "@/lib/utils";
 
-// 수납 집계·결제 상세(Story 7.2/7.3/7.4 / FR-110·FR-111·FR-112·UX-DR14·UX-DR21) — 진입 시 build_payment
-// (POST·payment.manage) 멱등 호출 → 자동발생 수가 집계 + 본인부담 산정. 헤더 요약(본인부담금 headline +
-// 총/급여/비급여/공단부담 + "자동 산정" teal 마커·보험유형 근거) + 분류별 라인 + **결제(결제수단 토글 →
-// 신원 재진술 confirm → finalize: 결제 기록 + 내원 완료)**. finalized 시 영수증번호·완료 패널.
-// 상시 신원 배너(이름·차트번호·UX-DR21). useState 단일 로드(TanStack 미사용). 금액 KRW 정수·tabular-nums·"원".
+// 수납 집계·결제·문서 상세(Story 7.2/7.3/7.4/7.5 / FR-110~113·UX-DR14·UX-DR21·UX-DR22) — 진입 시
+// build_payment(POST·payment.manage) 멱등 호출 → 자동발생 수가 집계 + 본인부담 산정. 헤더 요약(본인부담금
+// headline + 총/급여/비급여/공단부담 + "자동 산정" teal 마커·보험유형 근거) + 분류별 라인 + **결제(결제수단
+// 토글 → 신원 재진술 confirm → finalize)**. finalized 시 완료 패널 + **문서 출력(진료비 계산서·영수증
+// 미리보기 → 브라우저 인쇄/PDF·인쇄=감사 beforeprint·7.5)**. 상시 신원 배너(이름·차트번호·UX-DR21).
+// useState 단일 로드(TanStack 미사용). 금액 KRW 정수·tabular-nums·"원".
 
 /** 결제 수단 선택지(카드/현금/계좌이체 — DB CHECK·Pydantic Literal 거울). */
 const PAYMENT_METHODS: { value: PaymentMethod; label: string }[] = [
@@ -130,6 +135,8 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
   const [method, setMethod] = useState<PaymentMethod>("card");
   const [showConfirm, setShowConfirm] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  const [receipt, setReceipt] = useState<Receipt | null>(null);
+  const [loadingReceipt, setLoadingReceipt] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -153,6 +160,36 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- load 의 setState 는 await 이후
     void load();
   }, [load]);
+
+  // 문서 출력(진료비 계산서·영수증) — finalized 패널에서 클릭 시 영수증 데이터 로드 → 미리보기(7.5).
+  async function handleOpenReceipt() {
+    if (loadingReceipt) return;
+    setLoadingReceipt(true);
+    try {
+      const doc = await fetchReceipt(encounterId);
+      setReceipt(doc);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "영수증을 불러오지 못했습니다.");
+    } finally {
+      setLoadingReceipt(false);
+    }
+  }
+
+  // 인쇄/내보내기 = 감사(UX-DR22) — 미리보기 열린 동안 beforeprint 리스너(버튼·PDF 저장·네이티브 Ctrl P
+  // 전부 포착·각 인쇄 1 감사·fire-and-forget). document.title 은 불투명값(영수증_{차트}·파일명 PII 금지).
+  useEffect(() => {
+    if (!receipt) return;
+    const onBeforePrint = () => {
+      void exportReceipt(encounterId, "receipt").catch(() => {});
+    };
+    const prevTitle = document.title;
+    document.title = `영수증_${receipt.patient.chart_no}`;
+    window.addEventListener("beforeprint", onBeforePrint);
+    return () => {
+      window.removeEventListener("beforeprint", onBeforePrint);
+      document.title = prevTitle;
+    };
+  }, [receipt, encounterId]);
 
   // 결제·내원 완료(finalize) — 신원 재진술 confirm 후 호출. mutation 중 가드(이중제출 방지·UX-DR21).
   async function handleFinalize() {
@@ -333,12 +370,46 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
               </dl>
               <button
                 type="button"
-                disabled
-                aria-disabled
-                className="w-full rounded-lg border border-border bg-muted px-4 py-2.5 text-[12.5px] font-medium text-muted-foreground disabled:opacity-70"
+                onClick={() => void handleOpenReceipt()}
+                disabled={loadingReceipt}
+                className="w-full rounded-lg border border-primary/40 bg-primary/5 px-4 py-2.5 text-[12.5px] font-semibold text-primary hover:bg-primary/10 disabled:opacity-60"
               >
-                문서 출력 (준비 중)
+                문서 출력 (진료비 계산서·영수증)
               </button>
+            </section>
+          ) : null}
+
+          {/* 진료비 계산서·영수증 미리보기 — Batang serif 법정 서식 + 브라우저 인쇄/PDF(7.5·FR-113). */}
+          {/* @media print: .receipt-paper 만 출력(아래 툴바·앱 셸은 인쇄에서 숨김). 인쇄=감사(beforeprint). */}
+          {receipt ? (
+            <section className="space-y-3 rounded-xl border border-border bg-card p-4">
+              <div className="flex items-center gap-2">
+                <h3 className="text-[13px] font-semibold text-foreground">
+                  문서 출력 미리보기
+                  <span className="ml-1.5 rounded border border-border px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
+                    법정 서식
+                  </span>
+                </h3>
+                <div className="ml-auto flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    className="rounded-md bg-primary px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-primary-hover"
+                  >
+                    인쇄 / PDF 저장 (Ctrl P)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReceipt(null)}
+                    className="rounded-md border border-border bg-card px-3 py-1.5 text-[12px] font-medium hover:bg-muted"
+                  >
+                    닫기
+                  </button>
+                </div>
+              </div>
+              <div className="overflow-x-auto rounded-md border border-border bg-muted/30 p-3">
+                <ReceiptDocument data={receipt} />
+              </div>
             </section>
           ) : null}
 

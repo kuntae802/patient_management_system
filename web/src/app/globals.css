@@ -159,3 +159,25 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* 법정 서식 인쇄(Story 7.5 · FR-113 · UX-DR14/22): 진료비 계산서·영수증 paper 만 출력하고 앱 셸은 숨긴다.
+   visibility(=display 아님)로 .receipt-paper 의 absolute 기준을 보존. Batang serif 예외(legal-serif 토큰). */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .receipt-paper,
+  .receipt-paper * {
+    visibility: visible;
+  }
+  .receipt-paper {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    font-family: var(--font-legal-serif);
+  }
+  @page {
+    margin: 1.5cm;
+  }
+}

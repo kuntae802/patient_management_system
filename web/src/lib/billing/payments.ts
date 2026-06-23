@@ -85,6 +85,78 @@ export async function fetchPayment(encounterId: string): Promise<Payment> {
   return apiFetch<Payment>(`/v1/encounters/${encounterId}/payment`);
 }
 
+// 진료비 계산서·영수증 문서(Story 7.5 / FR-113) — FastAPI ReceiptResponse 의 거울(전 필드 snake_case).
+// finalized 수납 건만(GET·payment.read). 요양기관·환자(masked RRN)·진료·결제·발급 + 상세 라인(항목별
+// 금액표는 클라가 category 집계). 금액=DB 산정값(클라는 표시 그룹핑만). 인쇄/PDF=브라우저(window.print).
+
+/** 요양기관 정보(0049 clinic_profile 거울 — 영수증 헤더). */
+export type ReceiptClinic = {
+  name: string;
+  biz_no: string;
+  hira_no: string; // 요양기관기호
+  address: string;
+  ceo_name: string;
+  phone: string;
+};
+
+/** 영수증 환자 정보 — 주민번호는 masked 만(full reveal 이월·PII 경계). */
+export type ReceiptPatient = {
+  name: string;
+  chart_no: string;
+  resident_no_masked: string; // 710314-2****** (masked only)
+  insurance_type: string; // insuranceLabel 로 한글화
+};
+
+/** 영수증 진료 정보 — 진료과·담당의·진료기간(KST date). */
+export type ReceiptEncounter = {
+  department_name: string;
+  doctor_name: string | null;
+  treatment_started_on: string; // YYYY-MM-DD
+  treatment_ended_on: string;
+};
+
+/** FastAPI ReceiptResponse 의 거울 — 법정 서식 「진료비 계산서·영수증」 데이터(7.5). */
+export type Receipt = {
+  clinic: ReceiptClinic;
+  patient: ReceiptPatient;
+  encounter: ReceiptEncounter;
+  status: string; // finalized(영수증)
+  payment_no: string | null;
+  payment_method: string | null;
+  finalized_at: string | null;
+  issued_by_name: string | null; // 발급담당
+  total_amount_krw: number;
+  covered_amount_krw: number;
+  non_covered_amount_krw: number;
+  copay_amount_krw: number; // 본인부담 총액(납부할 금액·3행)
+  insurer_amount_krw: number;
+  paid_amount_krw: number; // 기납부(3행)
+  due_amount_krw: number; // 납부할 금액 = copay - paid(3행)
+  details: PaymentDetail[];
+};
+
+/** 문서 유형(7.5=영수증, 세부산정내역서='statement'=7.6). */
+export type DocumentType = "receipt";
+
+/** finalized 수납 건의 영수증 문서 데이터(GET). 게이트 payment.read. 비-finalized → 409·빌드 전 → 404. */
+export async function fetchReceipt(encounterId: string): Promise<Receipt> {
+  return apiFetch<Receipt>(`/v1/encounters/${encounterId}/payment/receipt`);
+}
+
+/**
+ * 문서 인쇄/내보내기 = 감사 이벤트 기록(POST·204). 게이트 payment.read. 인쇄(Ctrl P)/PDF 저장 직전
+ * 호출 → audit_logs 'read'(document_type). UX-DR22 "민감 문서 인쇄/내보내기 자체가 감사 이벤트".
+ */
+export async function exportReceipt(
+  encounterId: string,
+  documentType: DocumentType = "receipt",
+): Promise<void> {
+  await apiFetch<null>(`/v1/encounters/${encounterId}/payment/receipt/export`, {
+    method: "POST",
+    body: JSON.stringify({ document_type: documentType }),
+  });
+}
+
 /** 결제 수단 — 카드/현금/계좌이체(DB CHECK·Pydantic Literal 거울). */
 export type PaymentMethod = "card" | "cash" | "transfer";
 
