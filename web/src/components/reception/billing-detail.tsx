@@ -18,6 +18,7 @@ import {
   exportReceipt,
   fetchReceipt,
   finalizePayment,
+  prepayPayment,
   type DocumentType,
   type Payment,
   type PaymentDetail,
@@ -49,6 +50,9 @@ const PAYMENT_METHODS: { value: PaymentMethod; label: string }[] = [
   { value: "transfer", label: "계좌이체" },
 ];
 
+/** 선결제 금액 상한(1억원) — Pydantic Field(le) 거울. int4 overflow·fat-finger 방어. */
+const MAX_PREPAY_KRW = 100_000_000;
+
 /** 결제 수단 라벨(완료 패널·confirm 표시). */
 function paymentMethodLabel(method: string | null): string {
   return (
@@ -56,14 +60,18 @@ function paymentMethodLabel(method: string | null): string {
   );
 }
 
-/** 결제상태 배지 A3(UX-DR14·색비의존 — 글리프+라벨). 미수납=로즈·완료=그린·취소=취소선. */
+/** 결제상태 배지 A3(UX-DR14·색비의존 — 글리프+라벨). 미수납=로즈·부분=앰버·완료=그린·취소=취소선.
+ * 부분(◐) = draft 인데 선결제(paid>0)된 상태(7.8 선수납) — 미정산 차액 잔존. */
 function PaymentStatusBadge({
   status,
+  paidAmount = 0,
   className,
 }: {
   status: string;
+  paidAmount?: number;
   className?: string;
 }) {
+  const partial = status === "draft" && paidAmount > 0;
   const meta =
     status === "finalized"
       ? {
@@ -77,11 +85,17 @@ function PaymentStatusBadge({
             glyph: "✕",
             cls: "border-status-cancelled/40 bg-status-cancelled/12 text-status-cancelled line-through",
           }
-        : {
-            label: "미수납",
-            glyph: "○",
-            cls: "border-status-cancelled/40 bg-status-cancelled/12 text-status-cancelled",
-          };
+        : partial
+          ? {
+              label: "부분",
+              glyph: "◐",
+              cls: "border-status-received/40 bg-status-received/12 text-status-received-ink",
+            }
+          : {
+              label: "미수납",
+              glyph: "○",
+              cls: "border-status-cancelled/40 bg-status-cancelled/12 text-status-cancelled",
+            };
   return (
     <span
       className={cn(
@@ -109,6 +123,17 @@ function finalizeErrorMessage(err: unknown): string {
     return err.message;
   }
   return "결제 처리에 실패했습니다.";
+}
+
+/** 선결제 실패 → 사용자 메시지(7.8). 권한·이미 결제/취소·미존재·일반. */
+function prepayErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === "forbidden") return "수납 권한이 없습니다.";
+    if (err.code === "invalid_transition")
+      return "이미 처리되었거나 선결제할 수 없는 수납입니다.";
+    return err.message;
+  }
+  return "선결제 처리에 실패했습니다.";
 }
 
 /** 처방전 발급 실패 → 사용자 메시지(7.7). 이미 발급·권한·미존재·일반. */
@@ -203,6 +228,10 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
   const [method, setMethod] = useState<PaymentMethod>("card");
   const [showConfirm, setShowConfirm] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  // 선결제(선수납·7.8) — 금액 입력(문자열)·신원 confirm·mutation 가드.
+  const [prepayAmount, setPrepayAmount] = useState("");
+  const [showPrepayConfirm, setShowPrepayConfirm] = useState(false);
+  const [prepaying, setPrepaying] = useState(false);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [loadingReceipt, setLoadingReceipt] = useState(false);
   // 미리보기 활성 문서 탭 — receipt=진료비 계산서·영수증 / statement=세부산정내역서(7.6·동일 데이터·다른 렌더).
@@ -328,6 +357,32 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
     }
   }
 
+  // 선결제(선수납·7.8) — 신원 재진술 confirm 후 호출. paid 누적·billing_type prepaid 전환·내원 미완료.
+  async function handlePrepay() {
+    if (!payment || prepaying) return;
+    const amount = Number(prepayAmount);
+    if (!Number.isInteger(amount) || amount <= 0) {
+      toast.error("선결제 금액을 원 단위 양의 정수로 입력하세요.");
+      return;
+    }
+    if (amount > MAX_PREPAY_KRW) {
+      toast.error(`선결제 금액은 ${formatKrw(MAX_PREPAY_KRW)}원을 넘을 수 없습니다.`);
+      return;
+    }
+    setPrepaying(true);
+    try {
+      const result = await prepayPayment(payment.encounter_id, amount, method);
+      setPayment(result);
+      setShowPrepayConfirm(false);
+      setPrepayAmount("");
+      toast.success(`선결제 ${formatKrw(amount)}원이 기록되었습니다.`);
+    } catch (err) {
+      toast.error(prepayErrorMessage(err));
+    } finally {
+      setPrepaying(false);
+    }
+  }
+
   // 결제·내원 완료(finalize) — 신원 재진술 confirm 후 호출. mutation 중 가드(이중제출 방지·UX-DR21).
   async function handleFinalize() {
     if (!payment || finalizing) return;
@@ -345,6 +400,9 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
       setFinalizing(false);
     }
   }
+
+  // 차액(납부할 금액) = 본인부담금 − 이미 납부. 음수면 과납(환급 대상·7.9). 선결제 안 했으면 = copay.
+  const due = payment ? payment.copay_amount_krw - payment.paid_amount_krw : 0;
 
   return (
     <div className="space-y-5">
@@ -378,7 +436,11 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
             <span className="text-[12px] text-muted-foreground tabular-nums">
               차트 {payment.chart_no}
             </span>
-            <PaymentStatusBadge status={payment.status} className="ml-auto" />
+            <PaymentStatusBadge
+              status={payment.status}
+              paidAmount={payment.paid_amount_krw}
+              className="ml-auto"
+            />
           </section>
 
           {/* 헤더 요약 — 본인부담금(환자 청구액) headline + 총/급여/비급여/공단부담 + "자동 산정" 마커·보험유형 근거. */}
@@ -471,12 +533,21 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
             )}
           </section>
 
-          {/* 결제 — draft: 결제수단 토글 + "결제·내원 완료"(신원 재진술 confirm). finalized: 완료 패널. */}
+          {/* 결제 — draft: 결제수단 토글 + 선결제(선수납·7.8) + "결제·내원 완료"(신원 confirm). finalized: 완료 패널. */}
           {payment.status === "draft" ? (
-            <section className="space-y-3 rounded-xl border border-border bg-card p-4">
-              <h3 className="text-[13px] font-semibold text-foreground">
-                결제
-              </h3>
+            <section className="space-y-4 rounded-xl border border-border bg-card p-4">
+              <div className="flex items-center gap-2">
+                <h3 className="text-[13px] font-semibold text-foreground">
+                  결제
+                </h3>
+                {payment.billing_type === "prepaid" ? (
+                  <span className="rounded border border-status-received/40 bg-status-received/10 px-1.5 py-0.5 text-[10px] font-medium text-status-received-ink">
+                    선수납
+                  </span>
+                ) : null}
+              </div>
+
+              {/* 결제수단 토글(선결제·정산 공용). */}
               <div
                 role="radiogroup"
                 aria-label="결제 수단"
@@ -500,18 +571,110 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
                   </button>
                 ))}
               </div>
-              <button
-                type="button"
-                onClick={() => setShowConfirm(true)}
-                disabled={finalizing}
-                className="w-full rounded-lg bg-primary px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-primary-hover disabled:opacity-60"
-              >
-                결제·내원 완료
-              </button>
-              <p className="text-[10.5px] text-muted-foreground">
-                확정 시 본인부담금 {formatKrw(payment.copay_amount_krw)}원이
-                결제되고 내원이 완료됩니다. 완료 후 취소할 수 없습니다.
-              </p>
+
+              {/* 납부 현황 — 선결제(paid>0) 시 이미 납부 + 납부할 차액(또는 환급 대상·과납). */}
+              {payment.paid_amount_krw > 0 ? (
+                <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md border border-border bg-muted/30 px-3 py-2 text-[12px]">
+                  <dt className="text-muted-foreground">이미 납부 (선결제)</dt>
+                  <dd className="text-right font-medium text-foreground tabular-nums">
+                    {formatKrw(payment.paid_amount_krw)}{" "}
+                    <span className="text-[10px] font-normal">원</span>
+                  </dd>
+                  {payment.total_amount_krw > 0 ? (
+                    due >= 0 ? (
+                      <>
+                        <dt className="text-muted-foreground">납부할 차액</dt>
+                        <dd className="text-right font-semibold text-foreground tabular-nums">
+                          {formatKrw(due)}{" "}
+                          <span className="text-[10px] font-normal">원</span>
+                        </dd>
+                      </>
+                    ) : (
+                      <>
+                        <dt className="text-status-received-ink">
+                          환급 대상 (과납)
+                        </dt>
+                        <dd className="text-right font-semibold text-status-received-ink tabular-nums">
+                          {formatKrw(-due)}{" "}
+                          <span className="text-[10px] font-normal">원</span>
+                        </dd>
+                      </>
+                    )
+                  ) : null}
+                </dl>
+              ) : null}
+
+              {/* 선결제(선수납) — 금액 입력 + 선결제 버튼. 내원 미완료(정산 시점만 앞당김). */}
+              <div className="space-y-2 rounded-md border border-border/70 bg-muted/20 p-3">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <label
+                    htmlFor="prepay-amount"
+                    className="text-[12px] font-medium text-foreground"
+                  >
+                    선결제 (선수납)
+                  </label>
+                  <span className="text-[10.5px] text-muted-foreground">
+                    {payment.total_amount_krw > 0
+                      ? "본인부담금 일부/전부를 미리 받습니다"
+                      : "진찰 전 — 수가 미발생, 예치금으로 기록됩니다"}
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    id="prepay-amount"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={MAX_PREPAY_KRW}
+                    step={1}
+                    value={prepayAmount}
+                    onChange={(e) => setPrepayAmount(e.target.value)}
+                    placeholder="금액(원)"
+                    className="w-40 rounded-md border border-border bg-card px-3 py-2 text-[12.5px] tabular-nums focus:border-primary focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPrepayConfirm(true)}
+                    disabled={
+                      prepaying ||
+                      !prepayAmount ||
+                      !Number.isInteger(Number(prepayAmount)) ||
+                      Number(prepayAmount) <= 0 ||
+                      Number(prepayAmount) > MAX_PREPAY_KRW
+                    }
+                    className="rounded-md border border-primary/40 bg-primary/5 px-4 py-2 text-[12.5px] font-semibold text-primary hover:bg-primary/10 disabled:opacity-60"
+                  >
+                    선결제
+                  </button>
+                </div>
+              </div>
+
+              {/* 결제·내원 완료(차액 정산 + 완료) — 수가 발생(total>0) 시만. registered(수가 0)는 선결제만. */}
+              {payment.total_amount_krw > 0 ? (
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirm(true)}
+                    disabled={finalizing}
+                    className="w-full rounded-lg bg-primary px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-primary-hover disabled:opacity-60"
+                  >
+                    결제·내원 완료
+                  </button>
+                  <p className="text-[10.5px] text-muted-foreground">
+                    {payment.paid_amount_krw > 0
+                      ? due > 0
+                        ? `확정 시 차액 ${formatKrw(due)}원이 결제되고 내원이 완료됩니다.`
+                        : "확정 시 추가 결제 없이 내원이 완료됩니다(선결제 완납)."
+                      : `확정 시 본인부담금 ${formatKrw(payment.copay_amount_krw)}원이 결제되고 내원이 완료됩니다.`}{" "}
+                    완료 후 취소할 수 없습니다.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-[11px] text-muted-foreground">
+                  진찰·수행 후 수가가 산정되면 결제·내원 완료를 진행할 수
+                  있습니다.
+                </p>
+              )}
             </section>
           ) : payment.status === "finalized" ? (
             <section className="space-y-2 rounded-xl border border-status-done/40 bg-status-done/5 p-4">
@@ -709,14 +872,30 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
             </section>
           ) : null}
 
-          {/* 신원 재진술 confirm(UX-DR21·수동 확인) — 이름·차트번호·본인부담금 재진술. */}
+          {/* 신원 재진술 confirm(UX-DR21·수동 확인) — 이름·차트번호·결제액(선납 시 차액) 재진술. */}
           <ConfirmDialog
             open={showConfirm}
             title="결제·내원 완료 확인"
-            description={`환자 ${payment.patient_name} · 차트 ${payment.chart_no} · 본인부담금 ${formatKrw(payment.copay_amount_krw)}원을 ${paymentMethodLabel(method)}(으)로 결제하고 내원을 완료합니다. 완료 후 취소할 수 없습니다.`}
+            description={`환자 ${payment.patient_name} · 차트 ${payment.chart_no} · ${
+              payment.paid_amount_krw > 0
+                ? due > 0
+                  ? `차액 ${formatKrw(due)}원을 ${paymentMethodLabel(method)}(으)로 결제하고`
+                  : `추가 결제 없이(선결제 완납)`
+                : `본인부담금 ${formatKrw(payment.copay_amount_krw)}원을 ${paymentMethodLabel(method)}(으)로 결제하고`
+            } 내원을 완료합니다. 완료 후 취소할 수 없습니다.`}
             confirmLabel="결제·내원 완료"
             onConfirm={() => void handleFinalize()}
             onCancel={() => setShowConfirm(false)}
+          />
+
+          {/* 선결제 confirm(UX-DR21·신원 재진술) — 이름·차트번호·선결제액. 내원 미완료(차액은 정산 시). */}
+          <ConfirmDialog
+            open={showPrepayConfirm}
+            title="선결제 확인"
+            description={`환자 ${payment.patient_name} · 차트 ${payment.chart_no} · 선결제 ${formatKrw(Number(prepayAmount) || 0)}원을 ${paymentMethodLabel(method)}(으)로 받습니다. 진료 후 차액을 정산합니다.`}
+            confirmLabel="선결제"
+            onConfirm={() => void handlePrepay()}
+            onCancel={() => setShowPrepayConfirm(false)}
           />
 
           {/* 처방전 발급 confirm(UX-DR21·신원 재진술) — 발급은 비가역(issued→dispensed). */}

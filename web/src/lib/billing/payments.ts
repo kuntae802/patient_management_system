@@ -165,6 +165,22 @@ export async function exportReceipt(
 export type PaymentMethod = "card" | "cash" | "transfer";
 
 /**
+ * 선결제(선수납, POST). 게이트 payment.manage. 진료 전(registered)·진료 중(in_progress)의 draft
+ * 수납에 본인부담 추정액을 미리 받아 paid_amount_krw 에 누적(단일 누계) + billing_type→prepaid 전환.
+ * 내원 상태 전이 없음(완료는 finalize). 이미 결제/취소 또는 금액≤0 → 409, 금액 검증 실패 → 422.
+ */
+export async function prepayPayment(
+  encounterId: string,
+  amountKrw: number,
+  paymentMethod: PaymentMethod,
+): Promise<Payment> {
+  return apiFetch<Payment>(`/v1/encounters/${encounterId}/payment/prepay`, {
+    method: "POST",
+    body: JSON.stringify({ amount_krw: amountKrw, payment_method: paymentMethod }),
+  });
+}
+
+/**
  * 수납 finalize(결제 기록 + 내원 완료, POST). 게이트 payment.manage. draft → finalized 전이 +
  * complete_encounter(내원 in_progress→completed) 원자 호출. 주상병 미지정 → 422, 비-draft → 409.
  */

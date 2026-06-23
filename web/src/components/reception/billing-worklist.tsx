@@ -6,9 +6,11 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "@/lib/api/client";
 import { formatKrw } from "@/lib/admin/masters";
 import { fetchBillingWorklist, type BillingWorklistItem } from "@/lib/billing/payments";
+import { cn } from "@/lib/utils";
 
-// 수납 워크리스트(Story 7.2 / FR-110) — 오늘 정산 대상 내원(in_progress) 목록. 행 선택 시 집계 상세로 이동
-// (/reception/billing/{encounter_id}). 예상 총액 = Σ fee_items(라이브 프리뷰 — 영속 집계는 상세 진입 시).
+// 수납 워크리스트(Story 7.2/7.8 / FR-110·FR-117) — 오늘 수납 대상 내원(registered=선수납 가능 /
+// in_progress=정산 대상) 목록. 행 선택 시 집계 상세로 이동(/reception/billing/{encounter_id}). 예상 총액 =
+// Σ fee_items(라이브 프리뷰 — registered 는 수가 미발생 0). 상태 칩으로 선수납/정산 구분(A3·색비의존).
 // useState 단일 로드(TanStack 미사용 — order-panel/reading-worklist 패턴). 금액 tabular-nums·"원".
 
 /** KST 시:분(진찰 시작 시각 표기) — consult_started_at(ISO UTC) → ko-KR 시:분. */
@@ -20,6 +22,35 @@ function timeHm(iso: string | null): string {
     hour12: false,
     timeZone: "Asia/Seoul",
   }).format(new Date(iso));
+}
+
+/** 내원 상태 칩(7.8·A3 색비의존 — 글리프+라벨). 접수=선수납 가능(앰버)·진찰중=정산 대상(중립). */
+function WorklistStatusChip({ status }: { status: string }) {
+  const meta =
+    status === "registered"
+      ? {
+          label: "접수 · 선수납 가능",
+          glyph: "●",
+          cls: "border-status-received/40 bg-status-received/10 text-status-received-ink",
+        }
+      : {
+          label: "진찰중 · 정산 대상",
+          glyph: "◐",
+          cls: "border-border bg-muted text-muted-foreground",
+        };
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-medium",
+        meta.cls,
+      )}
+    >
+      <span aria-hidden className="text-[8px] leading-none">
+        {meta.glyph}
+      </span>
+      {meta.label}
+    </span>
+  );
 }
 
 export function BillingWorklist() {
@@ -59,13 +90,15 @@ export function BillingWorklist() {
   return (
     <section className="rounded-xl border border-border bg-card">
       <header className="border-b border-border px-4 py-2.5">
-        <h2 className="text-[13px] font-semibold text-foreground">정산 대상 내원</h2>
-        <p className="text-[11px] text-muted-foreground">정산할 내원을 선택하세요</p>
+        <h2 className="text-[13px] font-semibold text-foreground">수납 대상 내원</h2>
+        <p className="text-[11px] text-muted-foreground">
+          정산(진찰중) 또는 선수납(접수)할 내원을 선택하세요
+        </p>
       </header>
       {items === null ? (
         <ListSkeleton />
       ) : items.length === 0 ? (
-        <p className="px-4 py-6 text-[12.5px] text-muted-foreground">정산 대상 내원이 없습니다.</p>
+        <p className="px-4 py-6 text-[12.5px] text-muted-foreground">수납 대상 내원이 없습니다.</p>
       ) : (
         <ul>
           {items.map((it) => (
@@ -82,6 +115,7 @@ export function BillingWorklist() {
                     <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
                       {it.chart_no}
                     </span>
+                    <WorklistStatusChip status={it.status} />
                   </div>
                   <p className="mt-0.5 flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
                     <span className="tabular-nums">{it.encounter_no}</span>
