@@ -706,3 +706,88 @@ def test_worklist_includes_registered(client, reception_token, psql):
     assert row is not None, f"registered 내원 {eid} 워크리스트 미포함(7.8 선수납 진입점)"
     assert row["status"] == "registered"
     assert row["estimated_total_krw"] == 0
+
+
+# ── Story 7.9: 취소·노쇼 정산(수가 미발생·선납 환급) ──────────────────────────
+
+
+def _cancel_url(encounter_id: str) -> str:
+    return f"/v1/encounters/{encounter_id}/payment/cancel"
+
+
+def test_cancel_at_registered_voids_no_refund(client, reception_token, psql):
+    """후수납 registered(선납 0) 취소 → 200·cancelled·refunded 0·내원 cancelled(수가 미발생)."""
+    eid = _setup_billable_encounter(psql, with_fees=False)  # registered·수가 0
+    res = client.post(
+        _cancel_url(eid), headers=_bearer(reception_token), json={"reason": "미내원"}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "cancelled"
+    assert body["refunded_amount_krw"] == 0
+    assert body["cancelled_at"] is not None
+    assert body["cancel_reason"] == "미내원"
+    assert _encounter_status(psql, eid) == "cancelled"
+
+
+def test_cancel_after_prepay_refunds_full(client, reception_token, psql):
+    """registered 선납 5000 → 취소 → cancelled·refunded=5000(전액)·paid 보존·내원 cancelled."""
+    eid = _setup_billable_encounter(psql, with_fees=False)
+    prepay = client.post(
+        _prepay_url(eid),
+        headers=_bearer(reception_token),
+        json={"amount_krw": 5000, "payment_method": "card"},
+    )
+    assert prepay.status_code == 200, prepay.text
+    res = client.post(_cancel_url(eid), headers=_bearer(reception_token), json={})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "cancelled"
+    assert body["paid_amount_krw"] == 5000  # 총 수령 보존
+    assert body["refunded_amount_krw"] == 5000  # 선납 전액 환급
+    assert body["payment_method"] == "card"  # 환급수단=원 선결제수단
+    assert _encounter_status(psql, eid) == "cancelled"
+
+
+def test_cancel_removes_from_worklist(client, reception_token, psql):
+    """registered 선납 내원 취소 후 → 워크리스트에서 사라짐(cancelled 제외)."""
+    eid = _setup_billable_encounter(psql, with_fees=False)
+    client.post(
+        _prepay_url(eid),
+        headers=_bearer(reception_token),
+        json={"amount_krw": 3000, "payment_method": "cash"},
+    )
+    before = client.get("/v1/billing/worklist", headers=_bearer(reception_token))
+    assert any(r["encounter_id"] == eid for r in before.json()["data"]), "취소 전 워크리스트 포함"
+    client.post(_cancel_url(eid), headers=_bearer(reception_token), json={})
+    after = client.get("/v1/billing/worklist", headers=_bearer(reception_token))
+    assert not any(r["encounter_id"] == eid for r in after.json()["data"]), (
+        "취소 후 워크리스트에서 제외(cancelled)"
+    )
+
+
+def test_cancel_in_progress_409(client, reception_token, doctor_id, psql):
+    """진찰 중(in_progress) 취소 → 409(cancel_encounter 비-registered 차단·부분수행=7.10)."""
+    eid = _setup_finalizable_encounter(psql, doctor_id)  # in_progress
+    res = client.post(_cancel_url(eid), headers=_bearer(reception_token), json={})
+    assert res.status_code == 409, res.text
+
+
+def test_cancel_forbidden_doctor(client, doctor_token, psql):
+    """doctor(payment.manage 미보유) 취소 → 403(쓰기 권한 분리)."""
+    eid = _setup_billable_encounter(psql, with_fees=False)
+    res = client.post(_cancel_url(eid), headers=_bearer(doctor_token), json={})
+    assert res.status_code == 403, res.text
+
+
+def test_cancel_forbidden_nurse(client, nurse_token, psql):
+    """nurse(payment.manage·encounter.cancel 미보유) 취소 → 403."""
+    eid = _setup_billable_encounter(psql, with_fees=False)
+    res = client.post(_cancel_url(eid), headers=_bearer(nurse_token), json={})
+    assert res.status_code == 403, res.text
+
+
+def test_cancel_nonexistent_404(client, reception_token):
+    """미존재 내원 취소 → 404."""
+    res = client.post(_cancel_url(str(uuid.uuid4())), headers=_bearer(reception_token), json={})
+    assert res.status_code == 404, res.text

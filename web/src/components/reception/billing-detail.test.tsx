@@ -22,6 +22,7 @@ vi.mock("@/lib/billing/payments", async (importOriginal) => {
     buildPayment: vi.fn(),
     finalizePayment: vi.fn(),
     prepayPayment: vi.fn(),
+    settleCancelledVisit: vi.fn(),
     fetchReceipt: vi.fn(),
     exportReceipt: vi.fn(),
   };
@@ -53,6 +54,7 @@ import {
   fetchReceipt,
   finalizePayment,
   prepayPayment,
+  settleCancelledVisit,
   type Payment,
   type PaymentDetail,
   type Receipt,
@@ -68,6 +70,7 @@ import {
 const mockBuild = vi.mocked(buildPayment);
 const mockFinalize = vi.mocked(finalizePayment);
 const mockPrepay = vi.mocked(prepayPayment);
+const mockSettleCancel = vi.mocked(settleCancelledVisit);
 const mockFetchReceipt = vi.mocked(fetchReceipt);
 const mockExportReceipt = vi.mocked(exportReceipt);
 const mockFetchRx = vi.mocked(fetchPrescriptionDocument);
@@ -200,6 +203,7 @@ function makePayment(over: Partial<Payment> = {}): Payment {
     copay_amount_krw: 0,
     insurer_amount_krw: 0,
     paid_amount_krw: 0,
+    refunded_amount_krw: 0,
     payment_method: null,
     payment_no: null,
     finalized_at: null,
@@ -688,5 +692,112 @@ describe("BillingDetail", () => {
       "100000001", // 1억 초과
     );
     expect(screen.getByRole("button", { name: "선결제" })).toBeDisabled();
+  });
+
+  // ── Story 7.9: 취소·노쇼 정산(수가 미발생·선납 환급) ──────────────────────
+  it("registered 선납 건 → '내원 취소·환급' → 신원 confirm(환급액·원수단) → settleCancelledVisit", async () => {
+    // registered(total 0) + 선납 3000(card) → 취소·환급 버튼 노출.
+    mockBuild.mockResolvedValue(
+      makePayment({
+        total_amount_krw: 0,
+        covered_amount_krw: 0,
+        details: [],
+        billing_type: "prepaid",
+        paid_amount_krw: 3000,
+        payment_method: "card",
+      }),
+    );
+    mockSettleCancel.mockResolvedValue(
+      makePayment({
+        status: "cancelled",
+        total_amount_krw: 0,
+        details: [],
+        billing_type: "prepaid",
+        paid_amount_krw: 3000,
+        refunded_amount_krw: 3000,
+        payment_method: "card",
+        cancelled_at: "2026-06-24T05:00:00Z",
+        cancel_reason: null,
+      }),
+    );
+    render(<BillingDetail encounterId="enc-1" />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "내원 취소·환급" }),
+    );
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText(/홍길동/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/C-0001/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/선납 3,000원/)).toBeInTheDocument(); // 환급액
+    expect(within(dialog).getByText(/카드/)).toBeInTheDocument(); // 원결제수단
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "취소·환급" }),
+    );
+    await waitFor(() =>
+      expect(mockSettleCancel).toHaveBeenCalledWith("enc-1"),
+    );
+    // 취소 상태 패널(환급액·취소 배지·성공 토스트).
+    expect(await screen.findByText("내원 취소됨")).toBeInTheDocument();
+    expect(screen.getByText("3,000")).toBeInTheDocument(); // 환급액
+    expect(toastSuccess).toHaveBeenCalled();
+  });
+
+  it("registered 후수납(선납 0) → '내원 취소'(환급 문구 없음) → settleCancelledVisit", async () => {
+    mockBuild.mockResolvedValue(
+      makePayment({ total_amount_krw: 0, covered_amount_krw: 0, details: [] }),
+    );
+    mockSettleCancel.mockResolvedValue(
+      makePayment({
+        status: "cancelled",
+        total_amount_krw: 0,
+        details: [],
+        refunded_amount_krw: 0,
+        cancelled_at: "2026-06-24T05:00:00Z",
+      }),
+    );
+    render(<BillingDetail encounterId="enc-1" />);
+    const btn = await screen.findByRole("button", { name: "내원 취소" });
+    await userEvent.click(btn);
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).queryByText(/환급/)).not.toBeInTheDocument(); // 선납 0=환급 문구 없음
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "내원 취소" }),
+    );
+    await waitFor(() => expect(mockSettleCancel).toHaveBeenCalledWith("enc-1"));
+    expect(await screen.findByText("내원 취소됨")).toBeInTheDocument();
+  });
+
+  it("cancelled 상태 → 취소 패널(환급액·사유·취소시각)·결제/취소 버튼 없음", async () => {
+    mockBuild.mockResolvedValue(
+      makePayment({
+        status: "cancelled",
+        total_amount_krw: 0,
+        details: [],
+        paid_amount_krw: 5000,
+        refunded_amount_krw: 5000,
+        payment_method: "cash",
+        cancelled_at: "2026-06-24T05:00:00Z",
+        cancel_reason: "환자 요청",
+      }),
+    );
+    render(<BillingDetail encounterId="enc-1" />);
+    expect(await screen.findByText("내원 취소됨")).toBeInTheDocument();
+    expect(screen.getByText("환자 요청")).toBeInTheDocument(); // 취소 사유
+    expect(screen.getByText("5,000")).toBeInTheDocument(); // 환급액
+    expect(screen.getByText(/현금/)).toBeInTheDocument(); // 환급수단(원결제수단) 라벨
+    expect(
+      screen.queryByRole("button", { name: "내원 취소·환급" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "결제·내원 완료" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("진찰 중(total>0·in_progress) → 취소 버튼 없음(완료만·부분수행 7.10)", async () => {
+    mockBuild.mockResolvedValue(makePayment({ copay_amount_krw: 5280 })); // total>0
+    render(<BillingDetail encounterId="enc-1" />);
+    await screen.findByRole("button", { name: "결제·내원 완료" });
+    expect(
+      screen.queryByRole("button", { name: /내원 취소/ }),
+    ).not.toBeInTheDocument();
   });
 });
