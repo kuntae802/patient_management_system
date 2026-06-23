@@ -60,6 +60,7 @@ class PaymentResponse(BaseModel):
     insurance_type: str  # 환자 보험유형(본인부담 산정 근거 표시·7.3·비-PII 분류 enum)
     patient_name: str  # 신원 재진술 confirm·상시 배너 표시(7.4·워크리스트 노출 posture 계승·비-RRN)
     chart_no: str  # 차트번호(불투명 식별자 — 신원 재진술용)
+    pending_orders_count: int = 0  # 미수행(ordered) 검사·처치 수 — 부분수행 가시성(7.10·청구 제외)
     total_amount_krw: int
     covered_amount_krw: int
     non_covered_amount_krw: int

@@ -4246,7 +4246,16 @@ _PAYMENT_HEADER_SELECT = (
     " where e.id = payments.encounter_id) as patient_name, "
     "(select pat.chart_no from public.encounters e "
     " join public.patients pat on pat.id = e.patient_id "
-    " where e.id = payments.encounter_id) as chart_no "
+    " where e.id = payments.encounter_id) as chart_no, "
+    # 미수행 오더 카운트(부분수행 가시성·7.10·청구 제외=fee 0).
+    #   payment.read 경로. prescriptions 제외(fee 0·수행 개념 없음).
+    "((select count(*) from public.examinations ex "
+    "  where ex.encounter_id = payments.encounter_id "
+    "    and ex.status = 'ordered' and ex.is_active) "
+    " + (select count(*) from public.treatment_orders tr "
+    "    where tr.encounter_id = payments.encounter_id "
+    "      and tr.status = 'ordered' and tr.is_active)) "
+    "as pending_orders_count "
     "from public.payments"
 )
 # 워크리스트(정산 대상) — 내원 + denormalized 표시 + 예상 총액(Σ fee_items 라이브). raw PII 제외.
