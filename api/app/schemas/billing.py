@@ -66,6 +66,7 @@ class PaymentResponse(BaseModel):
     copay_amount_krw: int
     insurer_amount_krw: int
     paid_amount_krw: int
+    refunded_amount_krw: int = 0  # 선납 환급액(취소·노쇼 7.9·순납부=paid-refunded)
     payment_method: str | None = None
     payment_no: str | None = None
     finalized_at: datetime | None = None
@@ -99,6 +100,18 @@ class PaymentPrepayRequest(BaseModel):
     #   클린 422(미상한 시 거대 금액 DB int4 초과 → 22003 unmapped → 503). 10원 단위 강제 미적용.
     amount_krw: int = Field(gt=0, le=100_000_000)
     payment_method: Literal["card", "cash", "transfer"]
+
+
+class PaymentCancelRequest(BaseModel):
+    """내원 취소·정산 요청(Story 7.9·FR-118) — 취소 사유만(선택).
+
+    취소·노쇼 = 수가 미발생(구조적·진찰 전) + draft 수납 void + 선납 전액 환급
+    (refunded_amount_krw = paid_amount_krw·환급수단=원 선결제수단). settle_cancelled_visit RPC 가
+    cancel_encounter + void + refund 를 한 트랜잭션 처리. reason = 저민감 운영 사유(임상/PII 자유
+    텍스트 금지·encounters.cancel_reason 정합·nullable). 신원 confirm 은 웹(클라 가드).
+    """
+
+    reason: str | None = Field(default=None, max_length=200)
 
 
 class ReceiptClinic(BaseModel):

@@ -53,6 +53,18 @@ async def prepay_payment(
     return _to_payment(row)
 
 
+async def settle_cancelled_visit(
+    sub: UUID, encounter_id: UUID, reason: str | None
+) -> PaymentResponse:
+    """취소·노쇼 정산(수가 미발생·선납 환급) — Story 7.9·FR-118.
+
+    build→settle 원자(NFR-041). 내원 취소(registered→cancelled) + draft 수납 void + 선납 전액 환급
+    (refunded=paid). 미존재 → 404, 권한(payment.manage·encounter.cancel) 미보유 → 403,
+    비-registered/scheduled·비-draft → 409(db/DB 가 검증·raise)."""
+    row = await db.settle_cancelled_visit(sub, encounter_id, reason)
+    return _to_payment(row)
+
+
 async def finalize_payment(sub: UUID, encounter_id: UUID, payment_method: str) -> PaymentResponse:
     """수납 finalize(결제 기록 + 내원 완료) — build→price→finalize→complete 원자(FR-112·NFR-041).
 

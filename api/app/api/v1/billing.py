@@ -21,6 +21,7 @@ from app.core.security import CurrentUser, require_permission
 from app.schemas.billing import (
     BillingWorklistPage,
     DocumentExportRequest,
+    PaymentCancelRequest,
     PaymentFinalizeRequest,
     PaymentPrepayRequest,
     PaymentResponse,
@@ -103,6 +104,21 @@ async def finalize_payment(
     액션 엔드포인트(status PATCH 아님). 주상병 미지정 → 422, 이미 결제/취소 또는 정산 대상 0 → 409,
     미존재 내원 → 404, 권한 미보유 → 403. 신원 재진술 confirm 은 웹(클라 가드)."""
     return await billing_service.finalize_payment(user.sub, encounter_id, body.payment_method)
+
+
+@router.post("/encounters/{encounter_id}/payment/cancel", response_model=PaymentResponse)
+async def cancel_payment(
+    encounter_id: UUID,
+    body: PaymentCancelRequest,
+    user: CurrentUser = Depends(require_payment_manage),
+) -> PaymentResponse:
+    """내원 취소·정산(수가 미발생·선납 환급 — Story 7.9·FR-118·NFR-041). 게이트 payment.manage.
+
+    취소·노쇼 = 수가 미발생(구조적·진찰 전) + draft 수납 void + 선납 전액 환급(원결제수단).
+    settle_cancelled_visit RPC 가 cancel_encounter(registered→cancelled) + void + refund 를
+    한 트랜잭션 처리. 액션 엔드포인트(status PATCH 아님). 비-registered/scheduled·비-draft → 409,
+    미존재 → 404, 권한(payment.manage·encounter.cancel) 미보유 → 403. 신원 confirm 은 웹."""
+    return await billing_service.settle_cancelled_visit(user.sub, encounter_id, body.reason)
 
 
 @router.get("/encounters/{encounter_id}/payment/receipt", response_model=ReceiptResponse)

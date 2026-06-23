@@ -385,6 +385,19 @@ join public.permissions p on p.code = 'encounter.complete'
 where r.code = 'reception'
 on conflict (role_id, permission_id) do nothing;
 
+-- ── (DEV/데모) 원무 역할 → 내원 취소(encounter.cancel) 권한 grant (Story 7.9) ──────
+-- 7.9 settle_cancelled_visit 가 취소·노쇼 정산 시 cancel_encounter(내원 registered→cancelled)를 호출한다.
+-- 취소·노쇼 = 수가 미발생 + 선납 환급 = 원무 정산 직무의 일부(rbac-ui-exposure-model·결제 도메인 수납 일원화).
+-- encounter.cancel 은 0010 기존(카탈로그 + admin 부트 grant) — 여기선 reception 역할 매핑만(신규 권한 0·재grant 불요).
+-- ⚠️ baseline 이동: reception 은 더 이상 encounter.cancel 무권한이 아니다(취소 정산 직무 — 403 검증 baseline=nurse·doctor).
+-- ★ 프로덕션 런타임 grant 는 1.7 매트릭스 UI 소유 — 로컬 db reset 전용. 멱등.
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code = 'encounter.cancel'
+where r.code = 'reception'
+on conflict (role_id, permission_id) do nothing;
+
 -- ════════════════════════════════════════════════════════════════════════════
 -- 마스터 시드 (Story 2.5) — 진료과 · 진료실 · KCD 진단 · EDI 수가 · 약품
 -- ════════════════════════════════════════════════════════════════════════════

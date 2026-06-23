@@ -4223,6 +4223,7 @@ async def call_complete_examination(
 _PAYMENT_COLUMNS = (
     "id, encounter_id, status, billing_type, total_amount_krw, covered_amount_krw, "
     "non_covered_amount_krw, copay_amount_krw, insurer_amount_krw, paid_amount_krw, "
+    "refunded_amount_krw, "
     "payment_method, payment_no, finalized_at, finalized_by, cancelled_at, cancel_reason, "
     "created_at, updated_at"
 )
@@ -4370,6 +4371,42 @@ async def prepay_payment(
             "select public.prepay_payment($1, $2, $3)", encounter_id, amount_krw, payment_method
         )
         assert payment_id is not None  # prepay_payment 는 성공 시 payment_id 반환(실패는 raise)
+        header = await conn.fetchrow(f"{_PAYMENT_HEADER_SELECT} where id = $1", payment_id)
+        assert header is not None
+        details = await _fetch_payment_details(conn, payment_id)
+        return {**dict(header), "details": [dict(r) for r in details]}
+
+    return await _run_authed(sub, _op)
+
+
+async def settle_cancelled_visit(
+    sub: UUID, encounter_id: UUID, reason: str | None
+) -> dict[str, object]:
+    """취소·노쇼 정산(수가 미발생·선납 환급) — build→settle 원자(Story 7.9·FR-118·NFR-041).
+
+    한 트랜잭션: 권한 재평가(payment.manage) → 내원 존재검사(404) → build_payment(draft 헤더 보장·
+    encounter 아직 registered·finalize/prepay 선행 동형) → settle_cancelled_visit(cancel_encounter
+    registered→cancelled + draft void + 선납 전액 환급). 동일 txn = 원자(롤백). settle 내부
+    cancel_encounter 의 encounter.cancel 미보유 → 42501→403, 비-registered → PT409, 미존재 → PT404
+    raise → _map_pg_sqlstate 가 변환(try/except 불요·prepay 동형).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        await _require_payment_manage(conn)
+        exists = await conn.fetchval(
+            "select true from public.encounters where id = $1", encounter_id
+        )
+        if exists is None:
+            raise NotFoundError(
+                "내원을 찾을 수 없습니다.", detail={"encounter_id": str(encounter_id)}
+            )
+        # settle 직전 build_payment 선행(draft 헤더 보장·encounter 아직 registered → 0라인 헤더).
+        #   settle RPC 가 cancel_encounter 로 전이하므로 build 는 그 전(registered)에 완료돼야 함.
+        await conn.fetchval("select public.build_payment($1)", encounter_id)
+        payment_id = await conn.fetchval(
+            "select public.settle_cancelled_visit($1, $2)", encounter_id, reason
+        )
+        assert payment_id is not None  # settle 는 성공 시 payment_id 반환(실패는 raise)
         header = await conn.fetchrow(f"{_PAYMENT_HEADER_SELECT} where id = $1", payment_id)
         assert header is not None
         details = await _fetch_payment_details(conn, payment_id)
