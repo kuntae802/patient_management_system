@@ -1387,6 +1387,54 @@ async def fetch_self_patient(sub: UUID) -> asyncpg.Record | None:
     return await _run_authed(sub, _op)
 
 
+# 환자 포털 "내 기록" 카드(Story 8.1) — 내원 메타 + denormalized 표시(진료과·담당의) + 예약 시각
+# + 활성 주상병(0014) 1건 + 쉬운 말 부연(0054). 컬럼/별칭은 고정 리터럴(사용자 입력 아님 → SQLi
+# 무관), 값만 $n 바인딩. ⚠️ raw RRN/연락처/patient_id 미투영(비-PII, 세션 uid 스코프).
+_SELF_ENCOUNTER_CARD_COLUMNS = (
+    "e.id, e.encounter_no, e.status, e.visit_type, e.registered_at, e.consult_started_at, "
+    "e.completed_at, e.cancelled_at, e.created_at, e.cancel_reason, "
+    "d.name as department_name, doc.name as doctor_name, a.scheduled_start as scheduled_start, "
+    "pdx.diagnosis_name as primary_diagnosis_name, "
+    "pdx.patient_friendly_note as primary_diagnosis_friendly_note"
+)
+
+
+async def fetch_self_encounters(sub: UUID) -> list[asyncpg.Record]:
+    """본인(JWT sub) 내원 이력 카드 목록(환자 포털 '내 기록', Story 8.1 / FR-120). 최근순.
+
+    ⚠️ service_role 경로라 RLS 우회 — 본인 스코프는 **where p.auth_uid = $1(=sub)** 가 경계선이다
+    (RLS encounters_select_self/encounter_diagnoses_select_self(0010·0014)는 직접조회용 심층방어).
+    patient_id 인자 없음(세션 uid 스코프 — 클라 미수용). 미연결(auth_uid 0행)이면 빈 목록(프런트는
+    GET /patients/self 404 로 온보딩 유도). 게이트=라우터 get_current_patient(직원 403).
+
+    조인: departments(진료과명)·users(담당의명)·appointments(예약 시각) + LATERAL 활성 주상병
+    1건(0014 is_primary + diagnoses 0054 friendly_note). 한 환자 내원 수는 적어 안전 상한 limit
+    100(초과 tail 절단). 정렬키 = coalesce(진찰시작·접수·예약시각·생성) 최근순(상태 무관 일관)."""
+
+    async def _op(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+        return await conn.fetch(
+            f"select {_SELF_ENCOUNTER_CARD_COLUMNS} from public.encounters e "
+            "join public.patients p on p.id = e.patient_id "
+            "join public.departments d on d.id = e.department_id "
+            "left join public.users doc on doc.id = e.doctor_id "
+            "left join public.appointments a on a.id = e.reservation_id "
+            "left join lateral ("
+            "  select dg.name as diagnosis_name, dg.patient_friendly_note "
+            "  from public.encounter_diagnoses ed "
+            "  join public.diagnoses dg on dg.id = ed.diagnosis_id "
+            "  where ed.encounter_id = e.id and ed.is_active = true and ed.is_primary = true "
+            "  order by ed.created_at asc limit 1"
+            ") pdx on true "
+            "where p.auth_uid = $1 and e.is_active = true "
+            "order by coalesce(e.consult_started_at, e.registered_at, a.scheduled_start, "
+            "e.created_at) desc "
+            "limit 100",
+            sub,
+        )
+
+    return await _run_authed(sub, _op)
+
+
 # ── 보호자(guardians) 쓰기·읽기(Story 3.3, FR-006) ──────────────────────────────
 # 보호자 = 환자의 sub-resource(1:N). 쓰기 권위 = FastAPI(service_role) — authenticated 는
 # guardians 쓰기 권한 없음(0009 GRANT·RLS 쓰기정책 부재). 추가·수정·삭제는 모두 "환자 정보

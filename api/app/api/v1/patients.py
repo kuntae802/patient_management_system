@@ -21,6 +21,7 @@ from app.schemas.patients import (
     PatientClinicalProfileUpdate,
     PatientContactReveal,
     PatientCreate,
+    PatientEncounterCard,
     PatientPage,
     PatientPageMeta,
     PatientResponse,
@@ -69,6 +70,19 @@ async def get_self(
     if summary is None:
         raise NotFoundError("연결된 환자 기록이 없습니다.", code="no_self_patient")
     return summary
+
+
+@router.get("/me/encounters", response_model=list[PatientEncounterCard])
+async def list_self_encounters(
+    user: CurrentUser = Depends(get_current_patient),
+) -> list[PatientEncounterCard]:
+    """본인 내원 이력 카드(FR-120, UX-DR17) — 환자 포털 '내 기록' 탭. 세션 uid 스코프·최근순.
+
+    ⚠️ 정적 경로(/me/encounters)는 /{patient_id} 동적 라우트보다 **먼저** 선언(self-link·self 선례
+    — 'me' 가 UUID 로 파싱돼 422 가 되지 않게). 게이트 get_current_patient(직원 403). patient_id
+    미수용(서버가 auth_uid=sub 도출). 미연결은 빈 목록(프런트가 /self 404 로 온보딩 유도).
+    작은 sub-collection → 직접 배열(guardians·encounters 선례). 펼침 상세는 Story 8.2."""
+    return await patients_service.list_self_encounters(user.sub)
 
 
 @router.post("", response_model=PatientResponse, status_code=status.HTTP_201_CREATED)

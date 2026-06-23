@@ -20,6 +20,7 @@ from app.schemas.patients import (
     PatientClinicalProfileUpdate,
     PatientContactReveal,
     PatientCreate,
+    PatientEncounterCard,
     PatientListItem,
     PatientResponse,
     PatientRrnReveal,
@@ -179,3 +180,12 @@ async def get_self_patient(sub: UUID) -> PatientSelfSummary | None:
     """본인(JWT sub)에 연결된 환자 요약 — 미연결 → None(라우터가 404 매핑)."""
     row = await db.fetch_self_patient(sub)
     return _to_self_summary(row) if row is not None else None
+
+
+async def list_self_encounters(sub: UUID) -> list[PatientEncounterCard]:
+    """본인(JWT sub) 내원 이력 카드(환자 포털 '내 기록', Story 8.1 / FR-120) — 최근순.
+
+    세션 uid 스코프(auth_uid=sub, patient_id 클라 미수용). 미연결이면 빈 목록(프런트가 GET /self
+    404 로 온보딩 유도 — 별도 에러 분기 불요). 게이트=라우터 get_current_patient(직원 403)."""
+    rows = await db.fetch_self_encounters(sub)
+    return [PatientEncounterCard.model_validate(dict(r)) for r in rows]

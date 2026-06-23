@@ -89,6 +89,34 @@ class PatientSelfSummary(BaseModel):
     resident_no_masked: str
 
 
+class PatientEncounterCard(BaseModel):
+    """환자 포털 '내 기록' 내원 카드(Story 8.1, FR-120) — 본인 내원 1건 요약(읽기 전용).
+
+    세션 uid 스코프 — 서버가 auth_uid=sub 로 도출, patient_id 는 미투영(클라 미수용).
+    ⚠️ PII 경계: raw RRN·연락처·암호문 미포함(비-PII 내원 메타 + 진단 마스터 부연만).
+    날짜·시각은 클라가 12시간 KST 표기(UX-DR17). status=0010 enum 6값(클라가 환자 톤 라벨 매핑).
+    primary_diagnosis_* = 활성 주상병 1건(0014 is_primary) + 0054 friendly_note(없으면 None).
+    펼침 상세(처방·검사)는 Story 8.2 — 본 카드는 메타 + 주상병만.
+    """
+
+    id: UUID
+    encounter_no: str
+    status: str
+    visit_type: str
+    department_name: str
+    doctor_name: str | None = None
+    # 예약(reserved) 내원은 appointments.scheduled_start 조인 — walk_in 은 None.
+    scheduled_start: datetime | None = None
+    registered_at: datetime | None = None
+    consult_started_at: datetime | None = None
+    completed_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    created_at: datetime
+    cancel_reason: str | None = None
+    primary_diagnosis_name: str | None = None
+    primary_diagnosis_friendly_note: str | None = None
+
+
 class PatientClinicalProfileUpdate(BaseModel):
     """임상 프로필 갱신 요청(Story 3.2, FR-004). 5필드 옵셔널 — PUT 전체 교체(미전송=None=값없음).
 
