@@ -337,12 +337,24 @@ on conflict (role_id, permission_id) do nothing;
 -- (rbac-ui-exposure-model: 직무 핵심은 역할로 노출). payment.read 는 0045 신규 — 여기선 역할 매핑만
 -- (admin 부트 grant 는 0045 가 수행). nurse/radiologist 미포함(조회 최소권한 — 수납은 원무·의사).
 -- ★ 프로덕션 런타임 grant 는 1.7 매트릭스 UI 소유 — 로컬 db reset 전용. 멱등.
--- ⚠️ payment.read 403 검증 baseline = nurse(미보유). 쓰기 권한(finalize)은 7.4 소관(미시드).
+-- ⚠️ payment.read 403 검증 baseline = nurse(미보유). 쓰기 권한(payment.manage)은 아래(7.2 도입).
 insert into public.role_permissions (role_id, permission_id)
 select r.id, p.id
 from public.roles r
 join public.permissions p on p.code = 'payment.read'
 where r.code in ('doctor', 'reception')
+on conflict (role_id, permission_id) do nothing;
+
+-- ── (DEV/데모) 원무 역할 → 수납 관리(쓰기) 권한 grant (Story 7.2) ───────────────────
+-- 수납 관리(payment.manage)는 집계 빌드(7.2)·finalize(7.4)를 게이트하는 쓰기 권한. 수납 정산 = 원무
+-- 직무 본질 → reception 만(rbac-ui-exposure-model). 의사는 payment.read 조회만(정산 쓰기 없음).
+-- payment.manage 는 0046 신규 — 여기선 역할 매핑만(admin 부트 grant 는 0046 가 수행). 멱등.
+-- ⚠️ payment.manage 403 검증 baseline = doctor·nurse(미보유 — 빌드 거부).
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code = 'payment.manage'
+where r.code = 'reception'
 on conflict (role_id, permission_id) do nothing;
 
 -- ════════════════════════════════════════════════════════════════════════════
