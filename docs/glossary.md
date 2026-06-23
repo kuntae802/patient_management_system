@@ -26,7 +26,7 @@
 | `department` | 진료과 | 마스터 |
 | `room` | 진료실 | 마스터 |
 | `drug` | 약품 | 마스터(버전·유효기간) |
-| `diagnosis` | 진단 | KCD 코드 마스터 |
+| `diagnosis` | 진단 | KCD 코드 마스터 · `patient_friendly_note`(0054·8.1)=환자 포털 쉬운 말 부연(nullable·없으면 진단명만·값은 seed 소유·UX-DR23 재사용) |
 | `fee_schedule` | 수가 | EDI 행위 마스터(버전·유효기간) |
 | `fee_item` | 수가항목 | `fee_items`(0021·5.10)·내원별 자동 적재·금액 스냅샷·멱등 (source_type, source_id)·Epic 7 수납상세가 집계 |
 | `fee_mapping` | 수가매핑 | `fee_mappings`(0021·5.10)·임상 행위→수가코드 규칙(진찰=비항등 매핑 / 검사·처치=fee_schedule_id 직접). **source_event** = `encounter_start`(레거시 폴백)·`encounter_start_initial`(초진 AA154)·`encounter_start_repeat`(재진 AA254)·초진/재진 동적 7.1(0045) |

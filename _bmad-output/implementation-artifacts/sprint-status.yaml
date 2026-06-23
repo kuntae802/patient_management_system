@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-25T21:30:00+0000
+last_updated: 2026-06-26T03:00:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -128,11 +128,11 @@ development_status:
   7-8-수납-정책-후수납-선수납: done
   7-9-취소-노쇼-정산-수가-미발생: done
   7-10-부분-수행-정산: done
-  epic-7-retrospective: optional
+  epic-7-retrospective: done
 
   # ── Epic 8: 환자 포털 · 운영 대시보드 ──
-  epic-8: backlog
-  8-1-환자-포털-내-진료내역: backlog
+  epic-8: in-progress
+  8-1-환자-포털-내-진료내역: done
   8-2-환자-포털-처방-검사-결과: backlog
   8-3-환자-포털-수납-영수증: backlog
   8-4-환자-앱-apk-패키징-배포: backlog
