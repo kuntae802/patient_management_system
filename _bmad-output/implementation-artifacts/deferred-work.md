@@ -2,6 +2,13 @@
 
 작업 중·리뷰 중 식별됐으나 현재 스토리 범위 밖으로 미룬 항목. 해당 스토리 착수 시 참조.
 
+## Deferred from: code review of 7-10-부분-수행-정산 (2026-06-25)
+
+> 3레이어 적대 리뷰(Blind·Edge·Auditor). Auditor: AC1~10 SATISFIED·설계결정 3건 HONORED·스코프 누수 0. patch 2(적용·demo_seed 처방순서·AC 문구 정합화), dismiss ~11. 아래는 defer.
+
+- **`assert_encounter_orderable`가 `encounters`를 `for update` 없이 조회(TOCTOU)** [supabase/migrations/0053_order_encounter_gate.sql `assert_encounter_orderable`] — perform RPC는 오더 행을 `for update`로 잠그나 가드는 `encounters`를 무잠금 조회 → 게이트 통과 직후 동시 finalize(complete_encounter)가 내원을 completed로 전이하면 같은 perform이 갓-완료 내원에 수가를 적재할 수 있다(게이트 목적 "정산 후 변조 방지"의 좁은 레이스). **결과 양성**(정당하게 수행된 오더가 청구됨·잘못된 청구 아님)·**데드락 없음**(현 가드 무잠금)·실무상 reception finalize와 진료 중 perform 비중첩. 7.2~7.9 deferred-concurrency 자세 계승. 해소: 가드에 `select ... for update`(encounters) 추가 시 finalize의 encounter 락과 직렬화(첫 락이 exam/payment로 달라 ABBA 없음) — 동시성 하드닝 스토리에서 일괄. Blind Hunter.
+- **performed 검사가 완료 내원에서 판독 워크리스트 미노출** [api/app/core/db.py `fetch_reading_worklist`] — `complete_examination`은 7.10에서 의도적 비게이트(종결 후 판독 정당·fee 0)이나, 판독 워크리스트가 `e.status in ('registered','in_progress')`로 필터해 내원이 completed면 미판독(performed) 영상이 큐에서 사라져 UI 진입점이 없다. **본 diff 미도입**(5.9 deferred L546와 동일 근원·기존 워크리스트 일자/상태 필터). fee 적재 불가(performed→completed 트리거 없음). 해소: 판독 큐를 `ex.performed_at` 기준 + 내원 종결 무관 "미판독 영상" 전용 큐로(5.9 deferred와 일괄). Edge Hunter.
+
 ## Deferred from: code review of 3-6-감사-스냅샷-서버측-pii-마스킹 (2026-06-21)
 
 > 3레이어 적대 리뷰. Acceptance Auditor: 위반 0(AC1~4 + 이월 ①~④ + D-1~D-3 충족). patch 0, dismiss 4(false positive·의도적 fail-closed·방어심층·미발현), 아래는 defer.
