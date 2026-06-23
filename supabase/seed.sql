@@ -3,8 +3,9 @@
 --
 -- 🟢 마스터 시드(Story 2.5): 진료과 · 진료실 · KCD 진단 · EDI 수가 · 약품 마스터 + 샘플(파일 하단).
 --    데모/개발용 현재-유효 데이터(effective_from 과거 · effective_to NULL)로 검색 피커·골든 패스를 띄운다.
---    수가 자동발생 메커니즘·fee_items 적재·진찰 매핑(fee_mappings)은 Story 5.10(0021_billing). 청구 단순화
---    선(초진재진·가산)·약제비(약가 모델)·집계(payments)는 Epic 7 수납(다운스트림).
+--    수가 자동발생 메커니즘·fee_items 적재는 Story 5.10(0021_billing). 진찰 매핑(fee_mappings) 초진/재진
+--    동적 판정·payment.read·수납 스키마(payments)는 Story 7.1(0045_payments). 30일 재진규칙·진료과 가산·
+--    정액제·약제비(약가 모델)·집계 적재(payment_details)는 Epic 7 후속(다운스트림 — 7.2/7.3 등).
 --
 -- 식별자는 영문 snake_case, 한국어는 표시명(display_name)·주석만 (docs/glossary.md 단일 진실).
 
@@ -331,6 +332,19 @@ join public.permissions p on p.code = 'fee_item.read'
 where r.code in ('doctor', 'reception')
 on conflict (role_id, permission_id) do nothing;
 
+-- ── (DEV/데모) 의사·원무 역할 → 수납 조회 권한 grant (Story 7.1) ───────────────────
+-- 수납 조회(payment.read)는 원무(수납 정산 — Epic 7 핵심 직무)·의사(진료비 확인) 직무 본질
+-- (rbac-ui-exposure-model: 직무 핵심은 역할로 노출). payment.read 는 0045 신규 — 여기선 역할 매핑만
+-- (admin 부트 grant 는 0045 가 수행). nurse/radiologist 미포함(조회 최소권한 — 수납은 원무·의사).
+-- ★ 프로덕션 런타임 grant 는 1.7 매트릭스 UI 소유 — 로컬 db reset 전용. 멱등.
+-- ⚠️ payment.read 403 검증 baseline = nurse(미보유). 쓰기 권한(finalize)은 7.4 소관(미시드).
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code = 'payment.read'
+where r.code in ('doctor', 'reception')
+on conflict (role_id, permission_id) do nothing;
+
 -- ════════════════════════════════════════════════════════════════════════════
 -- 마스터 시드 (Story 2.5) — 진료과 · 진료실 · KCD 진단 · EDI 수가 · 약품
 -- ════════════════════════════════════════════════════════════════════════════
@@ -425,11 +439,13 @@ insert into public.fee_schedules (code, name, amount_krw, category, coverage_typ
   ('KK150', '정맥내 점적주사(수액)',           5500, '주사료', 'covered',     '2020-01-01', null)
 on conflict (lower(code)) do nothing;
 
--- ── 수가매핑 (fee_mappings) — 진찰료 자동발생 규칙 1행 (Story 5.10) ─────────────
--- encounter_start(진찰 시작 registered→in_progress) → 진찰료 코드 매핑. ⚠️ 진료과 무관 단일 매핑
--- (재진진찰료 AA254 기본) — 초진/재진 동적 판정·진료과 가산은 Epic 7(청구 단순화 선·아키텍처 §445).
+-- ── 수가매핑 (fee_mappings) — 진찰료 초진/재진 동적 매핑 (Story 7.1·5.10) ─────────
+-- 진찰 시작(registered→in_progress) → 진찰료 코드. fee_on_encounter_start(0045 재정의)이 환자 과거 완료
+-- 내원 유무로 분기 룩업: 첫 방문 → encounter_start_initial(초진 AA154) / 재방문 → encounter_start_repeat
+-- (재진 AA254). 30일 재진규칙·진료과 가산·정액제는 미구현(청구 단순화 선·아키텍처 §445).
+-- ⚠️ 레거시 encounter_start(AA254·5.10) 행은 폴백으로 보존(트리거가 initial/repeat 우선 → 정상 경로 미사용).
 -- 검사·처치는 오더 행이 fee_schedule_id 직접 보유(매핑 항등) → fee_mappings 미경유(진찰만 비-항등).
--- 멱등: 활성 encounter_start 매핑이 이미 있으면 skip(unique 제약 없음 → not exists 가드).
+-- 멱등: source_event 별 활성 매핑이 이미 있으면 skip(unique 부분 인덱스 + not exists 가드).
 insert into public.fee_mappings (source_event, fee_schedule_id)
 select 'encounter_start', fs.id
 from public.fee_schedules fs
@@ -437,6 +453,24 @@ where lower(fs.code) = 'aa254'
   and not exists (
     select 1 from public.fee_mappings m
     where m.source_event = 'encounter_start' and m.is_active
+  );
+
+insert into public.fee_mappings (source_event, fee_schedule_id)
+select 'encounter_start_initial', fs.id
+from public.fee_schedules fs
+where lower(fs.code) = 'aa154'  -- 초진진찰료(의원)
+  and not exists (
+    select 1 from public.fee_mappings m
+    where m.source_event = 'encounter_start_initial' and m.is_active
+  );
+
+insert into public.fee_mappings (source_event, fee_schedule_id)
+select 'encounter_start_repeat', fs.id
+from public.fee_schedules fs
+where lower(fs.code) = 'aa254'  -- 재진진찰료(의원)
+  and not exists (
+    select 1 from public.fee_mappings m
+    where m.source_event = 'encounter_start_repeat' and m.is_active
   );
 
 -- ── 약품 (drugs) — 외래 흔한 처방 17개 ──────────────────────────────────────
