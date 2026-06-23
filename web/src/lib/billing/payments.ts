@@ -39,6 +39,7 @@ export type Payment = {
   copay_amount_krw: number; // 본인부담금(환자 청구액·7.3 산정)
   insurer_amount_krw: number; // 공단부담금(7.3 산정)
   paid_amount_krw: number;
+  refunded_amount_krw: number; // 선납 환급액(취소·노쇼 7.9·순납부=paid-refunded)
   payment_method: string | null; // 결제=7.4
   payment_no: string | null;
   finalized_at: string | null;
@@ -191,5 +192,20 @@ export async function finalizePayment(
   return apiFetch<Payment>(`/v1/encounters/${encounterId}/payment/finalize`, {
     method: "POST",
     body: JSON.stringify({ payment_method: paymentMethod }),
+  });
+}
+
+/**
+ * 내원 취소·정산(수가 미발생·선납 환급, POST). 게이트 payment.manage. settle_cancelled_visit RPC 가
+ * cancel_encounter(registered→cancelled) + draft 수납 void + 선납 전액 환급(원결제수단)을 원자 처리.
+ * 비-registered/scheduled 또는 비-draft → 409, encounter.cancel 미보유 → 403. reason=저민감 운영 사유.
+ */
+export async function settleCancelledVisit(
+  encounterId: string,
+  reason?: string | null,
+): Promise<Payment> {
+  return apiFetch<Payment>(`/v1/encounters/${encounterId}/payment/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ reason: reason ?? null }),
   });
 }

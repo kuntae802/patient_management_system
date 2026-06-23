@@ -19,6 +19,7 @@ import {
   fetchReceipt,
   finalizePayment,
   prepayPayment,
+  settleCancelledVisit,
   type DocumentType,
   type Payment,
   type PaymentDetail,
@@ -136,6 +137,18 @@ function prepayErrorMessage(err: unknown): string {
   return "선결제 처리에 실패했습니다.";
 }
 
+/** 내원 취소·환급 실패 → 사용자 메시지(7.9). 권한·이미 종결/비-registered·미존재·일반. */
+function settleCancelErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === "forbidden") return "내원 취소 권한이 없습니다.";
+    if (err.code === "invalid_transition")
+      return "이미 종결되었거나 취소할 수 없는 내원입니다.";
+    if (err.code === "not_found") return "내원을 찾을 수 없습니다.";
+    return err.message;
+  }
+  return "내원 취소 처리에 실패했습니다.";
+}
+
 /** 처방전 발급 실패 → 사용자 메시지(7.7). 이미 발급·권한·미존재·일반. */
 function dispenseErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
@@ -232,6 +245,9 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
   const [prepayAmount, setPrepayAmount] = useState("");
   const [showPrepayConfirm, setShowPrepayConfirm] = useState(false);
   const [prepaying, setPrepaying] = useState(false);
+  // 내원 취소·환급(7.9) — 신원 confirm·mutation 가드. 취소·노쇼=수가 미발생 + 선납 전액 환급.
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [loadingReceipt, setLoadingReceipt] = useState(false);
   // 미리보기 활성 문서 탭 — receipt=진료비 계산서·영수증 / statement=세부산정내역서(7.6·동일 데이터·다른 렌더).
@@ -398,6 +414,27 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
       toast.error(finalizeErrorMessage(err));
     } finally {
       setFinalizing(false);
+    }
+  }
+
+  // 내원 취소·환급(7.9) — 신원 재진술 confirm 후 호출. cancel_encounter + draft void + 선납 전액 환급
+  // 원자(서버). mutation 중 가드(이중제출 방지·UX-DR21·고위험 비가역).
+  async function handleSettleCancel() {
+    if (!payment || cancelling) return;
+    setCancelling(true);
+    try {
+      const result = await settleCancelledVisit(payment.encounter_id);
+      setPayment(result);
+      setShowCancelConfirm(false);
+      toast.success(
+        result.refunded_amount_krw > 0
+          ? `내원이 취소되었습니다 · 환급 ${formatKrw(result.refunded_amount_krw)}원`
+          : "내원이 취소되었습니다.",
+      );
+    } catch (err) {
+      toast.error(settleCancelErrorMessage(err));
+    } finally {
+      setCancelling(false);
     }
   }
 
@@ -670,10 +707,27 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
                   </p>
                 </div>
               ) : (
-                <p className="text-[11px] text-muted-foreground">
-                  진찰·수행 후 수가가 산정되면 결제·내원 완료를 진행할 수
-                  있습니다.
-                </p>
+                <div className="space-y-2">
+                  <p className="text-[11px] text-muted-foreground">
+                    진찰·수행 후 수가가 산정되면 결제·내원 완료를 진행할 수
+                    있습니다.
+                  </p>
+                  {/* 내원 취소·환급(7.9) — 진찰 전(수가 미발생) 내원 취소. 선납(paid>0) 시 전액 환급.
+                      total>0(진찰 후=in_progress)은 취소 불가(완료만·부분수행 정산=7.10) → 버튼 미노출. */}
+                  <button
+                    type="button"
+                    onClick={() => setShowCancelConfirm(true)}
+                    disabled={cancelling}
+                    className="w-full rounded-lg border border-status-cancelled/40 bg-status-cancelled/5 px-4 py-2.5 text-[12.5px] font-semibold text-status-cancelled hover:bg-status-cancelled/10 disabled:opacity-60"
+                  >
+                    내원 취소{payment.paid_amount_krw > 0 ? "·환급" : ""}
+                  </button>
+                  <p className="text-[10.5px] text-muted-foreground">
+                    {payment.paid_amount_krw > 0
+                      ? `취소 시 선납 ${formatKrw(payment.paid_amount_krw)}원이 ${paymentMethodLabel(payment.payment_method)}(으)로 환급되고 수가는 발생하지 않습니다.`
+                      : "취소 시 수가가 발생하지 않습니다. 취소 후 되돌릴 수 없습니다."}
+                  </p>
+                </div>
               )}
             </section>
           ) : payment.status === "finalized" ? (
@@ -713,6 +767,45 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
               >
                 문서 출력 (진료비 계산서·영수증 · 세부산정내역서)
               </button>
+            </section>
+          ) : payment.status === "cancelled" ? (
+            /* 취소·노쇼 정산 완료(7.9) — 수가 미발생·선납 전액 환급. 결제/선결제 섹션 미노출(종결). */
+            <section className="space-y-2 rounded-xl border border-status-cancelled/40 bg-status-cancelled/5 p-4">
+              <div className="flex items-center gap-2">
+                <h3 className="text-[13px] font-semibold text-foreground">
+                  내원 취소됨
+                </h3>
+                <PaymentStatusBadge status="cancelled" />
+              </div>
+              <p className="text-[12px] text-muted-foreground">
+                취소·노쇼로 종결된 내원입니다. 수가가 발생하지 않습니다.
+              </p>
+              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-[12.5px]">
+                {payment.refunded_amount_krw > 0 ? (
+                  <>
+                    <dt className="text-muted-foreground">환급액</dt>
+                    <dd className="font-semibold text-foreground tabular-nums">
+                      {formatKrw(payment.refunded_amount_krw)}{" "}
+                      <span className="text-[10.5px] font-normal">원</span>
+                      <span className="ml-1 text-[11px] font-normal text-muted-foreground">
+                        ({paymentMethodLabel(payment.payment_method)})
+                      </span>
+                    </dd>
+                  </>
+                ) : null}
+                {payment.cancel_reason ? (
+                  <>
+                    <dt className="text-muted-foreground">취소 사유</dt>
+                    <dd className="text-foreground">{payment.cancel_reason}</dd>
+                  </>
+                ) : null}
+                <dt className="text-muted-foreground">취소일시</dt>
+                <dd className="text-foreground tabular-nums">
+                  {payment.cancelled_at
+                    ? formatAuditTime(payment.cancelled_at)
+                    : "—"}
+                </dd>
+              </dl>
             </section>
           ) : null}
 
@@ -896,6 +989,21 @@ export function BillingDetail({ encounterId }: { encounterId: string }) {
             confirmLabel="선결제"
             onConfirm={() => void handlePrepay()}
             onCancel={() => setShowPrepayConfirm(false)}
+          />
+
+          {/* 내원 취소·환급 confirm(UX-DR21·신원 재진술·7.9) — 이름·차트번호 + 선납 시 환급액·원결제수단.
+              취소=수가 미발생·비가역. 후수납(paid=0)은 환급 없이 취소만. */}
+          <ConfirmDialog
+            open={showCancelConfirm}
+            title="내원 취소 확인"
+            description={`환자 ${payment.patient_name} · 차트 ${payment.chart_no}의 내원을 취소합니다.${
+              payment.paid_amount_krw > 0
+                ? ` 선납 ${formatKrw(payment.paid_amount_krw)}원을 ${paymentMethodLabel(payment.payment_method)}(으)로 환급합니다.`
+                : ""
+            } 수가는 발생하지 않으며, 취소 후 되돌릴 수 없습니다.`}
+            confirmLabel={payment.paid_amount_krw > 0 ? "취소·환급" : "내원 취소"}
+            onConfirm={() => void handleSettleCancel()}
+            onCancel={() => setShowCancelConfirm(false)}
           />
 
           {/* 처방전 발급 confirm(UX-DR21·신원 재진술) — 발급은 비가역(issued→dispensed). */}
