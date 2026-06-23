@@ -56,6 +56,7 @@ class PaymentResponse(BaseModel):
     encounter_id: UUID
     status: str
     billing_type: str
+    insurance_type: str  # 환자 보험유형(본인부담 산정 근거 표시·7.3·비-PII 분류 enum)
     total_amount_krw: int
     covered_amount_krw: int
     non_covered_amount_krw: int

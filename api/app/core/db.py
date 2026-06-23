@@ -4051,6 +4051,16 @@ _PAYMENT_DETAIL_COLUMNS = (
     "unit_amount_krw, amount_krw, coverage_type, copay_rate, copay_amount_krw, "
     "insurer_amount_krw, created_at, updated_at"
 )
+# 헤더 조회 = payments 전 컬럼 + 환자 보험유형(본인부담 산정 근거 표시·Story 7.3). insurance_type 은
+#   상관 서브쿼리로 부착(JOIN 시 id/encounter_id 컬럼명 충돌 회피). 비-PII 분류 enum(마스킹 무관).
+#   build_payment(by payment id)·fetch_payment(by encounter id) 공통 — WHERE 만 다르게 이어 붙임.
+_PAYMENT_HEADER_SELECT = (
+    f"select {_PAYMENT_COLUMNS}, "
+    "(select pat.insurance_type from public.encounters e "
+    " join public.patients pat on pat.id = e.patient_id "
+    " where e.id = payments.encounter_id) as insurance_type "
+    "from public.payments"
+)
 # 워크리스트(정산 대상) — 내원 + denormalized 표시 + 예상 총액(Σ fee_items 라이브). raw PII 제외.
 _BILLING_WORKLIST_COLUMNS = (
     "e.id as encounter_id, e.encounter_no, e.consult_started_at, e.status, "
@@ -4082,11 +4092,12 @@ async def _fetch_payment_details(
 
 
 async def build_payment(sub: UUID, encounter_id: UUID) -> dict[str, object]:
-    """수납 건 집계 빌드(진입 시 자동 집계, 멱등) — build_payment RPC 호출 후 헤더 + 라인 반환.
+    """수납 건 집계 + 본인부담 산정(진입 시 자동·멱등) — build_payment→price_payment 호출.
 
-    fee_items → payment_details 적재 + 헤더 롤업은 DB 함수가 원자적 수행(NFR-041). 재호출 시 신규
-    수가만 추가(unique 멱등). 미존재 내원 → 404, 권한 미보유 → 403(INSERT 직전 재평가 TOCTOU).
-    반환 = {헤더..., "details": [라인 dict...]} (서비스가 PaymentResponse 로 매핑).
+    집계(fee_items → payment_details 적재 + total/covered/non_covered 롤업·7.2)에 이어 본인부담
+    산정(라인 copay/insurer + 헤더 copay/insurer 롤업·7.3)을 동일 트랜잭션에서 수행(NFR-041). 두 RPC
+    모두 멱등(재호출 시 신규 수가만 집계 + 전 라인 재산정·미변경 no-op). 미존재 내원 → 404, 권한
+    (payment.manage) 미보유 → 403(INSERT 직전 재평가 TOCTOU·산정도 쓰기라 동일 게이트).
     """
 
     async def _op(conn: asyncpg.Connection) -> dict[str, object]:
@@ -4100,9 +4111,9 @@ async def build_payment(sub: UUID, encounter_id: UUID) -> dict[str, object]:
             )
         payment_id = await conn.fetchval("select public.build_payment($1)", encounter_id)
         assert payment_id is not None  # build_payment 는 항상 payment_id 반환(헤더 upsert)
-        header = await conn.fetchrow(
-            f"select {_PAYMENT_COLUMNS} from public.payments where id = $1", payment_id
-        )
+        # 집계에 이어 본인부담 산정(동일 txn — Story 7.3). draft 외/헤더 없음은 함수가 no-op 처리.
+        await conn.fetchval("select public.price_payment($1)", encounter_id)
+        header = await conn.fetchrow(f"{_PAYMENT_HEADER_SELECT} where id = $1", payment_id)
         assert header is not None
         details = await _fetch_payment_details(conn, payment_id)
         return {**dict(header), "details": [dict(r) for r in details]}
@@ -4119,7 +4130,7 @@ async def fetch_payment(sub: UUID, encounter_id: UUID) -> dict[str, object]:
 
     async def _op(conn: asyncpg.Connection) -> dict[str, object]:
         header = await conn.fetchrow(
-            f"select {_PAYMENT_COLUMNS} from public.payments where encounter_id = $1",
+            f"{_PAYMENT_HEADER_SELECT} where encounter_id = $1",
             encounter_id,
         )
         if header is None:
