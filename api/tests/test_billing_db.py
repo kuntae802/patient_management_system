@@ -3,15 +3,20 @@
 순수 DB 스토리: FastAPI 미경유. 실 Supabase 로컬 db 컨테이너에 psql 로 붙어 임상 이벤트가
 수가 항목(fee_items)을 원자적·멱등적으로 적재하는지 단언한다. test_orders_db 하니스 미러.
 
-검증(AC 매핑):
+검증(AC 매핑 — 5.10 + Story 7.1 갱신):
   · AC1/AC2: fee_items·fee_mappings 테이블·CHECK·unique(source_type, source_id) 존재
-  · AC3: 진찰 시작(start_consult, registered→in_progress) → 진찰료 1행(금액·분류 스냅샷)
-  · AC4: 검사 수행(perform_examination, ordered→performed) → 검사료 1행 / 판독 추가 적재 0
-  · AC5: 처치 수행(perform_treatment_order, ordered→performed) → 처치료 1행
-  · AC6: 멱등(insert_fee_item 재호출 1행) + 금액 스냅샷 불변(마스터 변경 후 보존)
-  · AC7: 처방 발행(issued) → fee_items 0(약제비 미적재 — 약가 부재)
-  · AC8: RLS — 직원(fee_item.read)=전체 / 환자=본인 내원 / nurse(미보유)=0 / anon=거부
-  · AC9: 적재가 actor 와 함께 audit_logs 기록(트리거가 RPC 호출자 컨텍스트 계승)
+  · AC3(7.1 초진/재진 동적): 첫 내원 → 초진 AA154(17610) / 과거 완료 내원 보유 → 재진 AA254(12590)
+  · AC4(7.1 만료수가 적재제외): 만료·비활성 수가 → insert_fee_item no-op(0행 적재 제외)
+  · AC5(7.1 amount CHECK): fee_items amount_krw <> quantity*unit_amount_krw → CHECK 위반(23514)
+  · 검사 수행(perform_examination, ordered→performed) → 검사료 1행 / 판독 추가 적재 0
+  · 처치 수행(perform_treatment_order, ordered→performed) → 처치료 1행
+  · 멱등(insert_fee_item 재호출 1행) + 금액 스냅샷 불변(마스터 변경 후 보존)
+  · 처방 발행(issued) → fee_items 0(약제비 원외 스코프아웃 — 약가 부재)
+  · RLS — 직원(fee_item.read)=전체 / 환자=본인 내원 / nurse(미보유)=0 / anon=거부
+  · 적재가 actor 와 함께 audit_logs 기록(트리거가 RPC 호출자 컨텍스트 계승)
+
+⚠️ Story 7.1 회귀: fee_on_encounter_start 초진/재진 동적 재정의 → 첫 내원 진찰료 = AA154 초진
+  (5.10 단일 AA254 재진 고정에서 변경). 재진 검증은 과거 완료 내원(full RPC 체인)을 선행 세팅한다.
 
 위생: 환자=dummy '\\x00'::bytea, 수가=시드 마스터(fee_schedules) 참조. 진찰/수행은 RPC 직접 호출.
 전부 begin/rollback 격리(커밋 없음 → flaky 0). uuid 는 Python 이 부여.
@@ -27,7 +32,10 @@ from tests.conftest import Psql
 
 _DEPT = "(select id from public.departments where lower(code) = 'im' limit 1)"
 # 시드 마스터 참조(0007/2.5 seed) — 수가는 마스터 FK 로만.
-# 진찰료=AA254(재진 12590)·imaging=HA201(흉부 9030)·lab=C3800(CBC 3500)·처치=M0030(드레싱 4500).
+# 진찰료=AA154(초진 17610)/AA254(재진 12590).
+# imaging=HA201(9030)·lab=C3800(3500)·처치=M0030(4500).
+_FEE_CONSULT_INITIAL = "(select id from public.fee_schedules where lower(code)='aa154' limit 1)"
+# 재진(직접 적재 헬퍼 테스트용)
 _FEE_CONSULT = "(select id from public.fee_schedules where lower(code)='aa254' limit 1)"
 _FEE_EXAM = {
     "lab": "(select id from public.fee_schedules where lower(code)='c3800' limit 1)",
@@ -36,7 +44,8 @@ _FEE_EXAM = {
 _FEE_TRT = "(select id from public.fee_schedules where lower(code)='m0030' limit 1)"
 
 # 적재 시점 스냅샷 기대값(seed.sql §EDI 수가 — 마스터 변경 전 현재값).
-_CONSULT_AMOUNT = "12590"
+_CONSULT_INITIAL_AMOUNT = "17610"  # 초진(첫 내원·7.1 동적)
+_CONSULT_AMOUNT = "12590"  # 재진(과거 완료 내원 보유)
 _EXAM_IMAGING_AMOUNT = "9030"
 _TRT_AMOUNT = "4500"
 
@@ -150,6 +159,34 @@ def _as_authenticated(uid: str) -> str:
 def _start_consult(eid: str, doctor: str) -> str:
     """진찰 시작 RPC(registered→in_progress) — 진찰료 트리거 발화. doctor=encounter.start 보유."""
     return _claims(doctor) + "select public.start_consult('" + eid + "');"
+
+
+def _primary_diagnosis_sql(eid: str, recorded_by: str) -> str:
+    """주상병 1개 부착(postgres) — complete_encounter 게이트(주상병 미지정 PT422) 충족(4.7).
+
+    시드 KCD I10 참조. test_encounters_db._primary_diagnosis_sql 미러."""
+    return (
+        "insert into public.encounter_diagnoses"
+        "(encounter_id, diagnosis_id, is_primary, recorded_by) "
+        "select '" + eid + "', d.id, true, '" + recorded_by + "' "
+        "from public.diagnoses d where lower(d.code)='i10' limit 1;"
+    )
+
+
+def _prior_completed_encounter(pid: str, eid: str, doctor: str) -> str:
+    """과거 완료 내원 1건(full RPC 체인: registered→in_progress→completed) — 재진 판정용 이력.
+
+    start_consult 가 이 내원에 초진료 적재(이 시점 이력 0=초진)하나 재진은 *새* 내원만 카운트.
+    종결 게이트(주상병)는 I10 부착으로 충족. doctor=encounter.start/complete 보유(seed 4.4/4.7)."""
+    return (
+        _encounter_sql(eid, pid, status="registered")
+        + _start_consult(eid, doctor)
+        + _primary_diagnosis_sql(eid, doctor)
+        + _claims(doctor)
+        + "select public.complete_encounter('"
+        + eid
+        + "');"
+    )
 
 
 def _perform_exam(xid: str, nurse: str) -> str:
@@ -292,8 +329,8 @@ def test_fee_mapping_unique_active_source_event(psql: Psql):
 # ── AC3: 진찰료 자동 적재 ──────────────────────────────────────────────────────
 
 
-def test_consult_start_accrues_consult_fee(psql: Psql, doctor_id: str):
-    """진찰 시작(registered→in_progress) → 진찰료 1행(금액·category·coverage·source 스냅샷)."""
+def test_first_visit_accrues_initial_consult_fee(psql: Psql, doctor_id: str):
+    """첫 내원(과거 완료 내원 0) → 초진 AA154(17610) 적재 — 7.1 초진/재진 동적 판정."""
     pid, eid = str(uuid.uuid4()), str(uuid.uuid4())
     out = psql.scalar(
         "begin;"
@@ -312,20 +349,44 @@ def test_consult_start_accrues_consult_fee(psql: Psql, doctor_id: str):
         "rollback;"
     )
     assert (
-        _verdict(out) == f"cnt=1|amt={_CONSULT_AMOUNT}|unit={_CONSULT_AMOUNT}|qty=1"
+        _verdict(out) == f"cnt=1|amt={_CONSULT_INITIAL_AMOUNT}|unit={_CONSULT_INITIAL_AMOUNT}|qty=1"
         "|cat=진찰료|cov=covered|src=encounter|sid=true"
     ), out
 
 
+def test_repeat_visit_accrues_repeat_consult_fee(psql: Psql, doctor_id: str):
+    """과거 완료 내원 보유 환자의 새 내원 → 재진 AA254(12590) 적재 — 7.1 초진/재진 동적 판정."""
+    pid = str(uuid.uuid4())
+    prior_eid, new_eid = str(uuid.uuid4()), str(uuid.uuid4())
+    out = psql.scalar(
+        "begin;"
+        + _patient_sql(pid)
+        + _prior_completed_encounter(pid, prior_eid, doctor_id)  # 과거 완료 내원 = 재진 근거
+        + _encounter_sql(new_eid, pid)
+        + _start_consult(new_eid, doctor_id)
+        + "select 'V:cnt='||count(*)::text"
+        "||'|amt='||coalesce(max(amount_krw)::text,'-')"
+        "||'|cat='||coalesce(max(category),'-')"
+        "||'|src='||coalesce(max(source_type),'-')"
+        "||'|sid='||coalesce(bool_and(source_id='" + new_eid + "'),false)::text "
+        "  from public.fee_items where encounter_id='" + new_eid + "';"
+        "rollback;"
+    )
+    assert _verdict(out) == f"cnt=1|amt={_CONSULT_AMOUNT}|cat=진찰료|src=encounter|sid=true", out
+
+
 def test_consult_start_no_mapping_is_noop(psql: Psql, doctor_id: str):
-    """활성 encounter_start 매핑이 없으면 진찰 시작해도 적재 0(no-op·예외 아님)."""
+    """활성 진찰 매핑이 전부 없으면 진찰 시작해도 적재 0(no-op·예외 아님).
+
+    7.1: 트리거가 initial/repeat 우선 후 encounter_start 폴백 → 세 매핑 모두 비활성화해야 no-op."""
     pid, eid = str(uuid.uuid4()), str(uuid.uuid4())
     out = psql.scalar(
         "begin;"
         + _patient_sql(pid)
         + _encounter_sql(eid, pid)
-        # 활성 진찰 매핑 비활성화(트랜잭션 내·rollback 으로 복구)
-        + "update public.fee_mappings set is_active=false where source_event='encounter_start';"
+        # 활성 진찰 매핑 3종 모두 비활성화(트랜잭션 내·rollback 으로 복구)
+        + "update public.fee_mappings set is_active=false where source_event in "
+        "('encounter_start','encounter_start_initial','encounter_start_repeat');"
         + _start_consult(eid, doctor_id)
         + "select 'V:'||count(*)::text from public.fee_items where encounter_id='"
         + eid
@@ -433,6 +494,69 @@ def test_fee_amount_snapshot_immutable(psql: Psql):
         "rollback;"
     )
     assert _verdict(out) == _CONSULT_AMOUNT, out
+
+
+# ── AC4(7.1): 만료·비활성 수가 적재 제외 ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        "update public.fee_schedules set is_active=false where lower(code)='aa254';",
+        "update public.fee_schedules set effective_to=current_date - 1 where lower(code)='aa254';",
+        "update public.fee_schedules set effective_from=current_date+1 where lower(code)='aa254';",
+    ],
+    ids=["inactive", "expired", "not_yet_effective"],
+)
+def test_insert_fee_item_skips_non_current_fee(psql: Psql, mutate: str):
+    """insert_fee_item 직접 호출: 비활성·만료·미발효 fee_schedule → 적재 0(현재 유효 술어·7.1)."""
+    pid, eid = str(uuid.uuid4()), str(uuid.uuid4())
+    out = psql.scalar(
+        "begin;"
+        + _patient_sql(pid)
+        + _encounter_sql(eid, pid)
+        + mutate
+        + _insert_fee_item(eid, _FEE_CONSULT, "encounter", eid)
+        + "select 'V:'||count(*)::text from public.fee_items where encounter_id='"
+        + eid
+        + "';"
+        "rollback;"
+    )
+    assert _verdict(out) == "0", out
+
+
+def test_expired_consult_fee_not_accrued_via_trigger(psql: Psql, doctor_id: str):
+    """첫 내원 초진 대상 AA154 가 만료면 start_consult 해도 진찰료 적재 0(적재 시점 검증·7.1)."""
+    pid, eid = str(uuid.uuid4()), str(uuid.uuid4())
+    out = psql.scalar(
+        "begin;"
+        + _patient_sql(pid)
+        + _encounter_sql(eid, pid)
+        + "update public.fee_schedules set effective_to=current_date - 1 where lower(code)='aa154';"
+        + _start_consult(eid, doctor_id)
+        + "select 'V:'||count(*)::text from public.fee_items where encounter_id='"
+        + eid
+        + "';"
+        "rollback;"
+    )
+    assert _verdict(out) == "0", out
+
+
+# ── AC5(7.1): fee_items amount 정합 CHECK ──────────────────────────────────────
+
+
+def test_fee_item_amount_calc_check(psql: Psql):
+    """fee_items amount_krw <> quantity*unit_amount_krw 직접 INSERT → CHECK 위반(23514·7.1)."""
+    pid, eid, sid = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    op = (
+        "insert into public.fee_items"
+        "(encounter_id, fee_schedule_id, source_type, source_id, "
+        " quantity, unit_amount_krw, amount_krw, coverage_type) "
+        f"values ('{eid}',{_FEE_CONSULT},'encounter','{sid}',2,100,150,'covered');"  # 2*100=200≠150
+    )
+    _assert_sqlstate(
+        psql, setup=_patient_sql(pid) + _encounter_sql(eid, pid), op=op, sqlstate="23514"
+    )
 
 
 # ── AC7: 약제비 미적재(약가 부재) ─────────────────────────────────────────────
