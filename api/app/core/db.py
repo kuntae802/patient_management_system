@@ -4342,6 +4342,42 @@ async def finalize_payment(sub: UUID, encounter_id: UUID, payment_method: str) -
     return await _run_authed(sub, _op)
 
 
+async def prepay_payment(
+    sub: UUID, encounter_id: UUID, amount_krw: int, payment_method: str
+) -> dict[str, object]:
+    """선결제(선수납) — 선결제액 누적 + billing_type prepaid 전환(Story 7.8·FR-117·NFR-041).
+
+    한 트랜잭션에서: 권한 재평가(payment.manage) → 내원 존재검사(404) → build_payment(신선 집계·
+    registered 수가 0 no-op) → price_payment(no-op) → prepay_payment(paid 누적 +
+    billing_type='prepaid'·draft 유지). 모든 RPC 동일 txn = 원자(롤백). 선결제는 내원 상태 전이
+    없음(완료는 finalize). 이미 finalized/cancelled → PT409, 금액≤0 → PT409(Pydantic 1차),
+    권한 미보유 → 403(_require_payment_manage 동일-txn 재평가·build_payment 동형).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        await _require_payment_manage(conn)
+        exists = await conn.fetchval(
+            "select true from public.encounters where id = $1", encounter_id
+        )
+        if exists is None:
+            raise NotFoundError(
+                "내원을 찾을 수 없습니다.", detail={"encounter_id": str(encounter_id)}
+            )
+        # 선결제 직전 build→price 재실행(신선 집계·산정). registered 에선 수가 0 → 헤더만(no-op).
+        await conn.fetchval("select public.build_payment($1)", encounter_id)
+        await conn.fetchval("select public.price_payment($1)", encounter_id)
+        payment_id = await conn.fetchval(
+            "select public.prepay_payment($1, $2, $3)", encounter_id, amount_krw, payment_method
+        )
+        assert payment_id is not None  # prepay_payment 는 성공 시 payment_id 반환(실패는 raise)
+        header = await conn.fetchrow(f"{_PAYMENT_HEADER_SELECT} where id = $1", payment_id)
+        assert header is not None
+        details = await _fetch_payment_details(conn, payment_id)
+        return {**dict(header), "details": [dict(r) for r in details]}
+
+    return await _run_authed(sub, _op)
+
+
 async def fetch_payment(sub: UUID, encounter_id: UUID) -> dict[str, object]:
     """한 내원의 수납 건 조회(헤더 + 라인). 빌드 전(헤더 없음) → 404. 게이트=라우터 payment.read.
 
@@ -4475,24 +4511,27 @@ async def fetch_billing_worklist(
     page: int = 1,
     page_size: int = 200,
 ) -> tuple[list[asyncpg.Record], int]:
-    """수납 워크리스트(정산 대상 내원 — in_progress·오늘·진료과 무관) + 전체 건수(Story 7.2).
+    """수납 워크리스트(정산 대상 — registered/in_progress·오늘·진료과 무관) + 전체 건수(7.2/7.8).
 
     원무는 병원 단위 정산 → 진료과 미스코프(대기 현황판과 달리 department_id 필터 없음). 일자는
-    created_at 의 KST 날짜(fetch_encounters 미러). estimated_total = Σ fee_items(라이브 프리뷰).
-    정렬 = 진찰 시작순(정산 흐름). 게이트=라우터 payment.read(읽기 TOCTOU 저위험). 반환 (행, total).
+    created_at 의 KST 날짜(fetch_encounters 미러). estimated_total = Σ fee_items(라이브·registered
+    는 0). 7.8: registered(선수납 가능)도 포함(상태 칩 구분). 정렬 = 진찰순(registered 는 nulls
+    last). 게이트=라우터 payment.read(읽기 TOCTOU 저위험). 반환 (행, total).
     """
+    # 선수납(7.8): registered(접수 후·진찰 전)도 정산 대상 포함 — 선결제 진입점(상태 칩으로 구분).
+    #   registered 는 consult_started_at NULL → nulls last 로 진찰 시작순 뒤에 자연 정렬.
     list_sql = (
         f"select {_BILLING_WORKLIST_COLUMNS} from public.encounters e "
         "join public.patients p on p.id = e.patient_id "
         "join public.departments d on d.id = e.department_id "
-        "where e.status = 'in_progress' and e.is_active = true "
+        "where e.status in ('registered', 'in_progress') and e.is_active = true "
         "and (e.created_at at time zone 'Asia/Seoul')::date = $1 "
         "order by e.consult_started_at asc nulls last, e.encounter_no asc "
         "limit $2 offset $3"
     )
     count_sql = (
         "select count(*) from public.encounters e "
-        "where e.status = 'in_progress' and e.is_active = true "
+        "where e.status in ('registered', 'in_progress') and e.is_active = true "
         "and (e.created_at at time zone 'Asia/Seoul')::date = $1"
     )
     offset = (page - 1) * page_size

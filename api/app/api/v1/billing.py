@@ -22,6 +22,7 @@ from app.schemas.billing import (
     BillingWorklistPage,
     DocumentExportRequest,
     PaymentFinalizeRequest,
+    PaymentPrepayRequest,
     PaymentResponse,
     ReceiptResponse,
 )
@@ -70,6 +71,23 @@ async def get_payment(
 ) -> PaymentResponse:
     """한 내원의 수납 건 조회(헤더 + 라인). 게이트 payment.read. 빌드 전(미집계) → 404."""
     return await billing_service.get_payment(user.sub, encounter_id)
+
+
+@router.post("/encounters/{encounter_id}/payment/prepay", response_model=PaymentResponse)
+async def prepay_payment(
+    encounter_id: UUID,
+    body: PaymentPrepayRequest,
+    user: CurrentUser = Depends(require_payment_manage),
+) -> PaymentResponse:
+    """선결제(선수납) — 선결제액 누적 + billing_type prepaid 전환(Story 7.8). 게이트 payment.manage.
+
+    진료 전(registered)·진료 중(in_progress)의 draft 수납에 본인부담 추정액을 미리 받아
+    paid_amount_krw 에 누적한다(단일 누계). 액션 엔드포인트(status PATCH 아님·내원 상태 전이 없음 —
+    완료는 finalize 가 트리거). 진료 후 차액(copay-paid)은 finalize 가 정산. 이미 결제/취소 또는
+    금액≤0 → 409, 미존재 내원 → 404, 권한 미보유 → 403. 신원 재진술 confirm 은 웹(클라 가드)."""
+    return await billing_service.prepay_payment(
+        user.sub, encounter_id, body.amount_krw, body.payment_method
+    )
 
 
 @router.post("/encounters/{encounter_id}/payment/finalize", response_model=PaymentResponse)

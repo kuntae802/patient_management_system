@@ -14,7 +14,7 @@ from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PaymentDetailItem(BaseModel):
@@ -84,6 +84,20 @@ class PaymentFinalizeRequest(BaseModel):
     본인부담금(copay_amount_krw) 전액 자동(paid_amount_krw) — 선/부분수납은 7.8 소관.
     """
 
+    payment_method: Literal["card", "cash", "transfer"]
+
+
+class PaymentPrepayRequest(BaseModel):
+    """선결제(선수납) 요청(Story 7.8) — 선결제 금액 + 결제 수단.
+
+    후수납(기본)과 달리 진료 전(registered)·진료 중(in_progress)에 본인부담 추정액을 미리 받는다.
+    amount_krw = 선결제액(KRW 정수·gt=0 1차 검증 422·DB 최종선). 누적은 단일 누계 paid_amount_krw
+    (별도 행 아님·7.1 의도). 진료 후 차액(copay-paid)은 finalize 가 정산. billing_type→prepaid 전환.
+    """
+
+    # 선결제액(>0·상한 1억원). 상한 = int4 overflow(paid 누적) + fat-finger 방어 → 초과 시
+    #   클린 422(미상한 시 거대 금액 DB int4 초과 → 22003 unmapped → 503). 10원 단위 강제 미적용.
+    amount_krw: int = Field(gt=0, le=100_000_000)
     payment_method: Literal["card", "cash", "transfer"]
 
 

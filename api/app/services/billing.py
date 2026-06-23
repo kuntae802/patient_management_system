@@ -42,6 +42,17 @@ async def get_payment(sub: UUID, encounter_id: UUID) -> PaymentResponse:
     return _to_payment(row)
 
 
+async def prepay_payment(
+    sub: UUID, encounter_id: UUID, amount_krw: int, payment_method: str
+) -> PaymentResponse:
+    """선결제(선수납) — 선결제액 누적 + billing_type prepaid 전환(Story 7.8·FR-117).
+
+    build→price→prepay 원자(NFR-041). 미존재 내원 → 404, 권한(payment.manage) 미보유 → 403, 이미
+    finalized/cancelled 또는 금액≤0 → 409(db/DB 가 검증·raise). 진료 후 차액은 finalize."""
+    row = await db.prepay_payment(sub, encounter_id, amount_krw, payment_method)
+    return _to_payment(row)
+
+
 async def finalize_payment(sub: UUID, encounter_id: UUID, payment_method: str) -> PaymentResponse:
     """수납 finalize(결제 기록 + 내원 완료) — build→price→finalize→complete 원자(FR-112·NFR-041).
 
