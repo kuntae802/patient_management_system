@@ -44,8 +44,8 @@
 | `appointment` | 예약 | 슬롯 기반 |
 | `doctor_schedule` | 근무표 | 요일·시간대·진료실 |
 | `doctor_time_off` | 휴진/예외 | 휴가·학회 |
-| `payment` | 수납 | 헤더 — `payments`(0045·7.1)·내원 1:1(encounter_id UNIQUE)·status draft/finalized/cancelled·billing_type postpaid/prepaid·금액 집계 컬럼은 7.2 집계/7.3 산정/7.4 결제가 채움 |
-| `payment_detail` | 수납상세 | 라인 항목 — `payment_details`(0045·7.1)·payment 1:N(ON DELETE CASCADE)·`fee_item_id` 집계원·스냅샷(code·name·금액·coverage)·`unique(payment_id,fee_item_id)`·`amount=qty*unit`·7.2 가 fee_items 집계 적재 |
+| `payment` | 수납 | 헤더 — `payments`(0045·7.1)·내원 1:1(encounter_id UNIQUE)·status draft/finalized/cancelled·billing_type postpaid/prepaid·금액 집계 컬럼은 7.2 집계(`build_payment` 0046·total/covered/non_covered)/7.3 산정/7.4 결제가 채움 |
+| `payment_detail` | 수납상세 | 라인 항목 — `payment_details`(0045·7.1)·payment 1:N(ON DELETE CASCADE)·`fee_item_id` 집계원·스냅샷(code·name·금액·coverage)·`unique(payment_id,fee_item_id)`·`amount=qty*unit`·**7.2 `build_payment`(0046)가 fee_items→payment_details 멱등 집계 적재** |
 | `notification_log` | 알림로그 | SMS 시뮬 발송이력 |
 
 ## 식별 번호 · 민감정보
@@ -638,3 +638,18 @@
 | `fee_items` amount CHECK(0045) | 제약 | `check(amount_krw=quantity*unit_amount_krw)` 소급 추가(5.10 이월 흡수·quantity=1 기존 행 충족·무회귀) |
 
 > **수납 스키마 경계(Story 7.1 확정):** **신규 마이그 1건(0045)·신규 권한 1(payment.read)·admin 부트 grant 재실행.** 순수 DB 토대 스토리(5.10/5.1 동형·운영 코드 0). **설계 결정(사용자 확정)**: ① 초진/재진=동적 판정(이력 유무)·30일 재진규칙/진료과 가산=이월 ② 본인부담=보험유형별(컬럼만·산정 로직 7.3) ③ 약제비=원외처방 스코프아웃(처방 발행 fee_item 0·drugs 약가 컬럼 미추가). **5.10 이월 2건 흡수**: 만료수가 적재제외(insert_fee_item)·amount CHECK(fee_items+payment_details). **이월 지속(만기 아님)**: 종결 내원 수가 적재 게이트·앱 낙관적 잠금·is_active soft-delete=DB 최종선. **미구현(후속)**: 집계(fee_items→payment_details)=7.2·본인부담 산정=7.3·finalize/결제/complete_encounter=7.4·진료비 문서=7.5~7.7.
+
+## 수납 건 생성 · 집계 (Story 7.2, `0046_payment_aggregation.sql`)
+
+> ⚠️ **마이그 번호 0046**: Epic 7 블록 0045~0059(0045 다음). **Epic 7 첫 풀스택 소비 스토리**(7.1 순수 DB 토대 → DB집계함수+FastAPI+Next.js). **설계 결정(사용자 확정 2026-06-23·AskUserQuestion)**: ① 집계 영속=**진입 시 자동 집계**(수납 상세 진입 시 `build_payment` 멱등 호출·draft 영속) ② 쓰기 권한=**`payment.manage` 신규**(reception·7.4 finalize 공유) ③ 진입=**워크리스트→상세**.
+
+| 식별자 | 종류 | 의미 |
+|---|---|---|
+| `build_payment` | 함수(0046·SECURITY DEFINER) | 한 내원의 자동발생 수가(`fee_items`)를 draft 수납 건으로 **멱등 집계**: 헤더 upsert(내원 1:1)→status≠draft early return→`fee_items` JOIN `fee_schedules`(code/name 스냅샷)로 `payment_details` 적재(`on conflict (payment_id,fee_item_id) do nothing`)→헤더 롤업(total/covered/non_covered). copay/insurer 롤업=7.3·결제=7.4. `revoke all from public,anon,authenticated`+`grant execute to service_role`(쓰기 위조 차단) |
+| `payment.manage` | 권한(0046 신규) | 수납 쓰기(집계 빌드 7.2·finalize 7.4 공유) — **admin 부트 grant 재실행**(회귀 회피)·**reception seed grant**(수납 정산 직무)·403 baseline=doctor·nurse. 의사는 `payment.read` 조회만 |
+| `POST /v1/encounters/{id}/payment` | 엔드포인트(billing.py) | 집계 빌드(진입 시 자동 집계·멱등) → `build_payment` 호출·헤더+라인 반환. 게이트 payment.manage·미존재 내원 404 |
+| `GET /v1/encounters/{id}/payment` | 엔드포인트 | 수납 건 조회(헤더+라인). 게이트 payment.read·빌드 전 404 |
+| `GET /v1/billing/worklist` | 엔드포인트 | 수납 워크리스트(정산 대상=오늘 in_progress 내원·진료과 무관)·`estimated_total_krw`=Σ fee_items 라이브. 게이트 payment.read·`{data,meta}` |
+| `/reception/billing[/{encounterId}]` | 화면(Next.js) | 수납 워크리스트(목록) → 집계 상세(헤더 요약 총/급여/비급여 + **"자동 산정" teal 마커**·분류별 라인·pay-chip·"자동" 마커). nav 엔트리 기존(staff-nav·reception). 데이터 패칭=useState/apiFetch(TanStack 미사용) |
+
+> **집계 경계(Story 7.2 확정):** **신규 마이그 1건(0046)·신규 권한 1(payment.manage)·admin 부트 grant 재실행.** Epic 7 첫 풀스택 슬라이스(DB 함수+FastAPI billing.py+Next.js). 집계 로직=**`build_payment` DB 함수 소유**(project-context "수가/정산 로직=DB"·FastAPI 오케스트레이션만). **7.2 채움=total/covered/non_covered 롤업**(deferred-work L366 흡수·`total=covered+non_covered`). **미구현(후속)**: 본인부담 산정(copay/insurer 롤업)=7.3·finalize/결제/`complete_encounter`/신원 재진술=7.4·진료비 문서=7.5~7.7·취소노쇼 정산=7.9·부분수행=7.10.
