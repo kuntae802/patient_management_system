@@ -10,6 +10,7 @@ from app.api.v1 import (
     admin,
     auth,
     billing,
+    dashboard,
     encounters,
     masters,
     nursing,
@@ -51,3 +52,6 @@ api_router.include_router(scheduling.router)
 
 # 수납 집계·조회(Story 7.2). 경로: /…/encounters/{id}/payment · /…/billing/worklist
 api_router.include_router(billing.router)
+
+# 운영 대시보드 통계(Story 8.5). 외부 경로: /…/api/v1/dashboard/operations
+api_router.include_router(dashboard.router)

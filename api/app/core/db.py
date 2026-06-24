@@ -23,7 +23,7 @@ import re
 import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -4781,5 +4781,122 @@ async def fetch_billing_worklist(
         rows = await conn.fetch(list_sql, on_date, page_size, offset)
         total = int(await conn.fetchval(count_sql, on_date) or 0)
         return rows, total
+
+    return await _run_authed(sub, _op)
+
+
+# ── 운영 대시보드 집계(Story 8.5 · FR-230) — 일별 내원·대기·매출·노쇼율 ──────────────
+# 복잡 집계는 FastAPI 가 담당(architecture L193) — 다중 테이블·KST 일자 그룹·파생 비율을 서비스
+# 계층 SQL 로 조립. service_role 경로라 RLS 우회 → clinic-wide 전체(의도된 관리자 운영 범위), 권위는
+# 라우터 require_permission('dashboard.read')(읽기 TOCTOU 저위험·billing worklist·staff directory
+# 동일 방어심층 — 동일 txn 권한 재평가 불요). 모든 일자 그룹 = (col at time zone 'Asia/Seoul')::date
+# (timestamptz=UTC → KST 귀속). 매출 = Σ(paid − refunded)(7.9 refunded 첫 소비처). read-only.
+
+# 당일 스냅샷의 encounters 상태 카운트(visits 는 시리즈에서 재사용 → 여기선 waiting/in_progress/
+# completed 만). **세 카운트 모두 `registered_at` KST=당일(실내원 코호트) 기준** →
+# waiting+in_progress+completed = visits 불변식 보장(completed_at 으로 끊으면 자정 넘김 시
+# "완료 > 내원" 모순 → 회피). 의미="당일 내원분 중 현재 대기/진료중/완료". 과거일 질의 시
+# 대기/진료중은 ~0 으로 수렴(현재 status 기준·문서화된 수용 단순화).
+_DASHBOARD_SNAPSHOT_SQL = (
+    "select "
+    "count(*) filter (where status='registered' "
+    "and (registered_at at time zone 'Asia/Seoul')::date = $1) as waiting, "
+    "count(*) filter (where status='in_progress' "
+    "and (registered_at at time zone 'Asia/Seoul')::date = $1) as in_progress, "
+    "count(*) filter (where status='completed' "
+    "and (registered_at at time zone 'Asia/Seoul')::date = $1) as completed "
+    "from public.encounters where is_active = true"
+)
+
+# 일별 내원 수(실내원 = registered/in_progress/completed · registered_at KST 일자). 취소·노쇼·
+# scheduled(예약대기)는 미내원 → 제외. 윈도우 [start, on_date] 그룹.
+_DASHBOARD_VISITS_SERIES_SQL = (
+    "select (registered_at at time zone 'Asia/Seoul')::date as d, count(*) as visits "
+    "from public.encounters "
+    "where is_active = true and status in ('registered','in_progress','completed') "
+    "and registered_at is not null "
+    "and (registered_at at time zone 'Asia/Seoul')::date between $1 and $2 "
+    "group by 1"
+)
+
+# 일별 순수납액 = Σ(paid_amount_krw − coalesce(refunded_amount_krw,0)) · finalized 만 · finalized_at
+# KST 일자. 환급(7.9)을 차감해 순매출(원 finalize 일자에 귀속 = 데모 단순화).
+_DASHBOARD_REVENUE_SERIES_SQL = (
+    "select (finalized_at at time zone 'Asia/Seoul')::date as d, "
+    "coalesce(sum(paid_amount_krw - coalesce(refunded_amount_krw, 0)), 0) as revenue "
+    "from public.payments "
+    "where status = 'finalized' and finalized_at is not null "
+    "and (finalized_at at time zone 'Asia/Seoul')::date between $1 and $2 "
+    "group by 1"
+)
+
+# 일별 노쇼 = appointments.status='no_show'(단일 진실·0036) · scheduled_start KST 일자. 분모 = 슬롯
+# 도래분(no_show + completed) — cancelled(능동 취소)·booked(미도래) 제외.
+_DASHBOARD_NOSHOW_SERIES_SQL = (
+    "select (scheduled_start at time zone 'Asia/Seoul')::date as d, "
+    "count(*) filter (where status = 'no_show') as no_show, "
+    "count(*) filter (where status in ('no_show','completed')) as total "
+    "from public.appointments "
+    "where (scheduled_start at time zone 'Asia/Seoul')::date between $1 and $2 "
+    "group by 1"
+)
+
+
+def _no_show_rate(no_show: int, total: int) -> float:
+    """노쇼율(0~1) — 분모 0 → 0.0(나눗셈 오류 방지). 소수 4자리 반올림(긴 부동소수 차단)."""
+    if total <= 0:
+        return 0.0
+    return round(no_show / total, 4)
+
+
+async def fetch_dashboard_operations(
+    sub: UUID, *, on_date: date, days: int
+) -> dict[str, object]:
+    """운영 대시보드 집계(Story 8.5) — 당일 스냅샷 + 최근 days 일 추세(KST 기준).
+
+    반환 dict: {as_of_date, today:{visits,waiting,in_progress,completed,revenue_net_krw,
+    no_show_rate,no_show_count,appointment_total}, daily_series:[{date,visits,revenue_net_krw,
+    no_show_rate,no_show_count}...]}(오래된→최신). 게이트=라우터(dashboard.read). 빈 날=0 안전.
+    """
+    start_date = on_date - timedelta(days=days - 1)
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        snap = await conn.fetchrow(_DASHBOARD_SNAPSHOT_SQL, on_date)
+        visits_rows = await conn.fetch(_DASHBOARD_VISITS_SERIES_SQL, start_date, on_date)
+        revenue_rows = await conn.fetch(_DASHBOARD_REVENUE_SERIES_SQL, start_date, on_date)
+        noshow_rows = await conn.fetch(_DASHBOARD_NOSHOW_SERIES_SQL, start_date, on_date)
+
+        visits_map = {r["d"]: int(r["visits"]) for r in visits_rows}
+        revenue_map = {r["d"]: int(r["revenue"]) for r in revenue_rows}
+        noshow_map = {r["d"]: (int(r["no_show"]), int(r["total"])) for r in noshow_rows}
+
+        # 윈도우 [start_date, on_date] 를 일자 누락 없이 오름차순으로 채운다(빈 날=0).
+        series: list[dict[str, object]] = []
+        cursor = start_date
+        while cursor <= on_date:
+            ns, total = noshow_map.get(cursor, (0, 0))
+            series.append(
+                {
+                    "date": cursor,
+                    "visits": visits_map.get(cursor, 0),
+                    "revenue_net_krw": revenue_map.get(cursor, 0),
+                    "no_show_count": ns,
+                    "no_show_rate": _no_show_rate(ns, total),
+                }
+            )
+            cursor += timedelta(days=1)
+
+        today_ns, today_total = noshow_map.get(on_date, (0, 0))
+        today = {
+            "visits": visits_map.get(on_date, 0),
+            "waiting": int(snap["waiting"]) if snap else 0,
+            "in_progress": int(snap["in_progress"]) if snap else 0,
+            "completed": int(snap["completed"]) if snap else 0,
+            "revenue_net_krw": revenue_map.get(on_date, 0),
+            "no_show_count": today_ns,
+            "appointment_total": today_total,
+            "no_show_rate": _no_show_rate(today_ns, today_total),
+        }
+        return {"as_of_date": on_date, "today": today, "daily_series": series}
 
     return await _run_authed(sub, _op)
