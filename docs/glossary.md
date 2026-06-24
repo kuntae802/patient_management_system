@@ -306,7 +306,7 @@
 | 식별자 | 종류 | 의미·계약 |
 |---|---|---|
 | `prescriptions` / `prescription_details` | 테이블(0015) | 처방전 헤더(1:N·`encounter_id`·`encounter_diagnosis_id` 근거 진단 FR-051 nullable·`status` issued→dispensed·`ordered_by` 발행의사) + 처방상세 라인(`drug_id` 약품 마스터 FK·`dose`·`frequency`·`duration_days`·`usage_instruction` — free-text 약품 차단의 구조적 강제) |
-| `examinations` | 테이블(0015·0020) | 검사·영상 오더(`exam_type` lab/imaging 워크리스트 라우팅 FR-061·`fee_schedule_id` EDI 행위 FK·`status` ordered→performed→completed·지시/수행/판독 `*_by`+`*_at`·`equipment_id` 촬영 배정 nullable). 판독 소견 = `findings`·`reading_conclusion`(0020·5.9·자유텍스트·감사 마스킹) |
+| `examinations` | 테이블(0015·0020·0055) | 검사·영상 오더(`exam_type` lab/imaging 워크리스트 라우팅 FR-061·`fee_schedule_id` EDI 행위 FK·`status` ordered→performed→completed·지시/수행/판독 `*_by`+`*_at`·`equipment_id` 촬영 배정 nullable). 판독 소견 = `findings`·`reading_conclusion`(0020·5.9·자유텍스트·감사 마스킹·**환자 비노출**). 환자 포털 결과 = `patient_result_summary`·`patient_result_flag`(0055·8.2·FR-121·쉬운 말 요약 + 정상/주의 플래그 normal\|attention·nullable·없으면 안내 폴백·값=판독의/seed 소유·**마스킹 제외**=환자 노출용 큐레이션·diagnoses.patient_friendly_note 동형) |
 | `treatment_orders` | 테이블(0015) | 처치 오더(`fee_schedule_id` 행위 FK·`status` ordered→performed→completed·지시/수행 추적). 수행 내용·간호기록은 5.7 `nursing_record` 별도 |
 | `equipment` | 테이블(0015) | 검사장비 마스터(`code`·`name`·`modality`·`status` available/in_use/maintenance — 상태머신 아님). 전역 참조 RLS(rooms 미러). 5.8 목록·상태 FR-103 |
 | `enforce_prescription_transition` / `enforce_act_order_transition` | 트리거 함수(0015) | 전이 매트릭스 강제(INSERT 초기상태 가드 + UPDATE 매트릭스). 검사·처치 공용(act 함수). 위반 `PT409`. 0010 `enforce_encounter_transition` 패턴 |
