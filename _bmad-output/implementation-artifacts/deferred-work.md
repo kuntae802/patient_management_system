@@ -467,3 +467,8 @@
 > 3레이어 적대적 리뷰(Blind·Edge·Auditor) 결과 patch 2(적용)·decision-needed 0·defer 1·dismiss ~17. AC1~10 전부 SATISFIED·설계 결정 4건 준수. 아래는 미래 스코프로 미룬 항목.
 
 - **refunded_amount_krw 리포팅 소비처 없음** [api/app/core/db.py·payments.refunded_amount_krw] — 7.9 가 추가한 환급액 컬럼이 현재 write-only다. 순납부(paid − refunded = 0)·환급 총계를 읽는 리포팅/대시보드 쿼리가 없어 컬럼의 "환급 근거·리포팅" 의도(설계 결정 ②)가 아직 소비되지 않는다. 영수증/문서는 환급 개념 미표기(법정 서식·7.8 defer 계승). **환급 리포팅·환급 총계·일별 환급 현황=Epic 8 운영 대시보드 스코프**(FR-230 매출/통계). 컬럼·감사는 영속되므로 데이터 손실 없음·소비만 미래. Blind Low.
+
+## Deferred from: code review of 8-5-운영-대시보드-통계-관리자 (2026-06-26)
+
+- 과거일 `waiting`/`in_progress` 스냅샷은 현재 status 기준으로 산정돼 과거 일자 조회 시 ~0 으로 수렴(그날의 대기 수도, 현재 대기 수도 아닌 혼합 의미). 이미 스토리 Dev Notes·glossary 에 "대기/진료중=now 스냅샷·과거일 0 근사" 수용 단순화로 문서화. UI 컴포넌트는 항상 date 미지정(=서버 KST 오늘)으로만 조회하므로 실 사용 경로에서는 미발현. 후속에 날짜 피커가 추가되면 과거일 스냅샷을 `N/A`(또는 as_of_date=오늘 고정)로 표기 검토. (Edge Case Hunter Med / Blind Hunter Med)
+- 일별 집계 SQL 의 일자 그룹이 `(col at time zone 'Asia/Seoul')::date` 함수 표현식이라 `registered_at`/`finalized_at`/`scheduled_start` 의 일반 timestamptz 인덱스를 사용하지 못함 → 데이터 누적 시 풀스캔 + per-row 타임존 변환. 데모 규모 무해. 성능 최적화(표현식 인덱스 등)는 아키텍처상 Post-MVP. 필요 시 `0056_*` 마이그레이션으로 표현식 인덱스 추가 검토. (Blind Hunter Low)
