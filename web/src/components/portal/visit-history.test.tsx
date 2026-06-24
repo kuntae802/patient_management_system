@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { VisitHistory } from "@/components/portal/visit-history";
@@ -17,6 +18,11 @@ vi.mock("@/lib/patient/records", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/patient/records")>();
   return { ...actual, fetchSelfEncounters: vi.fn() };
 });
+// 펼침 상세 조회만 모킹(formatDosage·RESULT_FLAG_META 등 표시 헬퍼는 실제 유지 — 부분 모킹).
+vi.mock("@/lib/patient/encounter-detail", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/patient/encounter-detail")>();
+  return { ...actual, fetchSelfEncounterDetail: vi.fn() };
+});
 vi.mock("next/link", () => ({
   default: ({ children, href }: { children: React.ReactNode; href: string }) => (
     <a href={href}>{children}</a>
@@ -24,10 +30,12 @@ vi.mock("next/link", () => ({
 }));
 
 import { apiFetch } from "@/lib/api/client";
+import { fetchSelfEncounterDetail } from "@/lib/patient/encounter-detail";
 import { fetchSelfEncounters } from "@/lib/patient/records";
 
 const mockApiFetch = vi.mocked(apiFetch);
 const mockFetchEncounters = vi.mocked(fetchSelfEncounters);
+const mockFetchDetail = vi.mocked(fetchSelfEncounterDetail);
 
 function card(overrides: Partial<PatientEncounterCard>): PatientEncounterCard {
   return {
@@ -148,5 +156,69 @@ describe("VisitHistory", () => {
     expect(cta).toBeInTheDocument();
     expect(cta.closest("a")).toHaveAttribute("href", "/onboarding");
     expect(mockFetchEncounters).not.toHaveBeenCalled();
+  });
+
+  // ── Story 8.2: 카드 펼침 → 처방·검사 상세 지연 로드 ──────────────────────────
+
+  it("완료 카드 펼침: 지연 로드 후 처방·검사 결과 표시(aria-expanded 토글)", async () => {
+    const user = userEvent.setup();
+    mockApiFetch.mockResolvedValue({ name: "이수진" });
+    mockFetchEncounters.mockResolvedValue([card({})]);
+    mockFetchDetail.mockResolvedValue({
+      prescriptions: [
+        {
+          drug_name: "노바스크정5밀리그람(암로디핀)",
+          unit: "정",
+          dose: 1,
+          frequency: "1일 1회",
+          usage_instruction: "아침 식후",
+          duration_days: 28,
+          coverage_type: "covered",
+        },
+      ],
+      examinations: [
+        {
+          exam_name: "일반혈액검사(CBC)",
+          exam_type: "lab",
+          status: "completed",
+          patient_result_summary: "피검사 수치가 모두 정상 범위예요.",
+          patient_result_flag: "normal",
+          completed_at: "2026-06-19T06:00:00Z",
+        },
+      ],
+    });
+
+    render(<VisitHistory />);
+
+    const toggle = await screen.findByRole("button", { name: /처방·검사 결과 보기/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(mockFetchDetail).not.toHaveBeenCalled(); // 펼치기 전엔 미호출(지연 로드)
+
+    await user.click(toggle);
+
+    expect(await screen.findByText(/노바스크정5밀리그람/)).toBeInTheDocument();
+    expect(screen.getByText("1일 1회, 아침 식후, 1정")).toBeInTheDocument();
+    expect(screen.getByText("일반혈액검사(CBC)")).toBeInTheDocument();
+    expect(screen.getByText("정상")).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(mockFetchDetail).toHaveBeenCalledTimes(1);
+
+    // 접기 → 다시 펼쳐도 재요청 없음(상태 캐시).
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await user.click(toggle);
+    expect(mockFetchDetail).toHaveBeenCalledTimes(1);
+  });
+
+  it("취소 카드: 펼침 토글 없음(임상 활동 없는 내원)", async () => {
+    mockApiFetch.mockResolvedValue({ name: "이수진" });
+    mockFetchEncounters.mockResolvedValue([
+      card({ status: "cancelled", consult_started_at: null, cancel_reason: "본인 사정", primary_diagnosis_name: null }),
+    ]);
+
+    render(<VisitHistory />);
+
+    await screen.findByText("취소");
+    expect(screen.queryByRole("button", { name: /처방·검사 결과 보기/ })).not.toBeInTheDocument();
   });
 });
