@@ -57,6 +57,15 @@ describe("filterNav", () => {
     expect(labels(filterNav(STAFF_NAV, "nurse", () => true))).not.toContain("판독");
   });
 
+  it("운영/대시보드(Story 8.5)는 admin + dashboard.read 일 때만 노출", () => {
+    const withPerm = labels(filterNav(STAFF_NAV, "admin", (p) => p === "dashboard.read"));
+    expect(withPerm).toContain("운영/대시보드");
+    const noPerm = labels(filterNav(STAFF_NAV, "admin", () => false));
+    expect(noPerm).not.toContain("운영/대시보드"); // dashboard.read 필요
+    // 관리 메뉴라 타 역할 미노출(교차 오염 0)
+    expect(labels(filterNav(STAFF_NAV, "doctor", () => true))).not.toContain("운영/대시보드");
+  });
+
   it("role null → 빈 배열", () => {
     expect(filterNav(STAFF_NAV, null, () => true)).toEqual([]);
   });
