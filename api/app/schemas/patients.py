@@ -161,6 +161,27 @@ class PatientEncounterDetail(BaseModel):
     examinations: list[PatientExaminationItem]
 
 
+class PatientPaymentCard(BaseModel):
+    """환자 포털 '마이' 탭 수납 카드(Story 8.3, FR-122) — 본인 finalized 수납 1건 요약(읽기 전용).
+
+    세션 uid 스코프 — 서버가 auth_uid=sub 로 도출, patient_id 미투영. **finalized 만 노출**(draft=
+    집계중·cancelled=취소/노쇼 미발생은 제외). ⚠️ PII 경계: raw RRN·연락처·내부 `*_by` id 미포함
+    (비-PII 결제 메타만). 금액=KRW 정수. 날짜·시각은 클라가 12시간 KST 표기(UX-DR17). 영수증 상세
+    라우팅 키 = encounter_id(불투명 UUID). 영수증 문서(법정 서식)는 ReceiptResponse(7.5 재사용).
+    """
+
+    encounter_id: UUID
+    payment_no: str | None = None
+    clinic_name: str  # 요양기관명(clinic_profile.name — 단일 운영)
+    department_name: str
+    treatment_date: date | None = None  # 진료일(KST date)
+    finalized_at: datetime | None = None  # 결제 완료 시각(정렬·표시)
+    total_amount_krw: int  # 총 진료비
+    paid_amount_krw: int  # 내가 낸 금액(카드 강조)
+    payment_method: str | None = None  # card | cash | transfer(클라 한글화)
+    status: str  # finalized 고정(라벨 일관성·향후 확장 여지)
+
+
 class PatientClinicalProfileUpdate(BaseModel):
     """임상 프로필 갱신 요청(Story 3.2, FR-004). 5필드 옵셔널 — PUT 전체 교체(미전송=None=값없음).
 

@@ -12,6 +12,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from app.core import db
+from app.core.errors import NotFoundError
 from app.schemas.billing import (
     BillingPageMeta,
     BillingWorklistItem,
@@ -80,6 +81,18 @@ async def get_receipt(sub: UUID, encounter_id: UUID) -> ReceiptResponse:
     finalized 수납 건만 → 비-finalized 409, 미존재 404(db/DB 가 검증·raise). 요양기관·환자(masked
     RRN)·진료·결제·발급 + 상세 라인을 묶은 ReceiptResponse 반환(항목별 금액표 집계는 web)."""
     row = await db.fetch_receipt(sub, encounter_id)
+    return ReceiptResponse.model_validate(row)
+
+
+async def get_self_receipt(sub: UUID, encounter_id: UUID) -> ReceiptResponse:
+    """환자 본인 영수증 문서 데이터(환자 포털 '마이' 탭, Story 8.3·FR-122). 게이트=라우터 self.
+
+    7.5 영수증 조립(요양기관·환자 masked RRN·진료·결제·상세)을 self-scope 로 재사용. 소유 미일치
+    (타인 encounter_id·미연결) 또는 비-finalized → db None → **404**(존재/비소유 구분 노출 금지·
+    IDOR 차단·직원 409와 달리 환자엔 draft 비노출). 친화 요약·법정 인쇄가 동일 응답 공유."""
+    row = await db.fetch_self_receipt(sub, encounter_id)
+    if row is None:
+        raise NotFoundError("영수증을 찾을 수 없습니다.", code="receipt_not_found")
     return ReceiptResponse.model_validate(row)
 
 

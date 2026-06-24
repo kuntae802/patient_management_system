@@ -1498,6 +1498,51 @@ async def fetch_self_encounter_detail(
     return await _run_authed(sub, _op)
 
 
+# 환자 포털 "마이" 탭 수납 카드(Story 8.3) — finalized 수납 메타 + denormalized(요양기관·진료과)
+# + 진료일. ⚠️ raw RRN/연락처/내부 *_by id 미투영(비-PII·세션 uid 스코프). clinic_name 은 스칼라
+# 서브쿼리(단일행·미시드면 NULL → fail-loud). 컬럼/별칭은 고정 리터럴(SQLi 무관)·값만 바인딩.
+_SELF_PAYMENT_CARD_COLUMNS = (
+    "pay.encounter_id, pay.payment_no, pay.finalized_at, pay.payment_method, pay.status, "
+    "pay.total_amount_krw, pay.paid_amount_krw, "
+    "dept.name as department_name, "
+    "(select cp.name from public.clinic_profile cp where cp.id = 1) as clinic_name, "
+    "(coalesce(e.consult_started_at, e.registered_at, e.created_at) "
+    " at time zone 'Asia/Seoul')::date as treatment_date"
+)
+
+
+async def fetch_self_payments(sub: UUID) -> list[asyncpg.Record]:
+    """본인(JWT sub) finalized 수납 카드 목록(환자 포털 '마이' 탭, Story 8.3 / FR-122). 최근순.
+
+    ⚠️ service_role 경로라 RLS 우회 — 본인 스코프는 **where p.auth_uid = $1(=sub)** 가 경계선이다
+    (RLS payments_select_self(0045)는 직접조회용 심층방어). patient_id 인자 없음(세션 uid 스코프).
+    **finalized 만**(draft=집계중·cancelled=취소/노쇼 미발생 제외 — 영수증 개념 정합·설계 결정 ③).
+    미연결(auth_uid 0행)이면 빈 목록. 게이트=라우터 get_current_patient(직원 403). 정렬키=결제완료
+    시각(없으면 완료·생성 폴백) 최근순. 한 환자 수납 수는 적어 안전 상한 limit 100."""
+
+    async def _op(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+        # 요양기관(clinic_profile) 미시드 = 운영 결함 → coded fail-loud(영수증 조립과 동일 posture).
+        # 가드 없으면 clinic_name(스칼라 서브쿼리) NULL → Pydantic 불투명 500.
+        if await conn.fetchval("select 1 from public.clinic_profile where id = 1") is None:
+            raise AppError(
+                "요양기관 정보가 설정되지 않았습니다.",
+                code="clinic_profile_missing",
+                status_code=500,
+            )
+        return await conn.fetch(
+            f"select {_SELF_PAYMENT_CARD_COLUMNS} from public.payments pay "
+            "join public.encounters e on e.id = pay.encounter_id "
+            "join public.patients p on p.id = e.patient_id "
+            "join public.departments dept on dept.id = e.department_id "
+            "where p.auth_uid = $1 and pay.status = 'finalized' and e.is_active = true "
+            "order by coalesce(pay.finalized_at, e.completed_at, e.created_at) desc "
+            "limit 100",
+            sub,
+        )
+
+    return await _run_authed(sub, _op)
+
+
 # ── 보호자(guardians) 쓰기·읽기(Story 3.3, FR-006) ──────────────────────────────
 # 보호자 = 환자의 sub-resource(1:N). 쓰기 권위 = FastAPI(service_role) — authenticated 는
 # guardians 쓰기 권한 없음(0009 GRANT·RLS 쓰기정책 부재). 추가·수정·삭제는 모두 "환자 정보
@@ -4580,6 +4625,66 @@ _RECEIPT_HEADER_SELECT = (
 )
 
 
+# 환자 self 영수증(Story 8.3) — 직원 헤더 select 에 소유 검증 + 소프트삭제 제외만 덧댄다.
+# _RECEIPT_HEADER_SELECT 는 'where p.encounter_id = $1' 로 끝나 ' and pat.auth_uid = $2 and
+# e.is_active = true' 를 append(pat=patients·e=encounters 별칭·조립 _assemble_receipt_payload 공용).
+# 직원 7.5 경로 무변경 — self 만 소프트삭제 내원 영수증을 404 로(리스트 is_active 필터와 정합).
+_SELF_RECEIPT_HEADER_SELECT = (
+    _RECEIPT_HEADER_SELECT + " and pat.auth_uid = $2 and e.is_active = true"
+)
+
+
+async def _assemble_receipt_payload(
+    conn: asyncpg.Connection, header: asyncpg.Record
+) -> dict[str, object]:
+    """finalized 영수증 헤더 → 요양기관·환자·진료·결제·상세를 묶은 dict(ReceiptResponse 소스).
+
+    직원(fetch_receipt·payment.read)·환자 self(fetch_self_receipt·소유검증) 공용 — 호출부가 헤더
+    조회·게이트/소유를 각자 책임지고, 조립(clinic_profile·details·due) 로직은 여기서 단일 소유.
+    금액·산정값은 전부 DB(7.3) — 여기선 매핑·표시값(due=copay-paid) 도출만(pricing 재구현 금지)."""
+    clinic = await conn.fetchrow(
+        "select name, biz_no, hira_no, address, ceo_name, phone "
+        "from public.clinic_profile where id = 1"
+    )
+    if clinic is None:  # seed 보장(7.5 AC9) — 미설정은 운영 결함(fail-loud)
+        raise AppError(
+            "요양기관 정보가 설정되지 않았습니다.",
+            code="clinic_profile_missing",
+            status_code=500,
+        )
+    details = await _fetch_payment_details(conn, header["payment_id"])
+    copay = int(header["copay_amount_krw"])
+    paid = int(header["paid_amount_krw"])
+    return {
+        "clinic": dict(clinic),
+        "patient": {
+            "name": header["patient_name"],
+            "chart_no": header["chart_no"],
+            "resident_no_masked": header["resident_no_masked"],
+            "insurance_type": header["insurance_type"],
+        },
+        "encounter": {
+            "department_name": header["department_name"],
+            "doctor_name": header["doctor_name"],
+            "treatment_started_on": header["treatment_started_on"],
+            "treatment_ended_on": header["treatment_ended_on"],
+        },
+        "status": header["status"],
+        "payment_no": header["payment_no"],
+        "payment_method": header["payment_method"],
+        "finalized_at": header["finalized_at"],
+        "issued_by_name": header["issued_by_name"],
+        "total_amount_krw": int(header["total_amount_krw"]),
+        "covered_amount_krw": int(header["covered_amount_krw"]),
+        "non_covered_amount_krw": int(header["non_covered_amount_krw"]),
+        "copay_amount_krw": copay,
+        "insurer_amount_krw": int(header["insurer_amount_krw"]),
+        "paid_amount_krw": paid,
+        "due_amount_krw": copay - paid,  # 납부할 금액(표시값 — pricing 아님)
+        "details": [dict(r) for r in details],
+    }
+
+
 async def fetch_receipt(sub: UUID, encounter_id: UUID) -> dict[str, object]:
     """진료비 계산서·영수증 문서 데이터 조립(Story 7.5) — finalized 수납 건만(FR-113).
 
@@ -4601,47 +4706,26 @@ async def fetch_receipt(sub: UUID, encounter_id: UUID) -> dict[str, object]:
                 code="invalid_transition",
                 detail={"status": header["status"]},
             )
-        clinic = await conn.fetchrow(
-            "select name, biz_no, hira_no, address, ceo_name, phone "
-            "from public.clinic_profile where id = 1"
-        )
-        if clinic is None:  # seed 보장(AC9) — 미설정은 운영 결함(fail-loud)
-            raise AppError(
-                "요양기관 정보가 설정되지 않았습니다.",
-                code="clinic_profile_missing",
-                status_code=500,
-            )
-        details = await _fetch_payment_details(conn, header["payment_id"])
-        copay = int(header["copay_amount_krw"])
-        paid = int(header["paid_amount_krw"])
-        return {
-            "clinic": dict(clinic),
-            "patient": {
-                "name": header["patient_name"],
-                "chart_no": header["chart_no"],
-                "resident_no_masked": header["resident_no_masked"],
-                "insurance_type": header["insurance_type"],
-            },
-            "encounter": {
-                "department_name": header["department_name"],
-                "doctor_name": header["doctor_name"],
-                "treatment_started_on": header["treatment_started_on"],
-                "treatment_ended_on": header["treatment_ended_on"],
-            },
-            "status": header["status"],
-            "payment_no": header["payment_no"],
-            "payment_method": header["payment_method"],
-            "finalized_at": header["finalized_at"],
-            "issued_by_name": header["issued_by_name"],
-            "total_amount_krw": int(header["total_amount_krw"]),
-            "covered_amount_krw": int(header["covered_amount_krw"]),
-            "non_covered_amount_krw": int(header["non_covered_amount_krw"]),
-            "copay_amount_krw": copay,
-            "insurer_amount_krw": int(header["insurer_amount_krw"]),
-            "paid_amount_krw": paid,
-            "due_amount_krw": copay - paid,  # 납부할 금액(표시값 — pricing 아님)
-            "details": [dict(r) for r in details],
-        }
+        return await _assemble_receipt_payload(conn, header)
+
+    return await _run_authed(sub, _op)
+
+
+async def fetch_self_receipt(sub: UUID, encounter_id: UUID) -> dict[str, object] | None:
+    """환자 본인 영수증 데이터(환자 포털 '마이' 탭, Story 8.3 / FR-122) — 7.5 조립 재사용.
+
+    ⚠️ 소유 검증이 경계선(service_role RLS 우회): 헤더 조회 WHERE 에 `and pat.auth_uid = $2`(요청
+    encounter_id 의 수납이 본인 것인지). 미일치(타인 id·미연결) → None. 또한 **비-finalized 도
+    None**(직원 fetch_receipt 는 409 였으나 환자 self 는 draft 존재 비노출 → 서비스가 404 일원화·
+    IDOR 일관). 게이트=라우터 get_current_patient(직원 403)."""
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object] | None:
+        header = await conn.fetchrow(_SELF_RECEIPT_HEADER_SELECT, encounter_id, sub)
+        if header is None:
+            return None  # 타인/미연결 → 서비스 404(존재/비소유 구분 노출 금지)
+        if header["status"] != "finalized":
+            return None  # draft/cancelled 비노출 → 404(직원 409와 다름·self 일원화)
+        return await _assemble_receipt_payload(conn, header)
 
     return await _run_authed(sub, _op)
 

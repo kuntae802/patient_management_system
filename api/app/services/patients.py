@@ -23,6 +23,7 @@ from app.schemas.patients import (
     PatientEncounterCard,
     PatientEncounterDetail,
     PatientListItem,
+    PatientPaymentCard,
     PatientResponse,
     PatientRrnReveal,
     PatientSelfLinkRequest,
@@ -201,3 +202,13 @@ async def get_self_encounter_detail(sub: UUID, encounter_id: UUID) -> PatientEnc
     if detail is None:
         raise NotFoundError("진료 내역을 찾을 수 없습니다.", code="encounter_not_found")
     return PatientEncounterDetail.model_validate(detail)
+
+
+async def list_self_payments(sub: UUID) -> list[PatientPaymentCard]:
+    """본인(JWT sub) finalized 수납 카드(환자 포털 '마이' 탭, Story 8.3 / FR-122) — 최근순.
+
+    세션 uid 스코프(auth_uid=sub, patient_id 클라 미수용). **finalized 만**(draft·cancelled 제외).
+    미연결이면 빈 목록(프런트가 GET /self 404 로 온보딩 유도). 게이트=라우터 get_current_patient.
+    영수증 문서(법정 서식 데이터)는 billing.get_self_receipt(7.5 ReceiptResponse 재사용)."""
+    rows = await db.fetch_self_payments(sub)
+    return [PatientPaymentCard.model_validate(dict(r)) for r in rows]

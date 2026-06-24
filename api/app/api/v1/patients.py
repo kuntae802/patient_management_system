@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Query, status
 
 from app.core.errors import NotFoundError
 from app.core.security import CurrentUser, get_current_patient, require_permission
+from app.schemas.billing import ReceiptResponse
 from app.schemas.encounters import EncounterListItem
 from app.schemas.guardians import GuardianCreate, GuardianResponse, GuardianUpdate
 from app.schemas.patients import (
@@ -25,11 +26,13 @@ from app.schemas.patients import (
     PatientEncounterDetail,
     PatientPage,
     PatientPageMeta,
+    PatientPaymentCard,
     PatientResponse,
     PatientRrnReveal,
     PatientSelfLinkRequest,
     PatientSelfSummary,
 )
+from app.services import billing as billing_service
 from app.services import guardians as guardians_service
 from app.services import patients as patients_service
 
@@ -97,6 +100,33 @@ async def get_self_encounter_detail(
     (직원 403). ⚠️ 소유 검증: 본인 내원이 아니면(타인 encounter_id·미연결) 404(존재/비소유 구분
     노출 금지·IDOR 차단). 임상 서사(findings 등) 미투영 — 환자는 큐레이션된 결과 요약만 본다."""
     return await patients_service.get_self_encounter_detail(user.sub, encounter_id)
+
+
+@router.get("/me/payments", response_model=list[PatientPaymentCard])
+async def list_self_payments(
+    user: CurrentUser = Depends(get_current_patient),
+) -> list[PatientPaymentCard]:
+    """본인 finalized 수납 카드(FR-122, UX-DR17) — 환자 포털 '마이' 탭. 세션 uid 스코프·최근순.
+
+    ⚠️ 정적 'me' 프리픽스(/{patient_id} 동적 라우트보다 먼저). 게이트 get_current_patient(직원
+    403). patient_id 미수용(서버가 auth_uid=sub 도출). finalized 만(draft·cancelled 제외). 미연결은
+    빈 목록(프런트가 /self 404 로 온보딩 유도). 영수증 상세는 /me/encounters/{id}/receipt."""
+    return await patients_service.list_self_payments(user.sub)
+
+
+@router.get("/me/encounters/{encounter_id}/receipt", response_model=ReceiptResponse)
+async def get_self_receipt(
+    encounter_id: UUID,
+    user: CurrentUser = Depends(get_current_patient),
+) -> ReceiptResponse:
+    """본인 내원 1건의 영수증 문서 데이터(FR-122) — '마이' 탭 수납 카드 → 영수증 상세.
+
+    세션 uid 스코프. ⚠️ 정적 'me' 프리픽스라 /{patient_id} 동적 라우트와 무관. 게이트
+    get_current_patient(직원 403).
+    ⚠️ 소유 검증 + finalized: 본인 finalized 수납이 아니면(타인 encounter_id·미연결·비-finalized) 404
+    (존재/비소유/비-finalized 구분 노출 금지·IDOR 차단·직원 영수증 409와 달리 self 는 404 일원화).
+    7.5 ReceiptResponse 재사용 — 친화 요약(화면)·법정 서식(인쇄)이 동일 응답 공유. masked RRN 만."""
+    return await billing_service.get_self_receipt(user.sub, encounter_id)
 
 
 @router.post("", response_model=PatientResponse, status_code=status.HTTP_201_CREATED)
