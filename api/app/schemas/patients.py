@@ -117,6 +117,50 @@ class PatientEncounterCard(BaseModel):
     primary_diagnosis_friendly_note: str | None = None
 
 
+class PatientPrescriptionItem(BaseModel):
+    """환자 포털 펼침 상세 — 처방 약 1줄(Story 8.2, FR-121). 처방상세 라인을 환자 언어로 평면화.
+
+    ⚠️ 환자 비노출: `drug_id`·`ingredient_code`·`ordered_by`·헤더 메타 미투영(PII/내부 식별자).
+    `frequency`·`usage_instruction` 은 저장값 그대로(실데이터는 한국어 '1일 3회'·'매 식후 30분').
+    `dose`+`unit` 로 클라가 "1정" 조립. coverage_type=급여/비급여(non_covered 표시용·선택).
+    """
+
+    drug_name: str
+    unit: str | None = None  # drugs.unit(정/캡슐/mL) — dose 와 함께 "1정" 조립
+    dose: float | None = None  # 1회 투약량(numeric → float)
+    frequency: str | None = None  # 저장값 그대로(한국어 산문, 코드 매핑 금지)
+    usage_instruction: str | None = None  # 용법(식후/식전 — 한국어 그대로)
+    duration_days: int | None = None
+    coverage_type: str | None = None  # covered | non_covered(비급여 표시용)
+
+
+class PatientExaminationItem(BaseModel):
+    """환자 포털 펼침 상세 — 검사 1건(Story 8.2, FR-121). 검사명 + 환자용 결과 요약 + 정상/주의.
+
+    ⚠️ 환자 비노출(구조적 차단): `findings`·`reading_conclusion`(임상 서사·감사 마스킹)·
+    `fee_schedule_id`·`*_by` 미투영. 환자는 큐레이션 `patient_result_summary`(0055)·`_flag` 만 본다.
+    완료 전(ordered/performed) 검사는 결과 NULL → 클라가 "결과 준비 중" 폴백.
+    """
+
+    exam_name: str  # = fee_schedules.name(행위명)
+    exam_type: str  # lab | imaging
+    status: str  # ordered | performed | completed
+    patient_result_summary: str | None = None  # 쉬운 말 결과 요약(0055·없으면 폴백)
+    patient_result_flag: str | None = None  # normal | attention | None(배지 진실 원천)
+    completed_at: datetime | None = None
+
+
+class PatientEncounterDetail(BaseModel):
+    """환자 포털 '내 기록' 카드 펼침 상세(Story 8.2, FR-121) — 본인 내원 1건의 처방·검사.
+
+    세션 uid 스코프 + 소유 검증(본인 내원 아니면 라우터/서비스가 404). 처방·검사 0건이면 빈 배열
+    (클라가 섹션 생략 또는 안내). raw RRN·연락처·임상 서사 미포함(PII·민감 경계).
+    """
+
+    prescriptions: list[PatientPrescriptionItem]
+    examinations: list[PatientExaminationItem]
+
+
 class PatientClinicalProfileUpdate(BaseModel):
     """임상 프로필 갱신 요청(Story 3.2, FR-004). 5필드 옵셔널 — PUT 전체 교체(미전송=None=값없음).
 

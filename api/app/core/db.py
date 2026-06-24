@@ -1435,6 +1435,69 @@ async def fetch_self_encounters(sub: UUID) -> list[asyncpg.Record]:
     return await _run_authed(sub, _op)
 
 
+# 환자 포털 카드 펼침 상세(Story 8.2) — 본인 내원 1건의 처방(약 라인 평면)·검사(결과 요약·플래그).
+# ⚠️ service_role 경로라 RLS 우회 — 소유 검증 where e.id=$1 and p.auth_uid=$2 가 경계선(타인 id
+# → 0행 → None → 404). ⚠️ 환자 비노출(구조적 차단): findings·reading_conclusion(임상 서사·마스킹)·
+# drug_id·ingredient_code·*_by 미투영. patient_result_*(0055)=환자용 큐레이션만 투영. 컬럼=고정.
+_SELF_RX_ITEM_COLUMNS = (
+    "dr.name as drug_name, dr.unit, pd.dose, pd.frequency, pd.duration_days, "
+    "pd.usage_instruction, dr.coverage_type"
+)
+_SELF_EXAM_ITEM_COLUMNS = (
+    "fs.name as exam_name, ex.exam_type, ex.status, "
+    "ex.patient_result_summary, ex.patient_result_flag, ex.completed_at"
+)
+
+
+async def fetch_self_encounter_detail(
+    sub: UUID, encounter_id: UUID
+) -> dict[str, list[dict[str, object]]] | None:
+    """본인(JWT sub) 내원 1건의 처방·검사 상세(환자 포털 펼침, Story 8.2 / FR-121).
+
+    ⚠️ service_role 경로라 RLS 우회 — 소유 검증이 경계선이다: 먼저 `e.id=$1 and p.auth_uid=$2`
+    로 본인 내원 여부를 확인하고, 아니면(타인 id·미연결) **None 반환**(서비스가 404 — 존재/비소유
+    구분 노출 금지·IDOR 차단). 게이트=라우터 get_current_patient(직원 403).
+
+    반환(소유 시) = {"prescriptions": [약 라인 평면(drugs 조인)...], "examinations": [검사(결과
+    요약·플래그)...]}. 처방은 헤더 메타 불요(환자는 약 단위로 봄) → 활성 헤더·활성 상세를 평면으로.
+    검사는 활성 전부(완료 전이면 결과 NULL → 클라 폴백). findings 는 SELECT 안 함(환자 비노출).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, list[dict[str, object]]] | None:
+        owns = await conn.fetchval(
+            "select true from public.encounters e "
+            "join public.patients p on p.id = e.patient_id "
+            "where e.id = $1 and p.auth_uid = $2 and e.is_active = true",
+            encounter_id,
+            sub,
+        )
+        if owns is None:
+            return None  # 타인 내원·미연결 → 서비스가 404
+        rx = await conn.fetch(
+            f"select {_SELF_RX_ITEM_COLUMNS} "
+            "from public.prescription_details pd "
+            "join public.drugs dr on dr.id = pd.drug_id "
+            "join public.prescriptions pr on pr.id = pd.prescription_id "
+            "where pr.encounter_id = $1 and pr.is_active = true and pd.is_active = true "
+            "order by pr.ordered_at asc, pd.created_at asc, pd.id asc",
+            encounter_id,
+        )
+        exams = await conn.fetch(
+            f"select {_SELF_EXAM_ITEM_COLUMNS} "
+            "from public.examinations ex "
+            "join public.fee_schedules fs on fs.id = ex.fee_schedule_id "
+            "where ex.encounter_id = $1 and ex.is_active = true "
+            "order by ex.ordered_at asc, ex.id asc",
+            encounter_id,
+        )
+        return {
+            "prescriptions": [dict(r) for r in rx],
+            "examinations": [dict(r) for r in exams],
+        }
+
+    return await _run_authed(sub, _op)
+
+
 # ── 보호자(guardians) 쓰기·읽기(Story 3.3, FR-006) ──────────────────────────────
 # 보호자 = 환자의 sub-resource(1:N). 쓰기 권위 = FastAPI(service_role) — authenticated 는
 # guardians 쓰기 권한 없음(0009 GRANT·RLS 쓰기정책 부재). 추가·수정·삭제는 모두 "환자 정보

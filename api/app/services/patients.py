@@ -21,6 +21,7 @@ from app.schemas.patients import (
     PatientContactReveal,
     PatientCreate,
     PatientEncounterCard,
+    PatientEncounterDetail,
     PatientListItem,
     PatientResponse,
     PatientRrnReveal,
@@ -189,3 +190,14 @@ async def list_self_encounters(sub: UUID) -> list[PatientEncounterCard]:
     404 로 온보딩 유도 — 별도 에러 분기 불요). 게이트=라우터 get_current_patient(직원 403)."""
     rows = await db.fetch_self_encounters(sub)
     return [PatientEncounterCard.model_validate(dict(r)) for r in rows]
+
+
+async def get_self_encounter_detail(sub: UUID, encounter_id: UUID) -> PatientEncounterDetail:
+    """본인(JWT sub) 내원 1건의 처방·검사 상세(환자 포털 펼침, Story 8.2 / FR-121).
+
+    소유 검증은 db 가 수행 — 본인 내원이 아니면(타인 id·미연결) None → **404**(존재/비소유 구분
+    노출 금지·IDOR 차단). 게이트=라우터 get_current_patient(직원 403). 처방·검사 0건이면 빈 배열."""
+    detail = await db.fetch_self_encounter_detail(sub, encounter_id)
+    if detail is None:
+        raise NotFoundError("진료 내역을 찾을 수 없습니다.", code="encounter_not_found")
+    return PatientEncounterDetail.model_validate(detail)

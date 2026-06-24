@@ -22,6 +22,7 @@ from app.schemas.patients import (
     PatientContactReveal,
     PatientCreate,
     PatientEncounterCard,
+    PatientEncounterDetail,
     PatientPage,
     PatientPageMeta,
     PatientResponse,
@@ -83,6 +84,19 @@ async def list_self_encounters(
     미수용(서버가 auth_uid=sub 도출). 미연결은 빈 목록(프런트가 /self 404 로 온보딩 유도).
     작은 sub-collection → 직접 배열(guardians·encounters 선례). 펼침 상세는 Story 8.2."""
     return await patients_service.list_self_encounters(user.sub)
+
+
+@router.get("/me/encounters/{encounter_id}/detail", response_model=PatientEncounterDetail)
+async def get_self_encounter_detail(
+    encounter_id: UUID,
+    user: CurrentUser = Depends(get_current_patient),
+) -> PatientEncounterDetail:
+    """본인 내원 1건의 처방·검사 상세(FR-121, UX-DR17·23) — '내 기록' 카드 펼침. 세션 uid 스코프.
+
+    ⚠️ 정적 'me' 프리픽스라 /{patient_id} 동적 라우트와 무관(별도 깊이). 게이트 get_current_patient
+    (직원 403). ⚠️ 소유 검증: 본인 내원이 아니면(타인 encounter_id·미연결) 404(존재/비소유 구분
+    노출 금지·IDOR 차단). 임상 서사(findings 등) 미투영 — 환자는 큐레이션된 결과 요약만 본다."""
+    return await patients_service.get_self_encounter_detail(user.sub, encounter_id)
 
 
 @router.post("", response_model=PatientResponse, status_code=status.HTTP_201_CREATED)
