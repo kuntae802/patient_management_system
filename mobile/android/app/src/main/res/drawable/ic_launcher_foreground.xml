@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 적응형 아이콘 전경 — 중앙 흰색 의료 십자(안전 영역 내). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M48,34 h12 v14 h14 v12 h-14 v14 h-12 v-14 h-14 v-12 h14 z" />
+</vector>

@@ -15,21 +15,19 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.kuntae802.mobile"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         // webview_flutter 최신은 minSdk 21 요구 → 24로 명시(아키텍처 타깃 API 24+)
         minSdk = 24
         targetSdk = flutter.targetSdkVersion
+        // versionCode/Name = pubspec.yaml의 version(1.0.0+1) → versionName 1.0.0 / versionCode 1
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            // 사이드로드 제출용 — debug 키로 서명(Play Store 미게시).
+            // 프로덕션 배포 시에는 keytool 릴리스 keystore + key.properties 주입이 필요하다.
             signingConfig = signingConfigs.getByName("debug")
         }
     }
