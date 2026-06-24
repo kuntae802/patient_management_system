@@ -1,11 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { Loader2, ShieldCheck } from "lucide-react";
+import { ChevronDown, Loader2, ShieldCheck } from "lucide-react";
 import { Fragment, useEffect, useState } from "react";
 
+import { EncounterDetail } from "@/components/portal/encounter-detail";
 import { PatientStatusBadge } from "@/components/portal/patient-status-badge";
 import { ApiError, apiFetch } from "@/lib/api/client";
+import {
+  fetchSelfEncounterDetail,
+  type PatientEncounterDetail,
+} from "@/lib/patient/encounter-detail";
 import {
   fetchSelfEncounters,
   formatVisitDate,
@@ -15,11 +20,12 @@ import {
   visitYear,
   type PatientEncounterCard,
 } from "@/lib/patient/records";
+import { cn } from "@/lib/utils";
 
 // 환자 포털 "내 기록"(Story 8.1·FR-120·UX-DR17): 본인 내원 이력 카드(날짜·상태배지·의사·진단 쉬운 말)를
 // 최근순으로, 상단 신뢰 노트(RLS·UX-DR22) 상시. 본인 외 데이터 0건(서버 세션 uid 스코프). 쉬운 말·큰 터치·
-// 색 비의존. 펼침 상세(처방·검사)는 Story 8.2. patient_id 는 서버 도출(클라 미전송).
-// 자가연결(self-link) 미완(404 no_self_patient)이면 온보딩 유도(예약 화면 패턴 재사용).
+// 색 비의존. 카드 펼침 상세(처방·검사 결과)는 Story 8.2(아래 VisitCard 지연 로드). patient_id 는 서버
+// 도출(클라 미전송). 자가연결(self-link) 미완(404 no_self_patient)이면 온보딩 유도(예약 화면 패턴 재사용).
 
 type LinkState = "checking" | "linked" | "unlinked";
 
@@ -155,12 +161,38 @@ export function VisitHistory() {
   );
 }
 
-/** 내원 1건 카드(표시 전용). 펼침 상세(처방·검사)는 Story 8.2 가 detail 블록으로 확장. */
+/** 내원 1건 카드. 임상 활동(완료·진료중) 내원은 펼치면 처방·검사 결과 상세(Story 8.2·지연 로드). */
 function VisitCard({ card }: { card: PatientEncounterCard }) {
   const at = visitTimestamp(card);
   const doctor = card.doctor_name ?? "담당 의료진";
   const isCancelled = card.status === "cancelled";
   const isNoShow = card.status === "no_show";
+  // 펼침 = 임상 활동이 있는 내원만(완료·진료중). 예약/접수/취소/노쇼는 상세 없음(8.1 표시 전용 유지).
+  const canExpand = card.status === "completed" || card.status === "in_progress";
+
+  const [expanded, setExpanded] = useState(false);
+  const [detail, setDetail] = useState<PatientEncounterDetail | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const panelId = `visit-detail-${card.id}`;
+
+  function toggle() {
+    const next = !expanded;
+    setExpanded(next);
+    // 첫 펼침에만 지연 로드(이후 상태 캐시). 8.1 plain useState/fetch 패턴 일치(TanStack 미도입).
+    if (next && detail === null && !loading) {
+      setLoading(true);
+      setDetailError(null);
+      fetchSelfEncounterDetail(card.id)
+        .then((d) => setDetail(d))
+        .catch((err: unknown) =>
+          setDetailError(
+            err instanceof ApiError ? err.message : "내용을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.",
+          ),
+        )
+        .finally(() => setLoading(false));
+    }
+  }
 
   return (
     <article className="rounded-2xl border border-border bg-card p-4">
@@ -211,6 +243,44 @@ function VisitCard({ card }: { card: PatientEncounterCard }) {
           </span>
         </div>
       ) : null}
+
+      {canExpand && (
+        <>
+          {/* 펼침 토글 — 색 비의존(라벨+셰브런)·≥44px 터치(UX-DR17). aria-expanded/controls 로 상세 연결. */}
+          <button
+            type="button"
+            onClick={toggle}
+            aria-expanded={expanded}
+            aria-controls={panelId}
+            className="mt-3 flex min-h-[44px] w-full items-center justify-center gap-1 border-t border-border pt-3 text-[13px] font-semibold text-primary"
+          >
+            {expanded ? "접기" : "처방·검사 결과 보기"}
+            <ChevronDown
+              className={cn("size-4 transition-transform", expanded && "rotate-180")}
+              aria-hidden
+            />
+          </button>
+          {expanded && (
+            <div id={panelId}>
+              {loading && (
+                <p
+                  className="py-3 text-center text-[13px] text-muted-foreground"
+                  role="status"
+                  aria-live="polite"
+                >
+                  불러오는 중…
+                </p>
+              )}
+              {detailError && (
+                <p className="py-2 text-[13px] text-status-cancelled" role="alert">
+                  {detailError}
+                </p>
+              )}
+              {detail && <EncounterDetail detail={detail} />}
+            </div>
+          )}
+        </>
+      )}
     </article>
   );
 }
