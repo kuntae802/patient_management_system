@@ -53,4 +53,21 @@ describe("HELP_GUIDES 무결성", () => {
       }
     }
   });
+
+  it("각 화면은 hotspot 이 1개 이상이고 screens 가 비어있지 않다", () => {
+    for (const guide of Object.values(HELP_GUIDES)) {
+      expect(guide.screens.length).toBeGreaterThan(0);
+      for (const s of guide.screens) {
+        expect(s.hotspots.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("원무(reception)에 보이는 모든 메뉴는 가이드가 채워져 있다(Story 9.3 — 준비 중 0)", () => {
+    // reception 역할 메뉴는 권한 게이트가 없어 전부 노출 → 전부 가이드가 있어야 빠짐없이 수록(FR-253).
+    const receptionHrefs = STAFF_NAV.filter((n) => n.roles.includes("reception")).map((n) => n.href);
+    for (const href of receptionHrefs) {
+      expect(HELP_GUIDES[href], `원무 메뉴 가이드 누락: ${href}`).toBeDefined();
+    }
+  });
 });

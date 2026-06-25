@@ -30,6 +30,16 @@ describe("HelpGuide — 현재 계정 메뉴만 동적 렌더(FR-251)", () => {
     expect(screen.queryByText("감사 로그")).not.toBeInTheDocument();
   });
 
+  it("원무 계정은 8개 메뉴가 모두 안내 콘텐츠로 채워진다(Story 9.3 — 준비 중 플레이스홀더 0)", () => {
+    renderAs("reception");
+
+    // 모든 원무 메뉴에 콘텐츠가 있어 플레이스홀더가 하나도 없어야 한다(FR-253 빠짐없이 수록).
+    expect(screen.queryByText("이 메뉴의 안내는 준비 중입니다.")).not.toBeInTheDocument();
+    // 핵심 흐름 요소 spot-check(대기 현황·수납 상세 hotspot).
+    expect(screen.getByText("다음 호출")).toBeInTheDocument();
+    expect(screen.getByText("결제·내원 완료")).toBeInTheDocument();
+  });
+
   it("의사 계정은 진료 대기 안내(시범 콘텐츠)와 판독(준비 중 플레이스홀더)을 함께 보여준다", () => {
     renderAs("doctor");
 

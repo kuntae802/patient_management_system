@@ -91,4 +91,185 @@ export const HELP_GUIDES: Record<string, HelpMenuGuide> = {
       },
     ],
   },
+
+  // ── 원무(reception) — Story 9.3. 번호는 캡처 스펙(tools/screenshots/specs.mjs)의 reception 엔트리와 1:1. ──
+  "/reception/waiting": {
+    href: "/reception/waiting",
+    intro:
+      "로그인하면 처음 보이는 화면입니다. 오늘 접수된 환자를 상태별(접수·진행중·완료)로 한눈에 보고, 다음 차례 환자를 호출합니다. 접수 → 대기 → 호출이 원무의 기본 흐름입니다.",
+    screens: [
+      {
+        title: "대기 현황",
+        image: "/help/reception/waiting.png",
+        imageWidth: 1440,
+        imageHeight: 900,
+        alt: "원무 대기 현황 화면 — 다음 호출 배너와 상태별 대기 목록",
+        hotspots: [
+          { num: 1, element: "진료과 필터", desc: "보고 싶은 진료과만 고르거나 “전체 진료과”로 둡니다. 기본은 전체입니다." },
+          { num: 2, element: "날짜 이동", desc: "어제·내일의 대기 현황으로 옮깁니다. 기본은 오늘입니다." },
+          { num: 3, element: "새로고침", desc: "실시간 갱신과 별개로 지금 바로 다시 불러옵니다." },
+          { num: 4, element: "다음 호출", desc: "가장 먼저 부를 환자입니다. “호출”을 누르면 그 환자를 부릅니다." },
+          { num: 5, element: "호출(행별)", desc: "대기 목록의 환자를 개별로 호출하거나 다시 호출합니다." },
+        ],
+        flow: "접수에서 등록한 환자가 여기에 “접수” 상태로 나타납니다 → “호출”로 부르면 환자가 진료실로 오고 → 의사가 진료를 시작합니다. 목록은 활성도·호출·대기시간 순으로 정렬할 수 있습니다.",
+      },
+    ],
+  },
+  "/reception/intake": {
+    href: "/reception/intake",
+    intro:
+      "예약 없이 방문한(walk-in) 환자를 즉석에서 접수해 대기열에 올립니다. 검색 → 환자 선택 → 진료과 선택 → 접수 순서입니다.",
+    screens: [
+      {
+        title: "접수",
+        image: "/help/reception/intake.png",
+        imageWidth: 1440,
+        imageHeight: 900,
+        alt: "원무 접수 화면 — 환자 선택과 진료과 지정",
+        hotspots: [
+          { num: 1, element: "환자(검색·선택)", desc: "환자 이름·차트번호·연락처로 검색해 환자를 고릅니다. 다른 환자면 “변경”으로 다시 검색하세요." },
+          { num: 2, element: "진료과", desc: "접수할 진료과를 고릅니다(필수)." },
+          { num: 3, element: "접수", desc: "내원을 만들고 대기열에 올립니다. 환자·진료과를 둘 다 고르면 활성화됩니다." },
+        ],
+        flow: "접수하면 곧바로 대기 현황 화면에 “접수” 상태로 나타납니다 — 접수 → 대기 → 호출 흐름의 시작점입니다.",
+      },
+    ],
+  },
+  "/reception/schedule": {
+    href: "/reception/schedule",
+    intro:
+      "진료과·날짜를 골라 의사별 시간표를 보고, 빈 슬롯을 클릭해 예약을 잡습니다.",
+    screens: [
+      {
+        title: "예약 관리",
+        image: "/help/reception/schedule.png",
+        imageWidth: 1440,
+        imageHeight: 900,
+        alt: "원무 예약 관리 화면 — 의사별 일 시간표와 예약 슬롯",
+        hotspots: [
+          { num: 1, element: "진료과", desc: "일정을 볼 진료과를 고릅니다. 진료과를 선택해야 시간표가 나타납니다." },
+          { num: 2, element: "날짜", desc: "조회할 날짜입니다. 기본은 오늘입니다." },
+          { num: 3, element: "예약 캘린더", desc: "의사별 시간표입니다. 빈(예약 가능) 슬롯을 클릭하면 예약을 만들 수 있습니다. 색·글리프로 가능·확정·완료·휴진·지난시간을 구분합니다." },
+        ],
+        flow: "진료과·날짜를 고르면 시간표가 나옵니다 → 빈 슬롯 클릭으로 예약 생성 → 확정된 예약은 환자 도착 시 접수로 이어집니다. 더블부킹은 자동 차단됩니다.",
+      },
+    ],
+  },
+  "/reception/reminders": {
+    href: "/reception/reminders",
+    intro:
+      "예약 3일 전·1일 전, SMS 수신에 동의한 예약에 리마인더를 발송(시뮬레이션)하고 그 이력을 확인합니다.",
+    screens: [
+      {
+        title: "리마인더",
+        image: "/help/reception/reminders.png",
+        imageWidth: 1440,
+        imageHeight: 900,
+        alt: "원무 리마인더 화면 — 발송 실행과 발송 이력 표",
+        hotspots: [
+          { num: 1, element: "기준일(선택)", desc: "“오늘로 가정할 날짜”입니다. 비워두면 오늘 기준이며, 이 날의 3일 후·1일 후 예약에 발송합니다." },
+          { num: 2, element: "리마인더 실행", desc: "대상 예약에 SMS 리마인더를 발송(시뮬)하고 이력을 남깁니다. 같은 예약에 중복 발송하지 않습니다." },
+          { num: 3, element: "발송 이력", desc: "발송 시각·종류(3일 전/1일 전)·예약 시각·수신처(마스킹)·상태가 표로 쌓입니다." },
+        ],
+        flow: "실 SMS는 연동되어 있지 않아 발송은 시뮬레이션으로 처리되고 이력만 남습니다. 수신처는 개인정보 보호를 위해 마스킹되어 표시됩니다.",
+      },
+    ],
+  },
+  "/reception/register": {
+    href: "/reception/register",
+    intro:
+      "앱을 쓰지 않는 환자(전화·방문·고령자)의 레코드를 원무가 직접 만들고 차트번호를 부여합니다.",
+    screens: [
+      {
+        title: "환자 등록",
+        image: "/help/reception/register.png",
+        imageWidth: 1440,
+        imageHeight: 900,
+        alt: "원무 환자 등록 화면 — 신원·보험·연락처 입력 폼",
+        hotspots: [
+          { num: 1, element: "이름", desc: "환자 실명입니다(필수)." },
+          { num: 2, element: "주민등록번호", desc: "신원 확인·암호화 저장에 쓰입니다(필수). 저장 후에는 마스킹된 형태로만 보입니다." },
+          { num: 3, element: "보험유형", desc: "본인부담률 산정의 근거입니다(필수)." },
+          { num: 4, element: "휴대전화(선택)", desc: "연락·환자 앱 연결의 단서입니다." },
+          { num: 5, element: "환자 등록", desc: "레코드를 만들고 차트번호를 부여합니다." },
+        ],
+        flow: "주민등록번호는 암호화되어 저장되고 화면에는 항상 마스킹만 보입니다(원무 화면에는 평문으로 보는 기능이 없습니다).",
+      },
+    ],
+  },
+  "/patients": {
+    href: "/patients",
+    intro:
+      "이름·차트번호·연락처로 환자를 찾아 상세로 이동합니다. 전역 단축키 Ctrl K로도 같은 검색을 쓸 수 있습니다.",
+    screens: [
+      {
+        title: "환자 검색",
+        image: "/help/reception/patients.png",
+        imageWidth: 1440,
+        imageHeight: 900,
+        alt: "원무 환자 검색 화면 — 검색 결과 목록",
+        hotspots: [
+          { num: 1, element: "검색박스", desc: "이름·차트번호·연락처를 입력해 검색합니다(입력해야 결과가 나옵니다)." },
+          { num: 2, element: "검색 상태", desc: "찾은 결과 수를 알려줍니다." },
+          { num: 3, element: "결과 행", desc: "클릭하면 환자 상세로 이동합니다. 생년월일·성별·마스킹 주민번호·연락처로 동명이인을 구분합니다." },
+        ],
+        flow: "주민등록번호는 마스킹된 형태로만 보입니다 — 동명이인 식별을 돕되 평문은 노출하지 않습니다.",
+      },
+    ],
+  },
+  "/reception/billing": {
+    href: "/reception/billing",
+    intro:
+      "수납은 두 단계입니다. (1) 수납 대상 목록에서 내원을 고르고, (2) 자동 산정된 수가를 확인해 결제합니다. 진찰 중인 내원은 “정산”, 접수만 된 내원은 “선수납” 대상입니다.",
+    screens: [
+      {
+        title: "수납 대상 목록",
+        image: "/help/reception/billing.png",
+        imageWidth: 1440,
+        imageHeight: 900,
+        alt: "원무 수납 워크리스트 — 정산·선수납 대상 내원 목록",
+        hotspots: [
+          { num: 1, element: "수납 대상 내원", desc: "오늘 수납할 내원 목록입니다." },
+          { num: 2, element: "정산 대상(진찰중)", desc: "진료가 진행 중인 내원입니다. 클릭하면 집계·결제 화면으로 들어갑니다. 예상 총액이 함께 보입니다." },
+          { num: 3, element: "선수납 가능(접수)", desc: "접수만 된 내원입니다. 진료 전 미리 받는 선수납을 할 수 있습니다(예상 0원)." },
+        ],
+        flow: "정산은 “진찰중” 행, 선수납은 “접수” 행을 클릭해 상세로 들어갑니다.",
+      },
+      {
+        title: "수납 상세 · 결제",
+        image: "/help/reception/billing-detail.png",
+        imageWidth: 1440,
+        imageHeight: 900,
+        alt: "원무 수납 상세 화면 — 집계·본인부담 산정·결제",
+        hotspots: [
+          { num: 1, element: "본인부담금(환자 청구)", desc: "환자가 낼 금액입니다(보험유형 기준 자동 산정)." },
+          { num: 2, element: "금액 분해", desc: "수납 집계를 총 진료비·급여·비급여·공단부담금으로 나눠 보여줍니다." },
+          { num: 3, element: "결제 수단", desc: "카드·현금·계좌이체 중에서 고릅니다." },
+          { num: 4, element: "결제·내원 완료", desc: "본인부담금을 결제하고 내원을 완료합니다. 완료 후에는 취소할 수 없습니다." },
+        ],
+        flow: "수가는 자동으로 산정됩니다 → 결제 수단을 고르고 “결제·내원 완료”를 누르면 정산이 끝납니다(접수 상태면 “선결제”로 미리 받을 수 있습니다). 완료 후에는 진료비 계산서·영수증·세부산정내역서·원외처방전을 출력할 수 있고, 지난 영수증은 “수납 내역”에서 다시 출력합니다.",
+      },
+    ],
+  },
+  "/reception/billing/history": {
+    href: "/reception/billing/history",
+    intro:
+      "완료된(정산된) 수납을 환자명·차트번호·영수증번호·기간으로 검색해 영수증을 다시 출력합니다.",
+    screens: [
+      {
+        title: "수납 내역",
+        image: "/help/reception/history.png",
+        imageWidth: 1440,
+        imageHeight: 900,
+        alt: "원무 수납 내역 화면 — 완료된 수납 목록과 영수증 재출력",
+        hotspots: [
+          { num: 1, element: "통합 검색", desc: "환자명·차트번호·영수증번호로 지난 수납을 찾습니다." },
+          { num: 2, element: "기간 필터", desc: "정산일 기준으로 시작일·종료일을 정해 기간을 좁힙니다." },
+          { num: 3, element: "결과 표", desc: "완료된 수납이 영수증번호·환자·진료과·본인부담·정산일시로 나옵니다." },
+          { num: 4, element: "영수증 보기", desc: "상세로 이동해 영수증·세부산정내역서·원외처방전을 다시 출력합니다(재출력)." },
+        ],
+        flow: "수납 → 영수증·재출력: 결제를 마친 수납이 여기 쌓이고, “영수증 보기”로 상세에 들어가 문서를 다시 인쇄합니다.",
+      },
+    ],
+  },
 };
