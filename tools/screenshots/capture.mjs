@@ -58,7 +58,8 @@ try {
   for (const [account, specs] of byAccount) {
     const { ctx, page } = await newPage(browser);
     try {
-      await login(page, account, PASSWORD);
+      // 계정별 비밀번호 — 직원은 공통 PASSWORD, 환자 데모(pms.patient.demo)는 spec.password 로 오버라이드.
+      await login(page, account, specs[0].password ?? PASSWORD);
       for (const spec of specs) {
         try {
           await spec.goto(page, BASE);

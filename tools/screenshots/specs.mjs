@@ -497,5 +497,110 @@ export const SPECS = [
     ],
   },
 
-  // ── 9.8: 환자 스펙을 여기에 추가 ──
+  // ── 환자(patient) — 9.8 환자 포털 4메뉴(5화면) ──
+  // ⚠️ 모바일 뷰포트로 캡처: PMS_VW=390 PMS_VH=1000 node capture.mjs patient (직원=기본 1440×900).
+  // ⚠️ 환자 데모 계정 비번은 Patient1234!(직원 Staff1234와 다름) → password 필드 + capture.mjs spec.password.
+  // ⚠️ self-read: 데모 환자가 데이터 있는 환자에 연결돼야 화면이 빈다(한지영 e06=처방·검사·finalized 수납).
+  // ⚠️ mutation 금지: booking 은 진료과/의사/날짜 선택까지만(슬롯 fetch=읽기), "예약 확정하기" 클릭 금지.
+  {
+    role: "patient",
+    account: "pms.patient.demo@gmail.com",
+    password: "Patient1234!",
+    screen: "booking", // 예약 /booking (진료과→의사→날짜 선택해 슬롯 노출·확정 금지)
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/booking`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.waitForTimeout(2500);
+      await page.getByLabel("진료과").selectOption({ label: "내과" }).catch(() => {});
+      await page.waitForTimeout(1500);
+      await page.getByLabel("의사").selectOption({ index: 1 }).catch(() => {}); // 첫 의사
+      await page.waitForTimeout(2000);
+      // 날짜 칩 순회 → 예약 가능 슬롯이 뜨는 평일을 찾는다(읽기 — 슬롯 fetch만·확정 아님).
+      const chips = page.locator('ul[aria-label="예약 날짜 선택"] > li button');
+      const cnt = await chips.count();
+      for (let i = 0; i < cnt; i++) {
+        await chips.nth(i).click();
+        await page.waitForTimeout(1800);
+        if ((await page.locator('ul[aria-label="예약 가능 시간"] button:not([disabled])').count()) > 0) break;
+      }
+      await page.waitForTimeout(800);
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByLabel("진료과") },
+      { n: 2, locator: page.getByLabel("의사") },
+      { n: 3, locator: page.getByRole("list", { name: "예약 날짜 선택" }) },
+      { n: 4, locator: page.getByRole("list", { name: "예약 가능 시간" }) },
+      { n: 5, locator: page.getByRole("button", { name: "예약 확정하기" }) }, // ⚠️ 위치만·클릭 금지
+    ],
+  },
+  {
+    role: "patient",
+    account: "pms.patient.demo@gmail.com",
+    password: "Patient1234!",
+    screen: "records", // 내 진료기록 /records (본인 내원 이력)
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/records`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.getByText("지난 진료 내역").waitFor({ timeout: 30000 }).catch(() => {});
+      await page.waitForTimeout(2000);
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByText("지난 진료 내역") },
+      { n: 2, locator: page.getByText(/정보만 안전하게/) },
+      { n: 3, locator: page.getByRole("button", { name: "처방·검사 결과 보기" }).first() },
+    ],
+  },
+  {
+    role: "patient",
+    account: "pms.patient.demo@gmail.com",
+    password: "Patient1234!",
+    screen: "records-detail", // 처방/검사결과 /records 펼침(encounter-detail)
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/records`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.getByText("지난 진료 내역").waitFor({ timeout: 30000 }).catch(() => {});
+      await page.waitForTimeout(1500);
+      await page.getByRole("button", { name: "처방·검사 결과 보기" }).first().click(); // GET detail(읽기)
+      await page.getByText("처방받은 약").waitFor({ timeout: 20000 }).catch(() => {});
+      await page.waitForTimeout(1500);
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByText("처방받은 약") },
+      { n: 2, locator: page.getByText("검사 결과 요약") },
+      { n: 3, locator: page.getByText(/정상|주의/).first() },
+    ],
+  },
+  {
+    role: "patient",
+    account: "pms.patient.demo@gmail.com",
+    password: "Patient1234!",
+    screen: "payments", // 수납(마이) /portal (본인 finalized 수납 카드)
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/portal`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.getByText("내 진료비 · 영수증").waitFor({ timeout: 30000 }).catch(() => {});
+      await page.waitForTimeout(2000);
+    },
+    annotate: (page) => [
+      // 위→아래 순서: 신뢰 노트(RLS) → 수납 카드 → 완료 배지.
+      { n: 1, locator: page.getByText(/결제 내역만 안전하게/) },
+      { n: 2, locator: page.getByRole("link").filter({ hasText: "납부" }).first() },
+      { n: 3, locator: page.getByText("완료").first() },
+    ],
+  },
+  {
+    role: "patient",
+    account: "pms.patient.demo@gmail.com",
+    password: "Patient1234!",
+    screen: "receipt", // 영수증 /receipts/[id] (마이 수납 카드 클릭 → 친화 요약)
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/portal`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.getByText("내 진료비 · 영수증").waitFor({ timeout: 30000 }).catch(() => {});
+      await page.waitForTimeout(1500);
+      await page.getByRole("link").filter({ hasText: "납부" }).first().click(); // 영수증으로 네비(읽기)
+      await page.getByRole("heading", { name: "진료비 영수증" }).waitFor({ timeout: 20000 }).catch(() => {});
+      await page.waitForTimeout(1500);
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByRole("heading", { name: "진료 항목" }) },
+      { n: 2, locator: page.getByText("내가 낸 금액") },
+      { n: 3, locator: page.getByRole("button", { name: "영수증 인쇄·저장" }) },
+    ],
+  },
 ];
