@@ -30,6 +30,12 @@ export default async function PatientPortalPage() {
         >
           본인 진료기록 연결
         </Link>
+        <Link
+          href="/portal/help"
+          className="rounded-xl border border-border bg-card px-4 py-3 text-center text-[13px] font-medium text-foreground hover:bg-muted"
+        >
+          도움말
+        </Link>
         <LogoutButton />
       </section>
 
