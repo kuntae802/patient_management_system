@@ -111,19 +111,22 @@ function HelpMenuSection({ item, guide }: { item: NavItem; guide?: HelpMenuGuide
 
 function HelpScreenBlock({ screen }: { screen: HelpScreen }) {
   return (
-    // 이미지를 위에 크게(원본 1440px 까지) 깔고, 번호 설명을 그 아래 가로로 펼친다 — 스크린샷 내용이 잘 보이도록.
-    <figure className="space-y-3">
-      <figcaption className="text-[14px] font-medium text-foreground">{screen.title}</figcaption>
-      <Image
-        src={helpImageSrc(screen.image)}
-        alt={screen.alt}
-        width={screen.imageWidth}
-        height={screen.imageHeight}
-        sizes="(min-width: 1536px) 1440px, 100vw"
-        className="h-auto w-full max-w-[1440px] rounded-md border border-border bg-card"
-      />
-      <div className="max-w-[1440px]">
-        <ol className="grid gap-x-8 gap-y-2.5 sm:grid-cols-2 xl:grid-cols-3">
+    // 좌: 스크린샷(크게) / 우: 번호 설명. 전체 폭 컨테이너라 2:1 그리드여도 이미지가 충분히 크다.
+    <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] lg:items-start">
+      <figure className="min-w-0">
+        <figcaption className="mb-1.5 text-[14px] font-medium text-foreground">{screen.title}</figcaption>
+        <Image
+          src={helpImageSrc(screen.image)}
+          alt={screen.alt}
+          width={screen.imageWidth}
+          height={screen.imageHeight}
+          sizes="(min-width: 1024px) 64vw, 100vw"
+          className="h-auto w-full rounded-md border border-border bg-card"
+        />
+      </figure>
+
+      <div className="min-w-0">
+        <ol className="space-y-2.5">
           {screen.hotspots.map((h) => (
             <li key={h.num} className="flex gap-2.5">
               <span
@@ -145,6 +148,6 @@ function HelpScreenBlock({ screen }: { screen: HelpScreen }) {
           </p>
         )}
       </div>
-    </figure>
+    </div>
   );
 }
