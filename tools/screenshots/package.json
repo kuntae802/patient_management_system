@@ -1,0 +1,15 @@
+{
+  "name": "help-screenshots",
+  "version": "1.0.0",
+  "description": "도움말 페이지용 번호 하이라이트 스크린샷 캡처 파이프라인(Story 9.2) — playwright 자동 캡처 + DOM 오버레이.",
+  "private": true,
+  "type": "module",
+  "main": "capture.mjs",
+  "scripts": {
+    "capture": "node capture.mjs"
+  },
+  "license": "ISC",
+  "devDependencies": {
+    "playwright": "^1.61.1"
+  }
+}
