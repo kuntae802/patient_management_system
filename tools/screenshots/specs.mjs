@@ -251,5 +251,80 @@ export const SPECS = [
     ],
   },
 
-  // ── 9.4~9.8: 간호/방사선사/관리자/환자 스펙을 여기에 추가 ──
+  // ── 간호(nurse) — Story 9.5 (계정 nurse@pms.local) ──
+  // ⚠️ 세 화면 모두 좌측 환자 행 클릭 후라야 우측 작업영역(번호 대상)이 보인다. goto 가 클릭까지 구동.
+  // ⚠️ 클라우드 캡처 시 nurse 가 vital.record·nursing.record·treatment.perform 보유해야 페이지 진입(미보유→홈 리다이렉트).
+  // ⚠️ 데이터 전제(미충족 시 폴백이 의미 없는 행을 클릭→빈/오캡처): 미수행 처치 보유 환자(데모=윤서아·t03 ordered)와
+  //    활력/간호기록 보유 환자(데모=오세훈)가 demo_seed 에 있어야 한다. 캡처 전 현재 demo_seed 적용을 확인.
+  {
+    role: "nurse",
+    account: "nurse@pms.local",
+    screen: "worklist", // 처치 워크리스트 /nurse/worklist (로그인 후 nurse 홈)
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/nurse/worklist`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.waitForTimeout(2200);
+      // 미수행 처치 보유 환자(데모=윤서아) 행 클릭 → 우측 처치 수행 패널.
+      let row = page.getByRole("button").filter({ hasText: "윤서아" }).first();
+      if (!(await row.count())) row = page.locator("section ul li button, section button").first();
+      if (await row.count()) {
+        await row.click();
+        await page.waitForTimeout(1500);
+      }
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByRole("heading", { name: "수행 대기 처치" }) },
+      { n: 2, locator: page.getByRole("button").filter({ hasText: "윤서아" }).first() },
+      { n: 3, locator: page.getByPlaceholder(/처치기록 내용/) },
+      { n: 4, locator: page.getByRole("button", { name: "수행", exact: true }).first() },
+    ],
+  },
+  {
+    role: "nurse",
+    account: "nurse@pms.local",
+    screen: "vitals", // 활력징후 입력 /nurse/vitals
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/nurse/vitals`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.waitForTimeout(2200);
+      // 활력 보유 환자(데모=오세훈) 행 클릭 → 우측 최근 활력 + 입력 폼.
+      let row = page.getByRole("button").filter({ hasText: "오세훈" }).first();
+      if (!(await row.count())) row = page.locator("section ul li button, section button").first();
+      if (await row.count()) {
+        await row.click();
+        await page.waitForTimeout(1500);
+      }
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByRole("heading", { name: "오늘 활성 내원" }) },
+      { n: 2, locator: page.getByRole("button").filter({ hasText: "오세훈" }).first() },
+      { n: 3, locator: page.getByLabel("수축기 혈압 (mmHg)") },
+      { n: 4, locator: page.getByLabel("활력징후 메모") },
+      { n: 5, locator: page.getByRole("button", { name: "활력징후 기록" }) },
+    ],
+  },
+  {
+    role: "nurse",
+    account: "nurse@pms.local",
+    screen: "notes", // 간호기록 /nurse/notes
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/nurse/notes`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.waitForTimeout(2200);
+      // 기록 보유 환자(데모=오세훈) 행 클릭 → 우측 작성 폼 + 기록 목록.
+      let row = page.getByRole("button").filter({ hasText: "오세훈" }).first();
+      if (!(await row.count())) row = page.locator("section ul li button, section button").first();
+      if (await row.count()) {
+        await row.click();
+        await page.waitForTimeout(1500);
+      }
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByRole("heading", { name: "오늘 활성 내원" }) },
+      { n: 2, locator: page.getByRole("button").filter({ hasText: "오세훈" }).first() },
+      { n: 3, locator: page.getByLabel("간호기록 내용") },
+      { n: 4, locator: page.getByRole("button", { name: "간호기록 저장" }) },
+      // h1 "간호기록"과 우측 기록목록 헤더 "간호기록"이 중복 → 마지막(목록 헤더) 선택.
+      { n: 5, locator: page.getByRole("heading", { name: "간호기록", exact: true }).last() },
+    ],
+  },
+
+  // ── 9.6~9.8: 방사선사/관리자/환자 스펙을 여기에 추가 ──
 ];
