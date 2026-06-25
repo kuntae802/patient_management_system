@@ -5,7 +5,8 @@ import { HelpGuide } from "@/components/help/help-guide";
 // 안내하는 동적 인덱스/섹션은 HelpGuide(클라)가 usePermissions + filterNav 로 렌더한다.
 export default function HelpPage() {
   return (
-    <div className="mx-auto max-w-5xl px-6 py-8">
+    // 도움말은 스크린샷 가시성이 핵심이라 메인 영역 전체 폭을 사용(다른 화면의 max-w-5xl 관습과 의도적으로 다름).
+    <div className="px-6 py-8">
       <header className="mb-5">
         <h1 className="text-[18px] font-semibold text-foreground">도움말</h1>
         <p className="mt-0.5 text-[13px] text-muted-foreground">
