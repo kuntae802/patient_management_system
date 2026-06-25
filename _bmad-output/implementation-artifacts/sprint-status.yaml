@@ -138,3 +138,16 @@ development_status:
   8-4-환자-앱-apk-패키징-배포: done
   8-5-운영-대시보드-통계-관리자: done
   epic-8-retrospective: done
+
+  # ── Epic 9: 도움말 · 온보딩 가이드 ──
+  # epics.md 수동 증분과 동일하게 sprint-status도 수동 증분(sprint-planning 재실행=전체 재생성 위험 회피).
+  epic-9: in-progress
+  9-1-도움말-페이지-셸-네비게이션바-콘텐츠-구조: done
+  9-2-스크린샷-캡처-파이프라인-더미-데이터: backlog
+  9-3-원무-메뉴-안내: backlog
+  9-4-의사-메뉴-안내: backlog
+  9-5-간호-메뉴-안내: backlog
+  9-6-방사선사-메뉴-안내: backlog
+  9-7-관리자-메뉴-안내: backlog
+  9-8-환자-메뉴-안내: backlog
+  epic-9-retrospective: optional
