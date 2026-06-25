@@ -37,6 +37,8 @@ require_prescription_create = require_permission("prescription.create")
 require_examination_order = require_permission("examination.order")
 require_treatment_order = require_permission("treatment.order")
 require_order_read = require_permission("order.read")
+# 오더 취소(0056) = order.cancel(의사). 미수행/미발급만 — 차단은 RPC 소스상태 선검사.
+require_order_cancel = require_permission("order.cancel")
 # 원외처방전 발급·출력(Story 7.7) = prescription.dispense(0050·원무 직무·FR-115). 발행(create)·조회
 # (order.read)와 별개 — 원무는 dispense 만 보유(발행/조회/수행 baseline 403 유지).
 require_prescription_dispense = require_permission("prescription.dispense")
@@ -75,6 +77,22 @@ async def list_prescriptions(
     ★ 읽기 게이트 = order.read(의사·간호·방사선만 — 원무 미열람, 최소권한). 작은 sub-collection →
     직접 배열(medical-records GET 선례, {data,meta} 봉투 아님)."""
     return await orders_service.list_prescriptions(user.sub, encounter_id)
+
+
+@router.post(
+    "/{encounter_id}/prescriptions/{prescription_id}/cancel",
+    response_model=PrescriptionResponse,
+)
+async def cancel_prescription(
+    encounter_id: UUID,
+    prescription_id: UUID,
+    user: CurrentUser = Depends(require_order_cancel),
+) -> PrescriptionResponse:
+    """처방 취소(issued→cancelled·0056). 게이트 order.cancel(오더 지시자=의사).
+
+    미발급 처방만 취소. cancel_prescription RPC(전이/감사 동일 txn). 타 내원/미존재 → 404·
+    비-issued(발급/취소) → 409·권한 미보유 → 403."""
+    return await orders_service.cancel_prescription(user.sub, encounter_id, prescription_id)
 
 
 # ── 원외처방전 출력·발급 (Story 7.7 / FR-115·FR-080·UX-DR22) — 게이트 prescription.dispense ──
@@ -165,6 +183,22 @@ async def list_examinations(
 
 
 @router.post(
+    "/{encounter_id}/examinations/{examination_id}/cancel",
+    response_model=ExaminationResponse,
+)
+async def cancel_examination(
+    encounter_id: UUID,
+    examination_id: UUID,
+    user: CurrentUser = Depends(require_order_cancel),
+) -> ExaminationResponse:
+    """검사·영상 오더 취소(ordered→cancelled·0056). 게이트 order.cancel.
+
+    미수행 오더만 취소(수행분 차단). cancel_examination RPC(전이/감사). 타 내원/미존재 → 404·
+    비-ordered → 409·권한 미보유 → 403. 미수행 취소=fee 영향 0."""
+    return await orders_service.cancel_examination(user.sub, encounter_id, examination_id)
+
+
+@router.post(
     "/{encounter_id}/treatment-orders",
     response_model=TreatmentOrderResponse,
     status_code=status.HTTP_201_CREATED,
@@ -194,3 +228,19 @@ async def list_treatment_orders(
 
     직접 배열(prescriptions/examinations GET 선례, {data,meta} 봉투 아님)."""
     return await orders_service.list_treatment_orders(user.sub, encounter_id)
+
+
+@router.post(
+    "/{encounter_id}/treatment-orders/{order_id}/cancel",
+    response_model=TreatmentOrderResponse,
+)
+async def cancel_treatment_order(
+    encounter_id: UUID,
+    order_id: UUID,
+    user: CurrentUser = Depends(require_order_cancel),
+) -> TreatmentOrderResponse:
+    """처치 오더 취소(ordered→cancelled·0056). 게이트 order.cancel.
+
+    미수행 오더만 취소(수행분 차단). cancel_treatment_order RPC(전이/감사). 타 내원/미존재 → 404·
+    비-ordered → 409·권한 미보유 → 403. 미수행 취소=fee 영향 0."""
+    return await orders_service.cancel_treatment_order(user.sub, encounter_id, order_id)

@@ -90,20 +90,23 @@ export function OrderPanel({
   const imagingExams = (examinations ?? []).filter(
     (e) => e.exam_type === "imaging",
   );
+  // 탭 카운트 = 활성 오더 수(취소건 제외 — 취소됨은 목록에 이력으로만 표시·0056).
+  const isActive = (o: { status: string }) => o.status !== "cancelled";
   const counts: Record<TabKey, number> = {
-    prescription: prescriptions?.length ?? 0,
-    lab: labExams.length,
-    imaging: imagingExams.length,
-    treatment: treatments?.length ?? 0,
+    prescription: (prescriptions ?? []).filter(isActive).length,
+    lab: labExams.filter(isActive).length,
+    imaging: imagingExams.filter(isActive).length,
+    treatment: (treatments ?? []).filter(isActive).length,
   };
 
   // 수가 자동 산정 프리뷰 — fee_schedule 기반(검사·영상·처치)만(처방=약가 없음). 표시 전용(산정=Epic7).
-  const feeItems = [...(examinations ?? []), ...(treatments ?? [])].map(
-    (o) => ({
+  // 취소 오더는 수가 미발생(0056·0021 트리거=performed 전이) → 프리뷰에서도 제외.
+  const feeItems = [...(examinations ?? []), ...(treatments ?? [])]
+    .filter(isActive)
+    .map((o) => ({
       amount_krw: o.amount_krw,
       coverage_type: o.coverage_type,
-    }),
-  );
+    }));
   const preview = feePreview(feeItems);
 
   // 누락 0 디텍터 — 미수행(ordered) 지연 건수(검사·영상·처치). nowMs=0(미로드) 이면 0.

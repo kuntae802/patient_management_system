@@ -237,6 +237,17 @@ join public.permissions p on p.code in ('examination.order')
 where r.code = 'doctor'
 on conflict (role_id, permission_id) do nothing;
 
+-- ── (DEV/데모) 의사(doctor) 역할 → 오더 취소 권한 grant (0056·미수행 오더 취소) ──────────────────
+-- order.cancel(0056 신규)은 오더 지시자(의사) 직무 — 잘못 낸 미수행 검사/처치/처방 취소. ⚠️ 신규 권한이라
+-- admin 부트 grant 는 0056 마이그가 소유(0002 cross-join 미포함 함정 회피). 여기선 doctor 매핑(0056 마이그도
+-- doctor grant 하지만 seed 명시 = 다른 오더 권한과 나란히·로컬 reset 일관). 멱등.
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code in ('order.cancel')
+where r.code = 'doctor'
+on conflict (role_id, permission_id) do nothing;
+
 -- ── (DEV/데모) 의사(doctor) 역할 → 처치 오더 권한 grant (Story 5.4) ──────────────────────────
 -- 처치 오더(`treatment.order`)는 의사 핵심 직무. ⚠️ treatment.order 는 **0002 기존 권한**
 -- (0015 신규 아님 — 0002:95) — admin 은 0002 cross-join 으로 이미 보유하므로 **admin 부트 grant 재실행 불요**

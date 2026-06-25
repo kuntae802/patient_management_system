@@ -14,6 +14,7 @@ import {
 } from "@/lib/encounters/diagnoses";
 import { allergyMatch } from "@/lib/encounters/order-safety";
 import {
+  cancelPrescription,
   createPrescription,
   issuedIngredientCodes,
   type Prescription,
@@ -164,6 +165,27 @@ export function PrescriptionPanel({
       toast.error(
         err instanceof ApiError ? err.message : "처방 발행에 실패했습니다.",
       );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // 미발급 처방 취소(0056) — issue() 미러 + confirm. 409(이미 발급)/404 → onReload 로 상태 동기화.
+  async function cancel(prescriptionId: string) {
+    if (busy) return;
+    if (!window.confirm("처방을 취소하시겠습니까?")) return;
+    setBusy(true);
+    try {
+      await cancelPrescription(encounterId, prescriptionId);
+      await onReload();
+      toast.success("처방을 취소했습니다.");
+    } catch (err) {
+      toast.error(
+        err instanceof ApiError ? err.message : "처방 취소에 실패했습니다.",
+      );
+      if (err instanceof ApiError && (err.status === 409 || err.status === 404)) {
+        await onReload();
+      }
     } finally {
       setBusy(false);
     }
@@ -366,15 +388,33 @@ export function PrescriptionPanel({
             {issued.map((p) => (
               <li
                 key={p.id}
-                className="rounded-md border border-border bg-card px-2.5 py-2"
+                className={`rounded-md border border-border bg-card px-2.5 py-2${
+                  p.status === "cancelled" ? " opacity-60" : ""
+                }`}
               >
                 <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
-                  <span className="rounded border border-status-done/40 bg-status-done/12 px-1.5 py-0.5 font-medium text-status-done-ink">
-                    발행
-                  </span>
+                  {p.status === "cancelled" ? (
+                    <span className="rounded border border-status-cancelled/40 bg-status-cancelled/12 px-1.5 py-0.5 font-medium text-status-cancelled">
+                      취소됨
+                    </span>
+                  ) : (
+                    <span className="rounded border border-status-done/40 bg-status-done/12 px-1.5 py-0.5 font-medium text-status-done-ink">
+                      발행
+                    </span>
+                  )}
                   <span className="tabular-nums">
                     {timeHmKST(p.ordered_at)}
                   </span>
+                  {p.status === "issued" && (
+                    <button
+                      type="button"
+                      onClick={() => void cancel(p.id)}
+                      disabled={busy}
+                      className="ml-auto shrink-0 rounded border border-status-cancelled/40 px-1.5 py-0.5 text-[11px] font-medium text-status-cancelled hover:bg-status-cancelled/10 disabled:opacity-50"
+                    >
+                      취소
+                    </button>
+                  )}
                 </div>
                 <ul className="mt-1 space-y-0.5">
                   {p.details.map((d) => (

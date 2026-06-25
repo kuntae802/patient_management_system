@@ -60,3 +60,13 @@ export async function createExamination(
     body: JSON.stringify(body),
   });
 }
+
+/** 검사·영상 오더 취소(POST .../cancel·0056). 게이트 order.cancel. 미수행(ordered)만 — 수행분 409. */
+export async function cancelExamination(
+  encounterId: string,
+  examinationId: string,
+): Promise<Examination> {
+  return apiFetch<Examination>(`${examinationsUrl(encounterId)}/${examinationId}/cancel`, {
+    method: "POST",
+  });
+}

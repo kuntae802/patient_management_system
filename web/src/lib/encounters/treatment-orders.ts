@@ -55,6 +55,17 @@ export async function createTreatmentOrder(
   });
 }
 
+/** 처치 오더 취소(POST .../cancel·0056). 게이트 order.cancel. 미수행(ordered)만 — 수행분 409. */
+export async function cancelTreatmentOrder(
+  encounterId: string,
+  orderId: string,
+): Promise<TreatmentOrder> {
+  return apiFetch<TreatmentOrder>(
+    `${treatmentOrdersUrl(encounterId)}/${orderId}/cancel`,
+    { method: "POST" },
+  );
+}
+
 // ── 처치 수행·일상 간호기록·간호 워크리스트(Story 5.7 / FR-090·FR-092·FR-093·FR-094) ──────
 
 /** FastAPI NursingWorklistItem 거울. 오늘 활성 내원 1행 + 미수행 처치·간호기록 건수(비-PII). */

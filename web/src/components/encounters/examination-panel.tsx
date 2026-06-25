@@ -12,6 +12,7 @@ import { MasterSearchPicker } from "@/components/ui/master-search-picker";
 import { formatKrw, type MasterPickerItem } from "@/lib/admin/masters";
 import { ApiError } from "@/lib/api/client";
 import {
+  cancelExamination,
   createExamination,
   type Examination,
   type ExamType,
@@ -75,6 +76,27 @@ export function ExaminationPanel({
     }
   }
 
+  // 미수행 오더 취소(0056) — order() 미러 + confirm. 409(이미 수행)/404 → onReload 로 상태 동기화.
+  async function cancel(examinationId: string) {
+    if (busy) return;
+    if (!window.confirm(`${label} 오더를 취소하시겠습니까?`)) return;
+    setBusy(true);
+    try {
+      await cancelExamination(encounterId, examinationId);
+      await onReload();
+      toast.success(`${label} 오더를 취소했습니다.`);
+    } catch (err) {
+      toast.error(
+        err instanceof ApiError ? err.message : `${label} 취소에 실패했습니다.`,
+      );
+      if (err instanceof ApiError && (err.status === 409 || err.status === 404)) {
+        await onReload();
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const ordered = examinations ?? [];
 
   return (
@@ -107,12 +129,20 @@ export function ExaminationPanel({
             {ordered.map((ex) => (
               <li
                 key={ex.id}
-                className="rounded-md border border-border bg-card px-2.5 py-2"
+                className={`rounded-md border border-border bg-card px-2.5 py-2${
+                  ex.status === "cancelled" ? " opacity-60" : ""
+                }`}
               >
                 <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
-                  <span className="rounded border border-status-received/40 bg-status-received/12 px-1.5 py-0.5 font-medium text-status-received-ink">
-                    지시
-                  </span>
+                  {ex.status === "cancelled" ? (
+                    <span className="rounded border border-status-cancelled/40 bg-status-cancelled/12 px-1.5 py-0.5 font-medium text-status-cancelled">
+                      취소됨
+                    </span>
+                  ) : (
+                    <span className="rounded border border-status-received/40 bg-status-received/12 px-1.5 py-0.5 font-medium text-status-received-ink">
+                      지시
+                    </span>
+                  )}
                   <span className="tabular-nums">
                     {timeHmKST(ex.ordered_at)}
                   </span>
@@ -121,6 +151,16 @@ export function ExaminationPanel({
                     status={ex.status}
                     nowMs={nowMs}
                   />
+                  {ex.status === "ordered" && (
+                    <button
+                      type="button"
+                      onClick={() => void cancel(ex.id)}
+                      disabled={busy}
+                      className="ml-auto shrink-0 rounded border border-status-cancelled/40 px-1.5 py-0.5 text-[11px] font-medium text-status-cancelled hover:bg-status-cancelled/10 disabled:opacity-50"
+                    >
+                      취소
+                    </button>
+                  )}
                 </div>
                 <div className="mt-1 flex items-center gap-2 text-[12.5px] text-foreground">
                   <span className="font-semibold tabular-nums">

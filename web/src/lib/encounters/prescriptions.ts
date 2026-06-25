@@ -76,6 +76,16 @@ export async function createPrescription(
   });
 }
 
+/** 처방 취소(POST .../cancel·0056). 게이트 order.cancel. 미발급(issued)만 — 발급/취소 409. */
+export async function cancelPrescription(
+  encounterId: string,
+  prescriptionId: string,
+): Promise<Prescription> {
+  return apiFetch<Prescription>(`${prescriptionsUrl(encounterId)}/${prescriptionId}/cancel`, {
+    method: "POST",
+  });
+}
+
 /**
  * 이미 처방된 성분(ingredient_code, 비-null) 집합 — 동일 성분 중복 경고(FR-052)의 기준.
  * 발행된(활성) 처방의 활성 상세 라인만 집계. 클라 측 비차단 경고 — 서버는 차단하지 않는다.
@@ -85,7 +95,7 @@ export function issuedIngredientCodes(
 ): Set<string> {
   const codes = new Set<string>();
   for (const p of prescriptions) {
-    if (!p.is_active) continue;
+    if (!p.is_active || p.status === "cancelled") continue; // 취소 처방은 중복 기준 제외(0056)
     for (const d of p.details) {
       if (d.is_active && d.ingredient_code) codes.add(d.ingredient_code);
     }

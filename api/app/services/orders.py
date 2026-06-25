@@ -50,6 +50,17 @@ async def list_prescriptions(sub: UUID, encounter_id: UUID) -> list[Prescription
     return [_to_prescription(r) for r in rows]
 
 
+async def cancel_prescription(
+    sub: UUID, encounter_id: UUID, prescription_id: UUID
+) -> PrescriptionResponse:
+    """처방 취소(issued→cancelled·0056). 게이트=라우터(order.cancel).
+
+    cancel_prescription RPC 가 전이·종결내원 게이트·감사를 동일 txn 소유. 타 내원/미존재 → 404,
+    비-issued(이미 발급/취소) → 409, 권한 미보유 → 403(전부 db/RPC raise). 반환 = 갱신 처방."""
+    row = await db.cancel_prescription(sub, encounter_id, prescription_id)
+    return _to_prescription(row)
+
+
 async def get_prescription_document(sub: UUID, encounter_id: UUID) -> PrescriptionDocumentResponse:
     """원외처방전 문서 데이터 조립(Story 7.7·FR-115). 게이트=라우터(prescription.dispense).
 
@@ -108,6 +119,19 @@ async def list_examinations(sub: UUID, encounter_id: UUID) -> list[ExaminationRe
     return [_to_examination(r) for r in rows]
 
 
+async def cancel_examination(
+    sub: UUID, encounter_id: UUID, examination_id: UUID
+) -> ExaminationResponse:
+    """검사·영상 오더 취소(ordered→cancelled·0056). 게이트=라우터(order.cancel).
+
+    cancel_examination RPC 가 전이·종결내원 게이트·감사를 동일 txn 소유. 타 내원/미존재 → 404,
+    비-ordered(수행/완료/취소) → 409, 권한 미보유 → 403(전부 db/RPC raise). 반환 = 갱신 검사."""
+    row = await db.call_cancel_examination(
+        sub, encounter_id=encounter_id, examination_id=examination_id
+    )
+    return _to_examination(row)
+
+
 def _to_treatment_order(row: dict[str, object]) -> TreatmentOrderResponse:
     """db 의 fee 조인 dict → TreatmentOrderResponse(단건 평면 — 중첩 없음)."""
     return TreatmentOrderResponse.model_validate(row)
@@ -133,3 +157,14 @@ async def list_treatment_orders(sub: UUID, encounter_id: UUID) -> list[Treatment
     """한 내원의 처치 오더 목록(최신순, fee 조인). 게이트=라우터(order.read)."""
     rows = await db.fetch_treatment_orders(sub, encounter_id)
     return [_to_treatment_order(r) for r in rows]
+
+
+async def cancel_treatment_order(
+    sub: UUID, encounter_id: UUID, order_id: UUID
+) -> TreatmentOrderResponse:
+    """처치 오더 취소(ordered→cancelled·0056). 게이트=라우터(order.cancel).
+
+    cancel_treatment_order RPC 가 전이·종결내원 게이트·감사를 동일 txn 소유. 타 내원/미존재 → 404,
+    비-ordered → 409, 권한 미보유 → 403(전부 db/RPC raise). 반환 = 갱신 처치 오더."""
+    row = await db.call_cancel_treatment_order(sub, encounter_id=encounter_id, order_id=order_id)
+    return _to_treatment_order(row)

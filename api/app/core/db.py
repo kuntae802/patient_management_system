@@ -2971,6 +2971,29 @@ async def dispense_prescription(
     return await _run_authed(sub, _op)
 
 
+async def cancel_prescription(
+    sub: UUID, encounter_id: UUID, prescription_id: UUID
+) -> dict[str, object]:
+    """처방 취소(issued→cancelled·0056) — cancel_prescription RPC. 게이트=라우터 order.cancel.
+
+    dispense_prescription 미러(경로 정합 선검사 → 소속 아니면 404). RPC 가 has_permission 재평가 +
+    종결내원 게이트 + 전이(issued→cancelled) 소유. 비-issued(이미 발급/취소) → 409(PT409), 미존재 →
+    404. 감사=trg_prescriptions_audit 자동(취소 주체·시각). 반환 = 갱신 처방(헤더 + 상세).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        await _require_prescription_owned(conn, encounter_id, prescription_id)
+        await conn.execute("select public.cancel_prescription($1)", prescription_id)
+        header = await conn.fetchrow(
+            f"select {_PRESCRIPTION_COLUMNS} {_PRESCRIPTION_FROM} where pr.id = $1",
+            prescription_id,
+        )
+        details = await _fetch_prescription_details(conn, prescription_id)
+        return {**dict(header), "details": [dict(r) for r in details]}
+
+    return await _run_authed(sub, _op)
+
+
 async def log_prescription_document_export(
     sub: UUID, encounter_id: UUID, prescription_id: UUID, document_type: str
 ) -> None:
@@ -3401,6 +3424,38 @@ async def call_perform_treatment_order(
             order_id,
         )
         assert full is not None  # 선검사로 행 존재 확정
+        return dict(full)
+
+    return await _run_authed(sub, _op)
+
+
+async def call_cancel_treatment_order(
+    sub: UUID, *, encounter_id: UUID, order_id: UUID
+) -> dict[str, object]:
+    """처치 오더 취소(ordered→cancelled·0056) — cancel_treatment_order RPC. 게이트=order.cancel.
+
+    call_perform_treatment_order 미러(경로 정합 선검사 → 해당 내원·활성). 비-ordered(수행/완료/취소)
+    → 409 invalid_transition(RPC PT409 친절선). RPC 가 권한(42501→403)·종결내원·전이 소유. 미수행만
+    취소 → fee_item 영향 0(0021 트리거=performed 전이에만 발생). 반환 = fee/users 조인 dict.
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        meta = await conn.fetchrow(
+            "select status from public.treatment_orders "
+            "where id = $1 and encounter_id = $2 and is_active = true",
+            order_id,
+            encounter_id,
+        )
+        if meta is None:
+            raise NotFoundError("처치 오더를 찾을 수 없습니다.", detail={"order_id": str(order_id)})
+        if meta["status"] != "ordered":
+            raise ConflictError(code="invalid_transition")
+        await conn.fetchrow("select * from public.cancel_treatment_order($1)", order_id)
+        full = await conn.fetchrow(
+            f"select {_TREATMENT_ORDER_COLUMNS} {_TREATMENT_ORDER_FROM} where tr.id = $1",
+            order_id,
+        )
+        assert full is not None
         return dict(full)
 
     return await _run_authed(sub, _op)
@@ -4272,6 +4327,41 @@ async def call_perform_examination(
             )
         # 전이 RPC(SECURITY DEFINER·재수행 차단). SQLSTATE → _run_authed 매핑(여기 try/except 불요).
         await conn.fetchrow("select * from public.perform_examination($1)", examination_id)
+        full = await conn.fetchrow(
+            f"select {_EXAMINATION_COLUMNS} {_EXAMINATION_FROM} where ex.id = $1",
+            examination_id,
+        )
+        assert full is not None
+        return dict(full)
+
+    return await _run_authed(sub, _op)
+
+
+async def call_cancel_examination(
+    sub: UUID, *, encounter_id: UUID, examination_id: UUID
+) -> dict[str, object]:
+    """검사 오더 취소(ordered→cancelled·0056) — cancel_examination RPC. 게이트=라우터 order.cancel.
+
+    call_perform_examination 미러(경로 정합 선검사 → 해당 내원·활성). 비-ordered(수행/완료/취소) →
+    409 invalid_transition(RPC PT409 친절선). RPC 가 권한(42501→403)·종결내원·전이 소유. 미수행만
+    취소 → fee_item 영향 0(0021 트리거=performed 전이에만). lab/imaging 무관(둘 다 ordered 취소).
+    반환 = fee/users 조인 dict(_EXAMINATION_COLUMNS).
+    """
+
+    async def _op(conn: asyncpg.Connection) -> dict[str, object]:
+        meta = await conn.fetchrow(
+            "select status from public.examinations "
+            "where id = $1 and encounter_id = $2 and is_active = true",
+            examination_id,
+            encounter_id,
+        )
+        if meta is None:
+            raise NotFoundError(
+                "검사 오더를 찾을 수 없습니다.", detail={"examination_id": str(examination_id)}
+            )
+        if meta["status"] != "ordered":
+            raise ConflictError(code="invalid_transition")
+        await conn.fetchrow("select * from public.cancel_examination($1)", examination_id)
         full = await conn.fetchrow(
             f"select {_EXAMINATION_COLUMNS} {_EXAMINATION_FROM} where ex.id = $1",
             examination_id,
