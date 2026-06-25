@@ -326,5 +326,69 @@ export const SPECS = [
     ],
   },
 
-  // ── 9.6~9.8: 방사선사/관리자/환자 스펙을 여기에 추가 ──
+  // ── 방사선사(radiologist) — Story 9.6 (계정 radiologist@pms.local) ──
+  // ⚠️ 촬영 워크리스트(/radiology/worklist)와 영상 업로드(/radiology/upload)는 동일 컴포넌트(h1만 차이).
+  //    둘 다 좌측 촬영 대기 행 클릭 후 우측 캡처 패널 표시 → goto 가 클릭 구동. equipment 는 표 자동 로드(클릭 X).
+  // ⚠️ 데이터 전제: 촬영 대기 imaging(데모=윤서아·흉부 단순촬영 x04)·장비 마스터(XR-01/XR-02/US-01) 존재(9.4 재시드).
+  //    x04 는 영상 0장 → 캡처 패널 "업로드된 영상 없음"·촬영 수행 disabled(번호는 부여됨).
+  // ⚠️ radiologist 가 examination.perform 보유해야 3페이지 진입(미보유→홈 리다이렉트·캡처 전 프로브).
+  {
+    role: "radiologist",
+    account: "radiologist@pms.local",
+    screen: "worklist", // 촬영 워크리스트 /radiology/worklist (로그인 후 홈)
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/radiology/worklist`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.waitForTimeout(2200);
+      let row = page.getByRole("button").filter({ hasText: /흉부|윤서아/ }).first();
+      if (!(await row.count())) row = page.locator("section ul li button, section button").first();
+      if (await row.count()) {
+        await row.click();
+        await page.waitForTimeout(1800);
+      }
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByRole("heading", { name: "촬영 대기 영상검사" }) },
+      { n: 2, locator: page.getByRole("button").filter({ hasText: /흉부|윤서아/ }).first() },
+      { n: 3, locator: page.getByLabel("영상 파일 선택") },
+      { n: 4, locator: page.getByLabel("촬영 장비") },
+      { n: 5, locator: page.getByRole("button", { name: "촬영 수행" }) },
+    ],
+  },
+  {
+    role: "radiologist",
+    account: "radiologist@pms.local",
+    screen: "upload", // 영상 업로드 /radiology/upload (worklist 와 동일 컴포넌트·h1만 다름·업로드 중심 강조)
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/radiology/upload`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.waitForTimeout(2200);
+      let row = page.getByRole("button").filter({ hasText: /흉부|윤서아/ }).first();
+      if (!(await row.count())) row = page.locator("section ul li button, section button").first();
+      if (await row.count()) {
+        await row.click();
+        await page.waitForTimeout(1800);
+      }
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByRole("heading", { name: "촬영 대기 영상검사" }) },
+      { n: 2, locator: page.getByLabel("영상 파일 선택") },
+      { n: 3, locator: page.getByText("PNG·JPEG·WEBP", { exact: false }) },
+      { n: 4, locator: page.getByLabel("촬영 장비") },
+    ],
+  },
+  {
+    role: "radiologist",
+    account: "radiologist@pms.local",
+    screen: "equipment", // 장비 관리 /radiology/equipment (읽기 전용 표·클릭 불필요)
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/radiology/equipment`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.waitForTimeout(2200);
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByRole("table") },
+      { n: 2, locator: page.getByRole("columnheader", { name: "장비명" }) },
+      { n: 3, locator: page.getByRole("columnheader", { name: "상태" }) },
+    ],
+  },
+
+  // ── 9.7~9.8: 관리자/환자 스펙을 여기에 추가 ──
 ];
