@@ -69,28 +69,44 @@ export function HelpGuide() {
       {/* 메뉴별 안내 섹션 — 화면이 있으면 화면들, 없으면(키 부재 또는 screens 빈배열) '준비 중' 플레이스홀더. */}
       <div className="space-y-12">
         {menus.map((item) => (
-          <HelpMenuSection key={item.href} item={item} guide={HELP_GUIDES[item.href]} />
+          <HelpMenuSection
+            key={item.href}
+            item={item}
+            guide={HELP_GUIDES[item.href]}
+          />
         ))}
       </div>
     </div>
   );
 }
 
-function HelpMenuSection({ item, guide }: { item: NavItem; guide?: HelpMenuGuide }) {
+function HelpMenuSection({
+  item,
+  guide,
+}: {
+  item: NavItem;
+  guide?: HelpMenuGuide;
+}) {
   const Icon = item.icon;
   // 화면이 1개 이상 있을 때만 콘텐츠 렌더 — 키는 있으나 screens 가 빈 배열이어도 '준비 중'으로 폴백.
   const hasScreens = !!guide && guide.screens.length > 0;
   return (
     // scroll-mt: 앵커 점프 시 sticky 인덱스(여러 줄로 wrap 가능)에 제목이 가리지 않도록 넉넉히 보정.
     // tabIndex=-1: 프래그먼트 이동 시 브라우저가 섹션에 포커스를 옮기도록(키보드 사용자 위치 동기화).
-    <section id={helpHrefSlug(item.href)} tabIndex={-1} className="scroll-mt-28 outline-none">
+    <section
+      id={helpHrefSlug(item.href)}
+      tabIndex={-1}
+      className="scroll-mt-28 outline-none"
+    >
       <header className="mb-4 border-b border-border pb-2">
         <h2 className="flex items-center gap-2 text-[16px] font-semibold text-foreground">
           <Icon className="size-4 text-muted-foreground" aria-hidden />
           {item.label}
         </h2>
         {guide?.intro && (
-          <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">{guide.intro}</p>
+          <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
+            {guide.intro}
+          </p>
         )}
       </header>
 
@@ -111,42 +127,45 @@ function HelpMenuSection({ item, guide }: { item: NavItem; guide?: HelpMenuGuide
 
 function HelpScreenBlock({ screen }: { screen: HelpScreen }) {
   return (
-    // 좌: 스크린샷(크게) / 우: 번호 설명. 전체 폭 컨테이너라 2:1 그리드여도 이미지가 충분히 크다.
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] lg:items-start">
-      <figure className="min-w-0">
-        <figcaption className="mb-1.5 text-[14px] font-medium text-foreground">{screen.title}</figcaption>
-        <Image
-          src={helpImageSrc(screen.image)}
-          alt={screen.alt}
-          width={screen.imageWidth}
-          height={screen.imageHeight}
-          sizes="(min-width: 1024px) 64vw, 100vw"
-          className="h-auto w-full rounded-md border border-border bg-card"
-        />
-      </figure>
+    // 제목을 그리드 위로 빼서, 좌(스크린샷)와 우(번호 설명)가 같은 높이에서 나란히 시작하게 한다.
+    <div className="space-y-2">
+      <p className="text-[14px] font-medium text-foreground">{screen.title}</p>
+      {/* 좌: 스크린샷(크게) / 우: 번호 설명. 전체 폭 컨테이너라 2:1 그리드여도 이미지가 충분히 크다. */}
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] lg:items-start">
+        <figure className="min-w-0">
+          <Image
+            src={helpImageSrc(screen.image)}
+            alt={screen.alt}
+            width={screen.imageWidth}
+            height={screen.imageHeight}
+            sizes="(min-width: 1024px) 64vw, 100vw"
+            className="h-auto w-full rounded-md border border-border bg-card"
+          />
+        </figure>
 
-      <div className="min-w-0">
-        <ol className="space-y-2.5">
-          {screen.hotspots.map((h) => (
-            <li key={h.num} className="flex gap-2.5">
-              <span
-                aria-hidden
-                className="mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-foreground text-[11px] font-semibold text-background"
-              >
-                {h.num}
-              </span>
-              <p className="text-[13px] leading-relaxed text-foreground">
-                <span className="font-medium">{h.element}</span>
-                <span className="text-muted-foreground"> — {h.desc}</span>
-              </p>
-            </li>
-          ))}
-        </ol>
-        {screen.flow && (
-          <p className="mt-3 rounded-md bg-muted/50 px-3 py-2 text-[13px] leading-relaxed text-muted-foreground">
-            {screen.flow}
-          </p>
-        )}
+        <div className="min-w-0">
+          <ol className="space-y-2.5">
+            {screen.hotspots.map((h) => (
+              <li key={h.num} className="flex gap-2.5">
+                <span
+                  aria-hidden
+                  className="mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-foreground text-[11px] font-semibold text-background"
+                >
+                  {h.num}
+                </span>
+                <p className="text-[13px] leading-relaxed text-foreground">
+                  <span className="font-medium">{h.element}</span>
+                  <span className="text-muted-foreground"> — {h.desc}</span>
+                </p>
+              </li>
+            ))}
+          </ol>
+          {screen.flow && (
+            <p className="mt-3 rounded-md bg-muted/50 px-3 py-2 text-[13px] leading-relaxed text-muted-foreground">
+              {screen.flow}
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );
