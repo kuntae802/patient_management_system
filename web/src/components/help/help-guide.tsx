@@ -6,6 +6,7 @@ import { usePermissions } from "@/hooks/use-permissions";
 import {
   HELP_GUIDES,
   helpHrefSlug,
+  helpImageSrc,
   type HelpMenuGuide,
   type HelpScreen,
 } from "@/lib/help/help-content";
@@ -114,11 +115,11 @@ function HelpScreenBlock({ screen }: { screen: HelpScreen }) {
       <figure className="min-w-0">
         <figcaption className="mb-1.5 text-[13px] font-medium text-foreground">{screen.title}</figcaption>
         <Image
-          src={screen.image}
+          src={helpImageSrc(screen.image)}
           alt={screen.alt}
           width={screen.imageWidth}
           height={screen.imageHeight}
-          unoptimized
+          sizes="(min-width: 1024px) 640px, 100vw"
           className="h-auto w-full rounded-md border border-border bg-card"
         />
       </figure>

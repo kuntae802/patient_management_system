@@ -41,6 +41,16 @@ export function helpHrefSlug(href: string): string {
   return `help-${href.replace(/^\/+/, "").replace(/\//g, "-")}`;
 }
 
+// ⚠️ basePath 함정: next/image 는 src 가 "/" 로 시작하는 internal 경로일 때 basePath 를 제대로 붙이지 않는다
+// (최적화 url 파라미터에 basePath 누락 → optimizer 가 /help/... 를 못 찾아 400). next.config 와 동일한
+// 폴백으로 basePath 를 직접 부여해, optimizer 의 internal fetch 가 public 자산(/<base>/help/...)을 가리키게 한다.
+const HELP_BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "/patient_management_system";
+
+/** 도움말 이미지(앱-내 절대경로)에 basePath 를 부여한 next/image src. */
+export function helpImageSrc(image: string): string {
+  return `${HELP_BASE_PATH}${image}`;
+}
+
 // 메뉴별 도움말 콘텐츠. 9.1 = 의사 진료 대기(→ 진료 허브 흐름)만 시범 이식(docs/submission/help-storyboard/9-2-의사.md 원형).
 // 나머지 메뉴는 키 미존재 = 페이지에서 "준비 중" 플레이스홀더. 원무/의사 판독/간호/방사선사/관리자/환자는 Story 9.3~9.8 이 채운다.
 export const HELP_GUIDES: Record<string, HelpMenuGuide> = {
