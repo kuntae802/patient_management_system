@@ -94,4 +94,14 @@ describe("HELP_GUIDES 무결성", () => {
       expect(HELP_GUIDES[href], `방사선사 메뉴 가이드 누락: ${href}`).toBeDefined();
     }
   });
+
+  it("관리자(admin)에 보이는 모든 메뉴는 가이드가 채워져 있다(Story 9.7 — 준비 중 0)", () => {
+    // 관리자 메뉴(운영/대시보드·마스터·권한·근무 스케줄·직원 계정·감사 로그)는 requiredPermission 게이트가
+    // 있지만(무게이트 4역할과 다름), 권한 보유 관리자에게 보이는 메뉴는 전부 가이드가 있어야 한다(FR-253).
+    // roles.includes("admin") = 권한과 무관히 admin 메뉴 6개 href 추출 → 전부 HELP_GUIDES 에 있어야 함.
+    const adminHrefs = STAFF_NAV.filter((n) => n.roles.includes("admin")).map((n) => n.href);
+    for (const href of adminHrefs) {
+      expect(HELP_GUIDES[href], `관리자 메뉴 가이드 누락: ${href}`).toBeDefined();
+    }
+  });
 });

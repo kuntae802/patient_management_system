@@ -73,6 +73,26 @@ describe("HelpGuide — 현재 계정 메뉴만 동적 렌더(FR-251)", () => {
     expect(screen.queryByText("이 메뉴의 안내는 준비 중입니다.")).not.toBeInTheDocument();
   });
 
+  it("관리자 계정은 6개 메뉴(운영/대시보드·마스터·권한·근무 스케줄·직원 계정·감사 로그)가 모두 콘텐츠로 채워진다(Story 9.7 — 준비 중 0)", () => {
+    // admin 메뉴는 requiredPermission 게이트 → 고유 권한 5종을 부여하면 6메뉴 전부 노출
+    // (master.manage 가 마스터·근무 스케줄 두 메뉴를 공유하므로 6메뉴 = 5권한).
+    renderAs("admin", ["dashboard.read", "master.manage", "rbac.manage", "user.manage", "audit.read"]);
+
+    // nav 라벨 = 섹션 heading(h2)·유일(화면 title 은 <p>라 heading 중복 없음).
+    expect(screen.getByRole("heading", { name: "운영/대시보드" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "마스터" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "권한" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "근무 스케줄" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "직원 계정" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "감사 로그" })).toBeInTheDocument();
+    // 운영 포인트 spot-check: 대시보드 월간/일별·권한 토글 즉시 반영·감사 가독성(마스킹/append-only).
+    expect(screen.getByText("일별 추세")).toBeInTheDocument();
+    expect(screen.getByText("허용/차단 셀")).toBeInTheDocument();
+    expect(screen.getByText("로그 목록")).toBeInTheDocument();
+    // 6메뉴 모두 콘텐츠 → 플레이스홀더 0.
+    expect(screen.queryByText("이 메뉴의 안내는 준비 중입니다.")).not.toBeInTheDocument();
+  });
+
   it("관리자라도 권한이 없으면 권한 게이트 메뉴가 전혀 노출되지 않는다", () => {
     renderAs("admin", []); // 권한 0 — admin 메뉴는 전부 requiredPermission 보유
 
