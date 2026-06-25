@@ -15,8 +15,17 @@ import {
 import { cn } from "@/lib/utils";
 
 // 현재 경로가 항목(또는 그 하위)인지 — 활성 표시 판정. usePathname 은 basePath 제외 앱-내 경로 반환.
-function isNavActive(pathname: string, href: string): boolean {
-  return pathname === href || pathname.startsWith(`${href}/`);
+// best-match: 하위 경로일 때 더 구체적(긴) href 가 매칭하면 부모는 양보 — 예: /reception/billing/history
+// 진입 시 부모 /reception/billing(수납)까지 동시 하이라이트되는 prefix 중복을 막는다.
+function isNavActive(pathname: string, href: string, allHrefs: string[]): boolean {
+  if (pathname === href) return true;
+  if (!pathname.startsWith(`${href}/`)) return false;
+  return !allHrefs.some(
+    (h) =>
+      h !== href &&
+      h.startsWith(`${href}/`) &&
+      (pathname === h || pathname.startsWith(`${h}/`)),
+  );
 }
 
 function NavLink({
@@ -59,6 +68,7 @@ export function Sidebar({ collapsed }: { collapsed: boolean }) {
 
   const items = filterNav(STAFF_NAV, role, has);
   const footerItems = filterNav(STAFF_FOOTER_NAV, role, has);
+  const allHrefs = [...items, ...footerItems].map((i) => i.href);
 
   // 섹션 순서를 보존하며 그룹핑(빈 섹션은 자연히 생기지 않음 → 캡션 깨짐 없음).
   const sections: { name: string; items: NavItem[] }[] = [];
@@ -104,7 +114,7 @@ export function Sidebar({ collapsed }: { collapsed: boolean }) {
                 key={item.href}
                 item={item}
                 collapsed={collapsed}
-                active={isNavActive(pathname, item.href)}
+                active={isNavActive(pathname, item.href, allHrefs)}
               />
             ))}
           </div>
@@ -118,7 +128,7 @@ export function Sidebar({ collapsed }: { collapsed: boolean }) {
             key={item.href}
             item={item}
             collapsed={collapsed}
-            active={isNavActive(pathname, item.href)}
+            active={isNavActive(pathname, item.href, allHrefs)}
           />
         ))}
         {/* 프로필(좌) + 로그아웃(우) 한 줄 — Finding #5(셸 푸터 이동) + 푸터 1행 레이아웃. */}
