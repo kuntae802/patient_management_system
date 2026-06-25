@@ -390,5 +390,112 @@ export const SPECS = [
     ],
   },
 
-  // ── 9.7~9.8: 관리자/환자 스펙을 여기에 추가 ──
+  // ── 관리자(admin) — 9.7 관리 6메뉴 ──
+  // ⚠️ 관리 화면은 토글·셀·드롭다운 클릭이 클라우드 DB 를 즉시 변경한다(권한 매트릭스 셀=실 grant·마스터
+  //    활성토글·직원 재직상태·스케줄 토글). goto 는 URL 이동+대기만, annotate 는 boundingBox 만 읽고
+  //    클릭하지 않는다(데모 DB 오염 방지). admin 계정=23권한 전부 → 6페이지 전부 접근.
+  //    데이터 풍부 3화면(대시보드/직원/감사)은 클라 fetch → 대기 충분히(스켈레톤 회피).
+  {
+    role: "admin",
+    account: "admin@pms.local",
+    screen: "dashboard", // 운영 대시보드 /admin/dashboard (클라 fetch /v1/dashboard/operations — 대기)
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/admin/dashboard`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      // 스켈레톤(aria-busy) → 카드/차트 로드 대기.
+      await page.getByRole("heading", { name: "선택일 현황" }).waitFor({ timeout: 30000 }).catch(() => {});
+      await page.waitForTimeout(2500);
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByLabel("조회 기준일(미지정=오늘)") },
+      { n: 2, locator: page.getByLabel("집계 기간") },
+      { n: 3, locator: page.getByRole("heading", { name: /최근 \d+일 합계/ }) },
+      { n: 4, locator: page.getByRole("heading", { name: "선택일 현황" }) },
+      { n: 5, locator: page.getByRole("heading", { name: "일별 내원" }) },
+    ],
+  },
+  {
+    role: "admin",
+    account: "admin@pms.local",
+    screen: "masters", // 마스터 /admin/masters (RSC 주입·기본 탭=진료과·토글 클릭 금지)
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/admin/masters`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.waitForTimeout(2200);
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByRole("tab", { name: "진료과" }) },
+      { n: 2, locator: page.getByRole("button", { name: "진료과 추가" }) },
+      { n: 3, locator: page.getByRole("columnheader", { name: "코드" }) },
+      { n: 4, locator: page.getByRole("columnheader", { name: "상태" }) },
+      { n: 5, locator: page.getByRole("button", { name: "수정" }).first() }, // ⚠️ 클릭 금지(boundingBox만)
+    ],
+  },
+  {
+    role: "admin",
+    account: "admin@pms.local",
+    screen: "permissions", // 권한 /admin/permissions (RSC 주입·⚠️셀 클릭=실 grant 변경 → 금지)
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/admin/permissions`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.waitForTimeout(2200);
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByText("변경은 즉시 적용되며", { exact: false }).first() }, // .first()=배너 div(텍스트가 div/span/b 다중 매칭 → strict 회피)
+      { n: 2, locator: page.getByText("고정 (관리자)") },
+      { n: 3, locator: page.getByRole("columnheader", { name: /관리자/ }) },
+      { n: 4, locator: page.getByRole("rowheader").first() },
+      { n: 5, locator: page.getByRole("button", { name: /— 허용$/ }).first() }, // ⚠️ 클릭 금지(boundingBox만)
+    ],
+  },
+  {
+    role: "admin",
+    account: "admin@pms.local",
+    screen: "schedule", // 근무 스케줄 /admin/schedule (기본 탭=근무표·의사목록 클라 fetch — 대기)
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/admin/schedule`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.waitForTimeout(2800);
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByRole("tab", { name: "근무표" }) },
+      { n: 2, locator: page.getByRole("button", { name: "근무표 추가" }) },
+      { n: 3, locator: page.getByRole("columnheader", { name: "의사" }) },
+      { n: 4, locator: page.getByRole("columnheader", { name: "시간대" }) },
+      { n: 5, locator: page.getByRole("columnheader", { name: "상태" }) },
+    ],
+  },
+  {
+    role: "admin",
+    account: "admin@pms.local",
+    screen: "users", // 직원 계정 /admin/users (클라 fetch /v1/admin/users — 대기·드롭다운 변경 금지)
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/admin/users`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.getByRole("columnheader", { name: "사번" }).waitFor({ timeout: 30000 }).catch(() => {});
+      await page.waitForTimeout(2500);
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByRole("button", { name: "계정 추가" }) },
+      { n: 2, locator: page.getByRole("button", { name: "새로고침" }) },
+      { n: 3, locator: page.getByRole("columnheader", { name: "사번" }) },
+      { n: 4, locator: page.getByRole("combobox", { name: /소속 진료과 변경/ }).first() }, // ⚠️ 변경 금지
+      { n: 5, locator: page.getByRole("combobox", { name: /재직상태 변경/ }).first() }, // ⚠️ 변경 금지
+    ],
+  },
+  {
+    role: "admin",
+    account: "admin@pms.local",
+    screen: "audit-logs", // 감사 로그 /admin/audit-logs (클라 fetch — 대기·읽기 전용·보기 클릭 금지)
+    async goto(page, BASE) {
+      await page.goto(`${BASE}/admin/audit-logs`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.getByRole("columnheader", { name: "시각" }).waitFor({ timeout: 30000 }).catch(() => {});
+      await page.waitForTimeout(2500);
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByLabel("동작 필터") },
+      { n: 2, locator: page.getByLabel("대상 필터") },
+      { n: 3, locator: page.getByLabel("시작일 필터") },
+      { n: 4, locator: page.getByRole("button", { name: "초기화" }) },
+      { n: 5, locator: page.getByRole("columnheader", { name: "시각" }) },
+      { n: 6, locator: page.getByRole("button", { name: /감사 상세 보기/ }).first() }, // ⚠️ 클릭 금지(boundingBox만)
+    ],
+  },
+
+  // ── 9.8: 환자 스펙을 여기에 추가 ──
 ];
