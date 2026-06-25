@@ -78,4 +78,12 @@ describe("HELP_GUIDES 무결성", () => {
       expect(HELP_GUIDES[href], `의사 메뉴 가이드 누락: ${href}`).toBeDefined();
     }
   });
+
+  it("간호(nurse)에 보이는 모든 메뉴는 가이드가 채워져 있다(Story 9.5 — 준비 중 0)", () => {
+    // 간호 메뉴(처치 워크리스트·활력징후 입력·간호기록)는 권한 게이트가 없어 전부 노출 → 전부 가이드 필요.
+    const nurseHrefs = STAFF_NAV.filter((n) => n.roles.includes("nurse")).map((n) => n.href);
+    for (const href of nurseHrefs) {
+      expect(HELP_GUIDES[href], `간호 메뉴 가이드 누락: ${href}`).toBeDefined();
+    }
+  });
 });

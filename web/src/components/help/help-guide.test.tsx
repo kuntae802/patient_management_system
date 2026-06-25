@@ -53,6 +53,15 @@ describe("HelpGuide — 현재 계정 메뉴만 동적 렌더(FR-251)", () => {
     expect(screen.queryByText("이 메뉴의 안내는 준비 중입니다.")).not.toBeInTheDocument();
   });
 
+  it("간호 계정은 3개 메뉴(처치 워크리스트·활력징후 입력·간호기록)가 모두 콘텐츠로 채워진다(Story 9.5 — 준비 중 0)", () => {
+    renderAs("nurse");
+
+    expect(screen.getByRole("heading", { name: "처치 워크리스트" })).toBeInTheDocument();
+    // worklist hotspot(고유 텍스트 — "오늘 활성 내원"은 vitals·notes 중복이라 사용 안 함)
+    expect(screen.getByText("수행 대기 처치")).toBeInTheDocument();
+    expect(screen.queryByText("이 메뉴의 안내는 준비 중입니다.")).not.toBeInTheDocument();
+  });
+
   it("관리자라도 권한이 없으면 권한 게이트 메뉴가 전혀 노출되지 않는다", () => {
     renderAs("admin", []); // 권한 0 — admin 메뉴는 전부 requiredPermission 보유
 
