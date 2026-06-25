@@ -362,4 +362,70 @@ export const HELP_GUIDES: Record<string, HelpMenuGuide> = {
       },
     ],
   },
+
+  // ── 방사선사(radiologist) — Story 9.6. 번호는 캡처 스펙 radiologist 엔트리와 1:1. ──
+  // ⚠️ 촬영 워크리스트와 영상 업로드는 같은 작업 공간(동일 컴포넌트·h1만 차이) — 강조점만 다르게 안내.
+  "/radiology/worklist": {
+    href: "/radiology/worklist",
+    intro:
+      "의사가 지시한 영상검사를 촬영 수행합니다. 검사를 선택해 촬영 영상을 업로드하고 장비를 배정한 뒤 “촬영 수행”합니다.",
+    screens: [
+      {
+        title: "촬영 워크리스트",
+        image: "/help/radiologist/worklist.png",
+        imageWidth: 1440,
+        imageHeight: 900,
+        alt: "방사선사 촬영 워크리스트 — 촬영 대기 목록과 캡처 패널",
+        hotspots: [
+          { num: 1, element: "촬영 대기 영상검사", desc: "오늘 촬영할 영상검사 목록입니다. 검사를 선택하면 우측에서 촬영합니다." },
+          { num: 2, element: "검사 행", desc: "환자·검사명을 확인해 선택합니다. 오래 밀리면 “지연” 배지가 붙습니다." },
+          { num: 3, element: "영상 파일 선택", desc: "촬영한 영상(PNG·JPEG·WEBP)을 업로드합니다." },
+          { num: 4, element: "촬영 장비", desc: "촬영에 쓴 장비를 배정합니다(선택)." },
+          { num: 5, element: "촬영 수행", desc: "영상을 1장 이상 올리면 활성화됩니다. 누르면 촬영이 수행 처리되고 의사 판독 대기로 넘어갑니다." },
+        ],
+        flow: "좌측 촬영 대기 목록에서 검사를 선택 → 영상을 1장 이상 업로드 → (장비 배정) → “촬영 수행”. 수행하면 그 검사가 의사의 판독 워크리스트로 넘어갑니다(영상이 없으면 촬영 수행 버튼은 비활성).",
+      },
+    ],
+  },
+  "/radiology/upload": {
+    href: "/radiology/upload",
+    intro:
+      "촬영 워크리스트와 같은 작업 공간입니다. 검사를 선택해 촬영 영상을 안전한 스토리지에 업로드합니다.",
+    screens: [
+      {
+        title: "영상 업로드",
+        image: "/help/radiologist/upload.png",
+        imageWidth: 1440,
+        imageHeight: 900,
+        alt: "방사선사 영상 업로드 — 파일 선택과 장비 배정",
+        hotspots: [
+          { num: 1, element: "촬영 대기 영상검사", desc: "검사를 선택하면 우측에서 영상을 올립니다(촬영 워크리스트와 같은 작업 공간)." },
+          { num: 2, element: "영상 파일 선택", desc: "촬영한 영상 파일을 고릅니다. 고르면 즉시 업로드됩니다." },
+          { num: 3, element: "업로드 안내", desc: "PNG·JPEG·WEBP, 최대 50MiB. 파일명에 주민번호 등 민감정보를 넣지 마세요." },
+          { num: 4, element: "촬영 장비", desc: "촬영에 쓴 장비를 배정합니다." },
+        ],
+        flow: "검사 선택 → 영상 파일 선택(즉시 업로드) → 장비 배정 → (촬영 워크리스트에서) 촬영 수행. 업로드한 영상은 의사 판독 시 함께 보입니다.",
+      },
+    ],
+  },
+  "/radiology/equipment": {
+    href: "/radiology/equipment",
+    intro:
+      "검사장비 목록과 가용 상태를 확인합니다(읽기 전용). 촬영 수행 시 가용 장비를 배정합니다.",
+    screens: [
+      {
+        title: "장비 관리",
+        image: "/help/radiologist/equipment.png",
+        imageWidth: 1440,
+        imageHeight: 900,
+        alt: "방사선사 장비 관리 — 검사장비 목록과 가용 상태",
+        hotspots: [
+          { num: 1, element: "장비 목록", desc: "등록된 검사장비 목록입니다." },
+          { num: 2, element: "장비 정보(코드·장비명·양식)", desc: "각 행에서 장비 코드·이름·양식(X-ray·US 등)을 확인합니다(② 는 장비명 열)." },
+          { num: 3, element: "상태", desc: "가용·사용 중·점검 중 상태입니다. 촬영 배정 시 가용 장비를 고릅니다." },
+        ],
+        flow: "장비 상태를 보고 촬영에 쓸 가용 장비를 확인합니다. 장비 등록·상태 변경은 이 화면 범위가 아닙니다.",
+      },
+    ],
+  },
 };

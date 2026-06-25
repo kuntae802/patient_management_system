@@ -86,4 +86,12 @@ describe("HELP_GUIDES 무결성", () => {
       expect(HELP_GUIDES[href], `간호 메뉴 가이드 누락: ${href}`).toBeDefined();
     }
   });
+
+  it("방사선사(radiologist)에 보이는 모든 메뉴는 가이드가 채워져 있다(Story 9.6 — 준비 중 0)", () => {
+    // 방사선사 메뉴(촬영 워크리스트·영상 업로드·장비 관리)는 권한 게이트가 없어 전부 노출 → 전부 가이드 필요.
+    const radHrefs = STAFF_NAV.filter((n) => n.roles.includes("radiologist")).map((n) => n.href);
+    for (const href of radHrefs) {
+      expect(HELP_GUIDES[href], `방사선사 메뉴 가이드 누락: ${href}`).toBeDefined();
+    }
+  });
 });

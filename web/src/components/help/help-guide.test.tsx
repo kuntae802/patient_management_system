@@ -62,6 +62,17 @@ describe("HelpGuide — 현재 계정 메뉴만 동적 렌더(FR-251)", () => {
     expect(screen.queryByText("이 메뉴의 안내는 준비 중입니다.")).not.toBeInTheDocument();
   });
 
+  it("방사선사 계정은 3개 메뉴(촬영 워크리스트·영상 업로드·장비 관리)가 모두 콘텐츠로 채워진다(Story 9.6 — 준비 중 0)", () => {
+    renderAs("radiologist");
+
+    // nav 라벨 = 섹션 heading(h2)·유일. 화면 title 은 <p>라 heading 중복 없음.
+    expect(screen.getByRole("heading", { name: "촬영 워크리스트" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "영상 업로드" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "장비 관리" })).toBeInTheDocument();
+    // 3메뉴 모두 콘텐츠 → 플레이스홀더 0.
+    expect(screen.queryByText("이 메뉴의 안내는 준비 중입니다.")).not.toBeInTheDocument();
+  });
+
   it("관리자라도 권한이 없으면 권한 게이트 메뉴가 전혀 노출되지 않는다", () => {
     renderAs("admin", []); // 권한 0 — admin 메뉴는 전부 requiredPermission 보유
 
