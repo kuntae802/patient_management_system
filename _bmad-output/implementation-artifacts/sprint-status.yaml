@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-26T20:00:00+0000
+last_updated: 2026-06-26T23:15:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -143,7 +143,7 @@ development_status:
   # epics.md 수동 증분과 동일하게 sprint-status도 수동 증분(sprint-planning 재실행=전체 재생성 위험 회피).
   epic-9: in-progress
   9-1-도움말-페이지-셸-네비게이션바-콘텐츠-구조: done
-  9-2-스크린샷-캡처-파이프라인-더미-데이터: backlog
+  9-2-스크린샷-캡처-파이프라인-더미-데이터: done
   9-3-원무-메뉴-안내: backlog
   9-4-의사-메뉴-안내: backlog
   9-5-간호-메뉴-안내: backlog

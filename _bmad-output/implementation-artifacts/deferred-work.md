@@ -472,3 +472,7 @@
 
 - 과거일 `waiting`/`in_progress` 스냅샷은 현재 status 기준으로 산정돼 과거 일자 조회 시 ~0 으로 수렴(그날의 대기 수도, 현재 대기 수도 아닌 혼합 의미). 이미 스토리 Dev Notes·glossary 에 "대기/진료중=now 스냅샷·과거일 0 근사" 수용 단순화로 문서화. UI 컴포넌트는 항상 date 미지정(=서버 KST 오늘)으로만 조회하므로 실 사용 경로에서는 미발현. 후속에 날짜 피커가 추가되면 과거일 스냅샷을 `N/A`(또는 as_of_date=오늘 고정)로 표기 검토. (Edge Case Hunter Med / Blind Hunter Med)
 - 일별 집계 SQL 의 일자 그룹이 `(col at time zone 'Asia/Seoul')::date` 함수 표현식이라 `registered_at`/`finalized_at`/`scheduled_start` 의 일반 timestamptz 인덱스를 사용하지 못함 → 데이터 누적 시 풀스캔 + per-row 타임존 변환. 데모 규모 무해. 성능 최적화(표현식 인덱스 등)는 아키텍처상 Post-MVP. 필요 시 `0056_*` 마이그레이션으로 표현식 인덱스 추가 검토. (Blind Hunter Low)
+
+## Deferred from: code review of 9-2-스크린샷-캡처-파이프라인-더미-데이터 (2026-06-25)
+
+- `supabase/demo_seed.sql:88` — appointments 정리 블록이 `or patient_id::text like '00010000-%'` 로 광역화되어, seed 환자(데모 20명)로 테스터가 재시드 사이에 만든 예약까지 매 재실행 삭제한다(시드 헤더의 "재실행 시 SEED 행만 정리·사용자 데이터 보존" 원칙 일부 위반). **9.2 가 도입한 변경 아님** — 이미 working tree 에 있던 수정으로, 구버전 demo_seed 가 랜덤 UUID 로 만든 예약을 FK 안전하게 청산하려는 의도적 결정. 데모 환경 한정이라 실해는 미미. 후속에 demo_seed 를 정식 커밋·정리할 때 "id 프리픽스 기준만으로 충분한지"를 재검토(또는 encounters 정리도 동일 기준으로 대칭화). (Blind Hunter Med · Edge Case Hunter Med)
