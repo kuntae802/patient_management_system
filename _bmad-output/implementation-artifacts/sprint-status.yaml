@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-19T17:59:12+0000
-last_updated: 2026-06-27T04:10:00+0000
+last_updated: 2026-06-27T06:10:00+0000
 project: patient_management_system
 project_key: NOKEY
 tracking_system: file-system
@@ -146,7 +146,7 @@ development_status:
   9-2-스크린샷-캡처-파이프라인-더미-데이터: done
   9-3-원무-메뉴-안내: done
   9-4-의사-메뉴-안내: done
-  9-5-간호-메뉴-안내: backlog
+  9-5-간호-메뉴-안내: done
   9-6-방사선사-메뉴-안내: backlog
   9-7-관리자-메뉴-안내: backlog
   9-8-환자-메뉴-안내: backlog
