@@ -53,6 +53,30 @@ export const SPECS = [
       { n: 6, locator: page.getByRole("region", { name: "오더 패널" }) },
     ],
   },
+  {
+    role: "doctor",
+    account: "doctor@pms.local",
+    screen: "radiology", // 판독 워크리스트 /doctor/radiology (Story 9.4)
+    async goto(page, BASE) {
+      // 좌측 판독 대기 목록(imaging·performed·활성내원=demo x05) 첫 항목 클릭 → 우측 ReadingPanel 표시.
+      await page.goto(`${BASE}/doctor/radiology`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.waitForTimeout(2200);
+      // 목록 첫 항목 클릭 → 우측 ReadingPanel 표시. 데모 x05=오세훈 흉부촬영 우선,
+      // 텍스트가 안 맞으면 좌측 판독 대기 목록(section ul li button)의 첫 항목으로 폴백.
+      let item = page.getByRole("button").filter({ hasText: /흉부|오세훈/ }).first();
+      if (!(await item.count())) item = page.locator("section ul li button").first();
+      if (await item.count()) {
+        await item.click();
+        await page.waitForTimeout(2000); // ReadingPanel 렌더
+      }
+    },
+    annotate: (page) => [
+      { n: 1, locator: page.getByRole("heading", { name: "판독 대기 영상검사" }) },
+      { n: 2, locator: page.getByPlaceholder("영상 판독 소견을 입력하세요.") },
+      { n: 3, locator: page.getByPlaceholder("결론·임프레션(선택).") },
+      { n: 4, locator: page.getByRole("button", { name: "판독 완료" }) },
+    ],
+  },
 
   // ── 원무(reception) — Story 9.3 (계정 reception@pms.local) ──
   // ⚠️ 상태 의존 화면이 많다(검색·진료과 선택·리마인더 실행·행 클릭 후라야 데이터가 보임). goto 가 그 상태까지 만든다.
