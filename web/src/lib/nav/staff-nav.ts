@@ -4,18 +4,16 @@ import {
   BellRing,
   CalendarClock,
   CalendarDays,
-  CircleHelp,
   ClipboardList,
   Database,
   FileText,
   LayoutDashboard,
   ListChecks,
   MonitorCog,
-  Printer,
+  Receipt,
   ScanLine,
   ScrollText,
   Search,
-  Settings,
   ShieldCheck,
   Upload,
   UserPlus,
@@ -58,14 +56,14 @@ export const STAFF_NAV: NavItem[] = [
   { section: "운영", label: "예약 관리", icon: CalendarDays, href: "/reception/schedule", roles: ["reception"] },
   { section: "운영", label: "리마인더", icon: BellRing, href: "/reception/reminders", roles: ["reception"] },
   { section: "환자", label: "환자 등록", icon: UserRoundPlus, href: "/reception/register", roles: ["reception"] },
-  { section: "환자", label: "환자 검색", icon: Search, href: "/reception/search", roles: ["reception"] },
+  { section: "환자", label: "환자 검색", icon: Search, href: "/patients", roles: ["reception"] },
   { section: "정산", label: "수납", icon: Wallet, href: "/reception/billing", roles: ["reception"] },
-  { section: "정산", label: "문서 출력", icon: Printer, href: "/reception/documents", roles: ["reception"] },
+  { section: "정산", label: "수납 내역", icon: Receipt, href: "/reception/billing/history", roles: ["reception"] },
 
   // ── 의사(doctor) ──
   { section: "진료", label: "진료 대기", icon: ClipboardList, href: "/doctor/waiting", roles: ["doctor"] },
   { section: "진료", label: "판독", icon: ScanLine, href: "/doctor/radiology", roles: ["doctor"] },
-  { section: "환자", label: "환자 검색", icon: Search, href: "/doctor/search", roles: ["doctor"] },
+  { section: "환자", label: "환자 검색", icon: Search, href: "/patients", roles: ["doctor"] },
 
   // ── 간호사(nurse) — 활력징후·처치·간호기록은 직무 본질 → 역할로 노출 ──
   { section: "진료", label: "처치 워크리스트", icon: ListChecks, href: "/nurse/worklist", roles: ["nurse"] },
@@ -86,11 +84,8 @@ export const STAFF_NAV: NavItem[] = [
   { section: "관리", label: "감사 로그", icon: ScrollText, href: "/admin/audit-logs", roles: ["admin"], requiredPermission: "audit.read" },
 ];
 
-// 전 직원 공통 푸터.
-export const STAFF_FOOTER_NAV: NavItem[] = [
-  { section: "기타", label: "설정", icon: Settings, href: "/settings", roles: ALL_STAFF_ROLES },
-  { section: "기타", label: "도움말", icon: CircleHelp, href: "/help", roles: ALL_STAFF_ROLES },
-];
+// 전 직원 공통 푸터. (설정·도움말은 미구현 — 페이지 신설 시 추가. 현재 빈 목록 = 죽은 링크 제거.)
+export const STAFF_FOOTER_NAV: NavItem[] = [];
 
 // 역할 한글 표시명(0002 roles.name 과 일치).
 export const ROLE_LABELS: Record<string, string> = {

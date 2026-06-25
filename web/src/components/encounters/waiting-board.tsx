@@ -10,12 +10,14 @@ import {
   Stethoscope,
   WifiOff,
 } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/encounters/status-badge";
 import { useEncountersRealtime } from "@/hooks/use-encounters-realtime";
+import { usePermissions } from "@/hooks/use-permissions";
 import { fetchDepartments, type Department } from "@/lib/admin/masters";
 import { ApiError } from "@/lib/api/client";
 import {
@@ -88,6 +90,8 @@ function actionMessage(err: unknown, fallback: string): string {
 
 export function WaitingBoard({ role }: { role: "reception" | "doctor" }) {
   const router = useRouter();
+  const { department: myDept } = usePermissions(); // 의사 본인 진료과(진료대기 고정용)
+  const isDoctor = role === "doctor";
   const [departments, setDepartments] = useState<Department[]>([]);
   const [departmentId, setDepartmentId] = useState("");
   const [deptError, setDeptError] = useState<string | null>(null);
@@ -112,7 +116,9 @@ export function WaitingBoard({ role }: { role: "reception" | "doctor" }) {
         if (cancelled) return;
         const active = rows.filter((d) => d.is_active);
         setDepartments(active);
-        setDepartmentId((prev) => prev || active[0]?.id || "");
+        // 의사=본인 진료과 고정(없으면 첫 활성). 그 외(원무 등)=전체 진료과("all") 디폴트.
+        const preferred = isDoctor ? (myDept?.id ?? active[0]?.id ?? "") : "all";
+        setDepartmentId((prev) => prev || preferred);
         setDeptError(null);
       })
       .catch(() => {
@@ -122,7 +128,7 @@ export function WaitingBoard({ role }: { role: "reception" | "doctor" }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isDoctor, myDept]);
 
   // 대기 목록 조회(진료과×일자). 첫 setState 가 await 이후 → effect 동기 setState 아님.
   const load = useCallback(async () => {
@@ -271,7 +277,6 @@ export function WaitingBoard({ role }: { role: "reception" | "doctor" }) {
   const activeCount = counts.registered + counts.in_progress + counts.scheduled;
   const dateLabel = onDate === todayKST() ? "오늘" : onDate;
   const heroDept = heroNext && departments.find((d) => d.id === heroNext.department_id)?.name;
-  const isDoctor = role === "doctor";
 
   // ── 렌더 ─────────────────────────────────────────────────────────────────────
   return (
@@ -293,9 +298,10 @@ export function WaitingBoard({ role }: { role: "reception" | "doctor" }) {
               setDepartmentId(e.target.value);
             }}
             aria-label="진료과"
-            disabled={!!deptError}
+            disabled={isDoctor || !!deptError}
             className="h-8 rounded-md border border-border bg-card px-2 text-[12.5px] text-foreground outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 disabled:opacity-60"
           >
+            {!isDoctor && <option value="all">전체 진료과</option>}
             {departments.length === 0 && <option value="">진료과</option>}
             {departments.map((d) => (
               <option key={d.id} value={d.id}>
@@ -473,12 +479,12 @@ export function WaitingBoard({ role }: { role: "reception" | "doctor" }) {
           <div className="flex flex-col items-center gap-3 px-4 py-12 text-center">
             <p className="text-[13px] text-muted-foreground">{dateLabel} 접수된 환자가 없습니다.</p>
             {role === "reception" && (
-              <a
+              <Link
                 href="/reception/intake"
                 className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-[13px] font-medium text-white hover:bg-primary-hover"
               >
                 ＋ 환자 접수하기
-              </a>
+              </Link>
             )}
           </div>
         ) : (
@@ -512,6 +518,7 @@ export function WaitingBoard({ role }: { role: "reception" | "doctor" }) {
                       pending={pending}
                       isStale={isStale}
                       role={role}
+                      showDept={departmentId === "all"}
                       onCall={onCall}
                       onRegister={onRegister}
                       onStart={onStart}
@@ -550,6 +557,7 @@ function GroupRows({
   onRegister,
   onStart,
   onResume,
+  showDept,
 }: {
   status: EncounterStatus;
   label: string;
@@ -561,6 +569,7 @@ function GroupRows({
   pending: Set<string>;
   isStale: boolean;
   role: "reception" | "doctor";
+  showDept: boolean;
   onCall: (item: EncounterListItem) => void;
   onRegister: (item: EncounterListItem) => void;
   onStart: (item: EncounterListItem) => void;
@@ -595,6 +604,7 @@ function GroupRows({
             busy={pending.has(m.id)}
             isStale={isStale}
             role={role}
+            showDept={showDept}
             onCall={onCall}
             onRegister={onRegister}
             onStart={onStart}
@@ -611,6 +621,7 @@ function EncounterRow({
   busy,
   isStale,
   role,
+  showDept,
   onCall,
   onRegister,
   onStart,
@@ -621,6 +632,7 @@ function EncounterRow({
   busy: boolean;
   isStale: boolean;
   role: "reception" | "doctor";
+  showDept: boolean;
   onCall: (item: EncounterListItem) => void;
   onRegister: (item: EncounterListItem) => void;
   onStart: (item: EncounterListItem) => void;
@@ -657,6 +669,11 @@ function EncounterRow({
       <td className="border-b border-border px-3 py-2">
         <span className="font-medium text-foreground">{item.patient_name}</span>
         <span className="ml-1.5 tabular-nums text-[11px] text-muted-foreground">{item.chart_no}</span>
+        {showDept && item.department_name && (
+          <span className="ml-1.5 rounded border border-primary/30 bg-primary/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-primary">
+            {item.department_name}
+          </span>
+        )}
         {item.called_at && (
           <span className="ml-1.5 text-[11px] text-muted-foreground">
             · 호출됨 {timeHmKST(item.called_at)}

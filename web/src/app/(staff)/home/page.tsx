@@ -1,6 +1,5 @@
 import Link from "next/link";
 
-import { LogoutButton } from "@/components/auth/logout-button";
 import { PermissionGate } from "@/components/auth/permission-gate";
 import { createClient } from "@/lib/supabase/server";
 
@@ -36,8 +35,6 @@ export default async function StaffHomePage() {
           </Link>
         </PermissionGate>
       </section>
-
-      <LogoutButton />
     </div>
   );
 }

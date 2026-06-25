@@ -101,14 +101,14 @@ async def start_consult(
 
 @router.get("", response_model=EncounterPage)
 async def list_encounters(
-    department_id: UUID,
+    department_id: UUID | None = Query(default=None),
     status: list[EncounterStatusName] | None = Query(default=None),
     on_date: date | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=200, ge=1, le=500),
     user: CurrentUser = Depends(require_encounter_read),
 ) -> EncounterPage:
-    """대기 현황판 목록(FR-022) — 진료과(필수)·상태·일자(KST, 기본 오늘) 필터, 활성도 순 그룹.
+    """대기 현황판 목록(FR-022) — 진료과(선택·미지정=전체 진료과)·상태·일자(KST, 기본 오늘) 필터.
 
     게이트 encounter.read. denormalized 조인(환자명·차트번호·진료과명·진료실·담당의). 보드는 하루치
     활성+종결 집합을 한 번에 그룹핑 → page_size 기본 200(일자-스코프로 바운드)."""

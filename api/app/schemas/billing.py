@@ -220,3 +220,29 @@ class BillingWorklistPage(BaseModel):
 
     data: list[BillingWorklistItem]
     meta: BillingPageMeta
+
+
+class PaymentHistoryItem(BaseModel):
+    """수납 내역 행(완료 finalized 수납 재조회·재출력용) — denormalized 표시 + 금액 요약.
+
+    원무가 영수증/내역서를 재발급하려고 완료 수납을 검색·열람할 때 쓰는 경량 행. 영수증 본문은
+    행 클릭 시 기존 영수증 화면(GET .../payment/receipt)이 조립한다(여기선 식별·금액 요약만)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    encounter_id: UUID
+    payment_no: str | None
+    patient_name: str
+    chart_no: str
+    department_name: str
+    total_amount_krw: int
+    copay_amount_krw: int
+    paid_amount_krw: int
+    finalized_at: datetime | None
+
+
+class PaymentHistoryPage(BaseModel):
+    """수납 내역 목록 응답 — 완료 수납 행 + 메타."""
+
+    data: list[PaymentHistoryItem]
+    meta: BillingPageMeta

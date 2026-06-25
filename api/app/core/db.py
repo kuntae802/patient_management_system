@@ -1799,7 +1799,7 @@ async def fetch_encounter(sub: UUID, encounter_id: UUID) -> asyncpg.Record | Non
 async def fetch_encounters(
     sub: UUID,
     *,
-    department_id: UUID,
+    department_id: UUID | None = None,
     statuses: list[str] | None = None,
     on_date: date,
     page: int = 1,
@@ -1819,7 +1819,8 @@ async def fetch_encounters(
         values.append(val)
         clauses.append(f"{frag_left}${len(values)}{frag_right}")
 
-    _add("e.department_id = ", department_id)
+    if department_id is not None:  # 미지정 = 전체 진료과(원무 병원 단위 대기현황)
+        _add("e.department_id = ", department_id)
     _add("(e.created_at at time zone 'Asia/Seoul')::date = ", on_date)
     _add("e.is_active = ", True)
     if statuses:
@@ -3298,8 +3299,8 @@ async def fetch_vital_signs(sub: UUID, encounter_id: UUID) -> list[dict[str, obj
     return await _run_authed(sub, _op)
 
 
-async def fetch_vitals_worklist(sub: UUID, on_date: date) -> list[dict[str, object]]:
-    """활력 워크리스트(Story 5.6 AC3) — 오늘(KST) 활성 내원(registered·in_progress) + 최근 활력.
+async def fetch_vitals_worklist(sub: UUID) -> list[dict[str, object]]:
+    """활력 워크리스트(Story 5.6 AC3) — 활성 내원(registered·in_progress) + 최근 활력.
 
     게이트=라우터(vital.record). service_role 경로라 RLS 우회(권위=라우터, encounter.read 0 무관).
     patients·departments 조인은 비-PII 투영(resident_no 제외, fetch_encounters 자세). latest_vital_
@@ -3316,9 +3317,7 @@ async def fetch_vitals_worklist(sub: UUID, on_date: date) -> list[dict[str, obje
             "join public.patients p on p.id = e.patient_id "
             "join public.departments d on d.id = e.department_id "
             "where e.is_active = true and e.status in ('registered', 'in_progress') "
-            "and (e.created_at at time zone 'Asia/Seoul')::date = $1 "
             "order by e.created_at asc",
-            on_date,
         )
         return [dict(r) for r in rows]
 
@@ -3484,8 +3483,8 @@ async def fetch_nursing_records(sub: UUID, encounter_id: UUID) -> list[dict[str,
     return await _run_authed(sub, _op)
 
 
-async def fetch_nursing_worklist(sub: UUID, on_date: date) -> list[dict[str, object]]:
-    """간호 워크리스트(Story 5.7) — 오늘(KST) 활성 내원 + 처치·간호기록 건수.
+async def fetch_nursing_worklist(sub: UUID) -> list[dict[str, object]]:
+    """간호 워크리스트(Story 5.7) — 활성 내원(미완결) + 처치·간호기록 건수.
 
     게이트=라우터(require_any treatment.perform ∨ nursing.record). service_role 경로라 RLS 우회.
     patients·departments 조인=비-PII 투영(fetch_vitals_worklist 자세). pending_treatment_count=
@@ -3508,9 +3507,7 @@ async def fetch_nursing_worklist(sub: UUID, on_date: date) -> list[dict[str, obj
             "join public.patients p on p.id = e.patient_id "
             "join public.departments d on d.id = e.department_id "
             "where e.is_active = true and e.status in ('registered', 'in_progress') "
-            "and (e.created_at at time zone 'Asia/Seoul')::date = $1 "
             "order by e.created_at asc",
-            on_date,
         )
         return [dict(r) for r in rows]
 
@@ -4099,8 +4096,8 @@ _EXAMINATION_IMAGE_FROM = (
 )
 
 
-async def fetch_radiology_worklist(sub: UUID, on_date: date) -> list[dict[str, object]]:
-    """촬영 워크리스트(FR-100) — 오늘(KST) 활성 내원의 미수행 영상검사 오더(imaging·ordered).
+async def fetch_radiology_worklist(sub: UUID) -> list[dict[str, object]]:
+    """촬영 워크리스트(FR-100) — 활성 내원(미완결)의 미수행 영상검사 오더(imaging·ordered).
 
     게이트=라우터(examination.perform). service_role(RLS 우회). patients·departments·fee_schedules
     조인 = 비-PII 투영(fetch_nursing_worklist 자세). image_count=업로드 누적(상관 서브쿼리). 지시
@@ -4122,9 +4119,7 @@ async def fetch_radiology_worklist(sub: UUID, on_date: date) -> list[dict[str, o
             "left join public.users ub on ub.id = ex.ordered_by "
             "where ex.exam_type = 'imaging' and ex.status = 'ordered' and ex.is_active = true "
             "and e.is_active = true and e.status in ('registered', 'in_progress') "
-            "and (e.created_at at time zone 'Asia/Seoul')::date = $1 "
             "order by ex.ordered_at asc",
-            on_date,
         )
         return [dict(r) for r in rows]
 
@@ -4294,8 +4289,8 @@ async def call_perform_examination(
 # 본 섹션 = 판독 워크리스트 조회 + 완료 wrapper(소견·결론 same-status UPDATE → 완료 전이).
 
 
-async def fetch_reading_worklist(sub: UUID, on_date: date) -> list[dict[str, object]]:
-    """판독 워크리스트(FR-102) — 오늘(KST) 활성 내원의 미판독 영상검사(imaging·performed).
+async def fetch_reading_worklist(sub: UUID) -> list[dict[str, object]]:
+    """판독 워크리스트(FR-102) — 활성 내원(미완결)의 미판독 영상검사(imaging·performed).
 
     게이트=라우터(examination.complete). service_role. fetch_radiology_worklist 미러 — 상태 축만
     ordered→performed, performed_by(up) 조인·performed_at 추가. 비-PII. FIFO(performed_at).
@@ -4318,9 +4313,7 @@ async def fetch_reading_worklist(sub: UUID, on_date: date) -> list[dict[str, obj
             "left join public.users up on up.id = ex.performed_by "
             "where ex.exam_type = 'imaging' and ex.status = 'performed' and ex.is_active = true "
             "and e.is_active = true and e.status in ('registered', 'in_progress') "
-            "and (e.created_at at time zone 'Asia/Seoul')::date = $1 "
             "order by ex.performed_at asc",
-            on_date,
         )
         return [dict(r) for r in rows]
 
@@ -4748,11 +4741,10 @@ async def log_document_export(sub: UUID, encounter_id: UUID, document_type: str)
 async def fetch_billing_worklist(
     sub: UUID,
     *,
-    on_date: date,
     page: int = 1,
     page_size: int = 200,
 ) -> tuple[list[asyncpg.Record], int]:
-    """수납 워크리스트(정산 대상 — registered/in_progress·오늘·진료과 무관) + 전체 건수(7.2/7.8).
+    """수납 워크리스트(정산 대상 — registered/in_progress·날짜/진료과 무관) + 전체 건수(7.2/7.8).
 
     원무는 병원 단위 정산 → 진료과 미스코프(대기 현황판과 달리 department_id 필터 없음). 일자는
     created_at 의 KST 날짜(fetch_encounters 미러). estimated_total = Σ fee_items(라이브·registered
@@ -4766,20 +4758,78 @@ async def fetch_billing_worklist(
         "join public.patients p on p.id = e.patient_id "
         "join public.departments d on d.id = e.department_id "
         "where e.status in ('registered', 'in_progress') and e.is_active = true "
-        "and (e.created_at at time zone 'Asia/Seoul')::date = $1 "
         "order by e.consult_started_at asc nulls last, e.encounter_no asc "
-        "limit $2 offset $3"
+        "limit $1 offset $2"
     )
     count_sql = (
         "select count(*) from public.encounters e "
-        "where e.status in ('registered', 'in_progress') and e.is_active = true "
-        "and (e.created_at at time zone 'Asia/Seoul')::date = $1"
+        "where e.status in ('registered', 'in_progress') and e.is_active = true"
     )
     offset = (page - 1) * page_size
 
     async def _op(conn: asyncpg.Connection) -> tuple[list[asyncpg.Record], int]:
-        rows = await conn.fetch(list_sql, on_date, page_size, offset)
-        total = int(await conn.fetchval(count_sql, on_date) or 0)
+        rows = await conn.fetch(list_sql, page_size, offset)
+        total = int(await conn.fetchval(count_sql) or 0)
+        return rows, total
+
+    return await _run_authed(sub, _op)
+
+
+_PAYMENT_HISTORY_COLUMNS = (
+    "pay.encounter_id, pay.payment_no, pay.total_amount_krw, "
+    "pay.copay_amount_krw, pay.paid_amount_krw, pay.finalized_at, "
+    "p.name as patient_name, p.chart_no, d.name as department_name"
+)
+
+
+async def fetch_payment_history(
+    sub: UUID,
+    *,
+    q: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> tuple[list[asyncpg.Record], int]:
+    """수납 내역(완료 finalized 수납) 검색 — 환자명·차트·영수증번호(ilike) + finalized_at 기간(KST).
+
+    payments→encounters→patients→departments 조인. 최신 정산순(finalized_at desc). 게이트=라우터
+    (payment.read). 컬럼·연산자 고정 리터럴·값만 $n 바인딩(fetch_encounters 패턴).
+    """
+    clauses: list[str] = ["pay.status = 'finalized'"]
+    values: list[object] = []
+
+    if q:
+        values.append(f"%{q}%")
+        idx = len(values)
+        clauses.append(
+            f"(p.name ilike ${idx} or p.chart_no ilike ${idx} or pay.payment_no ilike ${idx})"
+        )
+    if date_from is not None:
+        values.append(date_from)
+        clauses.append(f"(pay.finalized_at at time zone 'Asia/Seoul')::date >= ${len(values)}")
+    if date_to is not None:
+        values.append(date_to)
+        clauses.append(f"(pay.finalized_at at time zone 'Asia/Seoul')::date <= ${len(values)}")
+
+    where_sql = " where " + " and ".join(clauses)
+    join_sql = (
+        "from public.payments pay "
+        "join public.encounters e on e.id = pay.encounter_id "
+        "join public.patients p on p.id = e.patient_id "
+        "join public.departments d on d.id = e.department_id"
+    )
+    list_sql = (
+        f"select {_PAYMENT_HISTORY_COLUMNS} {join_sql}{where_sql} "
+        "order by pay.finalized_at desc nulls last "
+        f"limit ${len(values) + 1} offset ${len(values) + 2}"
+    )
+    count_sql = f"select count(*) {join_sql}{where_sql}"
+    offset = (page - 1) * page_size
+
+    async def _op(conn: asyncpg.Connection) -> tuple[list[asyncpg.Record], int]:
+        rows = await conn.fetch(list_sql, *values, page_size, offset)
+        total = int(await conn.fetchval(count_sql, *values) or 0)
         return rows, total
 
     return await _run_authed(sub, _op)

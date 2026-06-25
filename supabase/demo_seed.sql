@@ -68,17 +68,22 @@ begin
   select id into v_dx_lipid    from diagnoses where code = 'E78.5';
   select id into v_dx_gastro   from diagnoses where code = 'A09';
 
-  -- ── 기존 SEED 행 정리(FK 안전 순서, 프리픽스 매칭) ────────────────────────
+  -- ── 기존 SEED 행 정리(FK 의존 역순) ──────────────────────────────────────
+  -- ⚠️ 손자 테이블은 부모(encounter)의 자식 id 기준 서브쿼리로 지운다. 구버전 demo_seed 가
+  --    랜덤 UUID 로 만든 처방·검사도 청산되도록(프리픽스 매칭만으론 누락 → FK 위반). 재실행 멱등.
+  delete from payment_details      where payment_id      in (select id from payments      where encounter_id::text like '00020000-%');
+  delete from prescription_details where prescription_id in (select id from prescriptions where encounter_id::text like '00020000-%');
+  delete from examination_images   where examination_id  in (select id from examinations  where encounter_id::text like '00020000-%');
   delete from fee_items            where encounter_id::text  like '00020000-%';
   delete from vital_signs          where encounter_id::text  like '00020000-%';
   delete from nursing_record       where encounter_id::text  like '00020000-%';
-  delete from prescription_details where prescription_id::text like '00023000-%';
+  delete from payments             where encounter_id::text  like '00020000-%';
   delete from prescriptions        where encounter_id::text  like '00020000-%';
   delete from encounter_diagnoses  where encounter_id::text  like '00020000-%';
   delete from examinations         where encounter_id::text  like '00020000-%';
   delete from treatment_orders     where encounter_id::text  like '00020000-%';
   delete from medical_records      where encounter_id::text  like '00020000-%';
-  delete from payments             where encounter_id::text  like '00020000-%';
+  delete from notification_logs    where patient_id::text like '00010000-%' or appointment_id::text like '00030000-%';
   delete from encounters           where id::text            like '00020000-%';
   delete from appointments         where id::text            like '00030000-%';
   delete from guardians            where patient_id::text    like '00010000-%';

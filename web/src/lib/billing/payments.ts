@@ -75,6 +75,40 @@ export async function fetchBillingWorklist(date?: string): Promise<BillingWorkli
   return apiFetch<BillingWorklistPage>(`/v1/billing/worklist${query}`);
 }
 
+/** FastAPI PaymentHistoryItem 의 거울 — 완료(finalized) 수납 내역 행(재조회·재출력용). */
+export type PaymentHistoryItem = {
+  encounter_id: string;
+  payment_no: string | null;
+  patient_name: string;
+  chart_no: string;
+  department_name: string;
+  total_amount_krw: number;
+  copay_amount_krw: number;
+  paid_amount_krw: number;
+  finalized_at: string | null;
+};
+
+export type PaymentHistoryPage = {
+  data: PaymentHistoryItem[];
+  meta: { page: number; page_size: number; total: number };
+};
+
+/** 수납 내역(완료 finalized 수납) 조회·검색(GET). 게이트 payment.read. q=환자명·차트·영수증번호, 기간=KST date.
+ *  🚫 q(환자명 PII)는 로그·toast 에 남기지 않는다(라우트 불투명·응답은 마스킹 없는 정산 요약). */
+export async function fetchPaymentHistory(params: {
+  q?: string;
+  date_from?: string;
+  date_to?: string;
+  page?: number;
+}): Promise<PaymentHistoryPage> {
+  const sp = new URLSearchParams();
+  if (params.q) sp.set("q", params.q);
+  if (params.date_from) sp.set("date_from", params.date_from);
+  if (params.date_to) sp.set("date_to", params.date_to);
+  sp.set("page", String(params.page ?? 1));
+  return apiFetch<PaymentHistoryPage>(`/v1/billing/payments?${sp.toString()}`);
+}
+
 /** 수납 건 집계 빌드(진입 시 자동 집계, 멱등 POST). 게이트 payment.manage. 자동발생 수가를 draft 로 집계. */
 export async function buildPayment(encounterId: string): Promise<Payment> {
   return apiFetch<Payment>(`/v1/encounters/${encounterId}/payment`, {

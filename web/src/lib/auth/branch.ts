@@ -19,6 +19,17 @@ export function isStaffRole(role: string | null | undefined): boolean {
  * 로그인 후 착지 경로.
  * @param role `auth_user_role()` 결과 — active 직원의 역할 코드, 비직원이면 null/undefined.
  */
+// 역할별 홈(로그인 후 착지) — 각 역할의 주 업무 화면으로 바로 진입. 각 역할은 자기 홈 화면 권한을
+// 보유(메뉴 노출과 동일)하므로 가드에 걸리지 않는다. 미매핑 직원 역할은 STAFF_HOME(/home) 폴백.
+export const ROLE_HOME: Record<string, string> = {
+  reception: "/reception/waiting",
+  doctor: "/doctor/waiting",
+  nurse: "/nurse/worklist",
+  radiologist: "/radiology/worklist",
+  admin: "/admin/dashboard",
+};
+
 export function landingPathForRole(role: string | null | undefined): string {
-  return isStaffRole(role) ? STAFF_HOME : PATIENT_HOME;
+  if (!isStaffRole(role)) return PATIENT_HOME;
+  return ROLE_HOME[role as string] ?? STAFF_HOME;
 }

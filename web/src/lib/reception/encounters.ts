@@ -159,7 +159,10 @@ export type EncounterListParams = {
 /** 대기 현황판 목록 조회(GET /v1/encounters). 진료과 필수·상태·일자 필터. */
 export async function fetchEncounters(params: EncounterListParams): Promise<EncounterPage> {
   const q = new URLSearchParams();
-  q.set("department_id", params.department_id);
+  // "all"/미지정 = 전체 진료과(서버가 진료과 필터 생략·원무 병원 단위). 그 외엔 진료과 스코프.
+  if (params.department_id && params.department_id !== "all") {
+    q.set("department_id", params.department_id);
+  }
   (params.status ?? []).forEach((s) => q.append("status", s));
   if (params.on_date) q.set("on_date", params.on_date);
   // 하루치 진료과 집합은 한 페이지로 그룹핑 — API 최대(500)로 절단 가능성 최소화. 초과 시 보드가

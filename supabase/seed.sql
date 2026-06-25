@@ -117,6 +117,19 @@ join public.permissions p on p.code = 'encounter.call'
 where r.code = 'reception'
 on conflict (role_id, permission_id) do nothing;
 
+-- ── (수정) 원무(reception) 역할 → 환자 등록·조회·수정 권한 grant (Finding#1 / QA 2026-06-24) ──────
+-- 환자 등록·검색·임상프로필 입력은 원무 직무 본질(접수·예약의 "환자 선택"이 전제) — staff-nav.ts 는
+-- "원무의 환자 등록·검색은 권한 게이트 없이 역할로 노출"로 설계했으나, 시드에 patient.* grant 가
+-- 누락돼 원무가 patient.read/create/update 403 으로 핵심 업무가 막히던 버그(Finding#1)를 청산한다.
+-- reveal_rrn/reveal_contact 는 민감 → 제외(admin·doctor 만 보유, 1.7 매트릭스 소관). patient.* 는 0002 시드.
+-- ★ 운영 db push 미반영(로컬 db reset 전용) — 클라우드 반영은 RBAC 매트릭스 UI(PUT /admin/rbac/grants).
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code in ('patient.read', 'patient.create', 'patient.update')
+where r.code = 'reception'
+on conflict (role_id, permission_id) do nothing;
+
 -- ── (DEV/데모) 의사(doctor) 역할 → 진료 대기·진찰 시작 권한 grant (Story 4.4) ──────────────────
 -- 의사 보드 접근(encounter.read)·진찰 시작(encounter.start)은 의사 핵심 직무 — 진료 대기열 조회 +
 -- start_consult 골든 패스 가동(접수→호출→진찰). encounter.read/start 는 0002/0010 시드, 여기선 역할

@@ -10,9 +10,7 @@ RPC 가 아니라 service_role 직접 쓰기(구조화 수치·불변식 없음 
 
 from __future__ import annotations
 
-from datetime import datetime
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from app.core import db
 from app.schemas.nursing import (
@@ -25,8 +23,6 @@ from app.schemas.nursing import (
     VitalsWorklistItem,
 )
 from app.schemas.orders import TreatmentOrderResponse
-
-_KST = ZoneInfo("Asia/Seoul")
 
 
 def _to_vital_signs(row: dict[str, object]) -> VitalSignsResponse:
@@ -64,9 +60,8 @@ async def list_vital_signs(sub: UUID, encounter_id: UUID) -> list[VitalSignsResp
 
 
 async def list_vitals_worklist(sub: UUID) -> list[VitalsWorklistItem]:
-    """활력 워크리스트(AC3) — 오늘(KST) 활성 내원. 게이트=라우터(vital.record). 일자=KST today."""
-    today = datetime.now(_KST).date()
-    rows = await db.fetch_vitals_worklist(sub, today)
+    """활력 워크리스트(AC3) — 활성 내원. 게이트=라우터(vital.record)."""
+    rows = await db.fetch_vitals_worklist(sub)
     return [VitalsWorklistItem.model_validate(r) for r in rows]
 
 
@@ -111,10 +106,9 @@ async def list_nursing_records(sub: UUID, encounter_id: UUID) -> list[NursingRec
 
 
 async def list_nursing_worklist(sub: UUID) -> list[NursingWorklistItem]:
-    """간호 워크리스트(Story 5.7) — 오늘(KST) 활성 내원 + 미수행 처치·간호기록 건수.
+    """간호 워크리스트(Story 5.7) — 활성 내원 + 미수행 처치·간호기록 건수.
 
-    게이트=라우터(require_any treatment.perform ∨ nursing.record). 일자=KST today.
+    게이트=라우터(require_any treatment.perform ∨ nursing.record).
     """
-    today = datetime.now(_KST).date()
-    rows = await db.fetch_nursing_worklist(sub, today)
+    rows = await db.fetch_nursing_worklist(sub)
     return [NursingWorklistItem.model_validate(r) for r in rows]

@@ -158,7 +158,7 @@ function TrendCard({
             return (
               <div
                 key={p.date}
-                className="flex min-w-0 flex-1 flex-col items-center justify-end gap-1"
+                className="flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1"
                 title={`${monthDayLabel(p.date)} · ${format(v)}`}
               >
                 <span className="h-3 text-[8px] leading-none text-muted-foreground tabular-nums">

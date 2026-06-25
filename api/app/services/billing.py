@@ -7,9 +7,8 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from app.core import db
 from app.core.errors import NotFoundError
@@ -17,11 +16,11 @@ from app.schemas.billing import (
     BillingPageMeta,
     BillingWorklistItem,
     BillingWorklistPage,
+    PaymentHistoryItem,
+    PaymentHistoryPage,
     PaymentResponse,
     ReceiptResponse,
 )
-
-_KST = ZoneInfo("Asia/Seoul")  # 워크리스트 기본 일자 = KST 오늘(encounters_service 일관)
 
 
 def _to_payment(row: dict[str, object]) -> PaymentResponse:
@@ -106,18 +105,35 @@ async def export_document(sub: UUID, encounter_id: UUID, document_type: str) -> 
 async def list_billing_worklist(
     sub: UUID,
     *,
-    on_date: date | None = None,
     page: int = 1,
     page_size: int = 200,
 ) -> BillingWorklistPage:
-    """수납 워크리스트(정산 대상 내원 — in_progress·일자별) 목록. 게이트=라우터(payment.read).
+    """수납 워크리스트(정산 대상 — registered/in_progress·날짜 무관). 게이트=payment.read.
 
-    일자 미지정 시 오늘(KST) — encounters_service.list_encounters 동형."""
-    target_date = on_date or datetime.now(_KST).date()
+    미정산 활성 내원 전체(자정 경계 무관 — 진행중 내원은 완결까지 큐 유지)."""
     rows, total = await db.fetch_billing_worklist(
-        sub, on_date=target_date, page=page, page_size=page_size
+        sub, page=page, page_size=page_size
     )
     return BillingWorklistPage(
         data=[BillingWorklistItem.model_validate(dict(r)) for r in rows],
+        meta=BillingPageMeta(page=page, page_size=page_size, total=total),
+    )
+
+
+async def list_payment_history(
+    sub: UUID,
+    *,
+    q: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> PaymentHistoryPage:
+    """수납 내역(finalized) 검색 목록. 게이트=라우터(payment.read)."""
+    rows, total = await db.fetch_payment_history(
+        sub, q=q, date_from=date_from, date_to=date_to, page=page, page_size=page_size
+    )
+    return PaymentHistoryPage(
+        data=[PaymentHistoryItem.model_validate(dict(r)) for r in rows],
         meta=BillingPageMeta(page=page, page_size=page_size, total=total),
     )

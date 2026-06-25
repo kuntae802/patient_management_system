@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { isStaffRole, landingPathForRole, PATIENT_HOME, STAFF_HOME } from "./branch";
+import { isStaffRole, landingPathForRole, PATIENT_HOME } from "./branch";
 
 describe("landingPathForRole", () => {
-  it("직원 역할 → staff 영역", () => {
-    expect(landingPathForRole("admin")).toBe(STAFF_HOME);
-    expect(landingPathForRole("doctor")).toBe(STAFF_HOME);
-    expect(landingPathForRole("reception")).toBe(STAFF_HOME);
+  it("직원 역할 → 역할별 홈", () => {
+    expect(landingPathForRole("admin")).toBe("/admin/dashboard");
+    expect(landingPathForRole("doctor")).toBe("/doctor/waiting");
+    expect(landingPathForRole("reception")).toBe("/reception/waiting");
+    expect(landingPathForRole("nurse")).toBe("/nurse/worklist");
+    expect(landingPathForRole("radiologist")).toBe("/radiology/worklist");
   });
 
   it("비직원(null/undefined) → patient 영역", () => {

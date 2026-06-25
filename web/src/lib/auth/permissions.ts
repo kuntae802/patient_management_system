@@ -45,3 +45,21 @@ export async function fetchUserPermissions(
     })
     .filter((c): c is string => typeof c === "string");
 }
+
+// 현재 직원의 소속 진료과(users.department_id → departments). 의사 진료대기 "본인 과만" 고정 등에 사용.
+// fetchUserPermissions 와 동일 경로(users RLS 본인 행 + departments authenticated SELECT). 미배정/에러 → null.
+export async function fetchUserDepartment(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<{ id: string; code: string; name: string } | null> {
+  const { data, error } = await supabase
+    .from("users")
+    .select("departments(id, code, name)")
+    .eq("id", userId)
+    .maybeSingle();
+  if (error || !data) return null;
+  type Dept = { id: string; code: string; name: string };
+  const d = (data as { departments: Dept | Dept[] | null }).departments;
+  const dept = Array.isArray(d) ? d[0] : d;
+  return dept ? { id: dept.id, code: dept.code, name: dept.name } : null;
+}

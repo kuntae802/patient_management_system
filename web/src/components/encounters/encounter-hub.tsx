@@ -1,6 +1,7 @@
 "use client";
 
 import { AlertTriangle, ArrowLeft } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import { ConsultationWorkspace } from "@/components/encounters/consultation-workspace";
@@ -75,13 +76,13 @@ export function EncounterHub({
     <div className="space-y-4">
       {/* 헤더 — 대기로 복귀 + 내원 식별 */}
       <div className="flex flex-wrap items-center gap-3">
-        <a
+        <Link
           href="/doctor/waiting"
           className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2.5 py-1 text-[12.5px] text-muted-foreground hover:bg-muted"
         >
           <ArrowLeft className="size-3.5" aria-hidden />
           진료 대기
-        </a>
+        </Link>
         {encounter && (
           <>
             <h1 className="text-[18px] font-semibold tracking-[-0.02em] text-foreground tabular-nums">
@@ -167,12 +168,12 @@ export function EncounterHub({
             {ENCOUNTER_STATUS_META[encounter.status].label}). 진료 화면은 진찰을
             시작한 진행중 내원에서만 열립니다.
           </p>
-          <a
+          <Link
             href="/doctor/waiting"
             className="rounded-md border border-border bg-card px-3 py-1.5 text-[13px] font-medium text-foreground hover:bg-muted"
           >
             진료 대기로
-          </a>
+          </Link>
         </div>
       ) : (
         <div className="space-y-4">

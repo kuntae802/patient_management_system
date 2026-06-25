@@ -23,6 +23,7 @@ from app.schemas.billing import (
     DocumentExportRequest,
     PaymentCancelRequest,
     PaymentFinalizeRequest,
+    PaymentHistoryPage,
     PaymentPrepayRequest,
     PaymentResponse,
     ReceiptResponse,
@@ -39,17 +40,33 @@ require_payment_read = require_permission("payment.read")
 
 @router.get("/billing/worklist", response_model=BillingWorklistPage)
 async def list_billing_worklist(
-    on_date: date | None = Query(default=None, alias="date"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=200, ge=1, le=500),
     user: CurrentUser = Depends(require_payment_read),
 ) -> BillingWorklistPage:
-    """수납 워크리스트(정산 대상 내원 — in_progress·일자별, FR-110). 게이트 payment.read.
+    """수납 워크리스트(정산 대상 내원 — registered/in_progress, FR-110). 게이트 payment.read.
 
-    원무 병원 단위(진료과 무관). 일자 미지정 → KST 오늘(서비스 기본). 각 행 = 환자·차트번호·진료과·
+    원무 병원 단위(진료과 무관)·날짜 무관(미정산 활성 내원 전체). 각 행 = 환자·차트번호·진료과·
     진찰시작·예상 총액(Σ fee_items 라이브). 상세 진입 시 build_payment 가 영속 집계."""
     return await billing_service.list_billing_worklist(
-        user.sub, on_date=on_date, page=page, page_size=page_size
+        user.sub, page=page, page_size=page_size
+    )
+
+
+@router.get("/billing/payments", response_model=PaymentHistoryPage)
+async def list_payment_history(
+    q: str | None = Query(default=None, max_length=100),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    user: CurrentUser = Depends(require_payment_read),
+) -> PaymentHistoryPage:
+    """수납 내역(완료 finalized 수납) 조회·검색(환자명·차트·영수증번호·기간) — 직원 재발급용.
+
+    게이트 payment.read. 행 클릭 시 기존 영수증 화면으로 재출력. 최신 정산순."""
+    return await billing_service.list_payment_history(
+        user.sub, q=q, date_from=date_from, date_to=date_to, page=page, page_size=page_size
     )
 
 

@@ -53,16 +53,13 @@ export function useEncountersRealtime(
       debounce = setTimeout(() => onChangeRef.current(), DEBOUNCE_MS);
     };
 
+    // "all" = 전체 진료과 구독(진료과 필터 없음·원무 병원 단위). 그 외엔 진료과 필터.
+    const base = { event: "*" as const, schema: "public", table: "encounters" };
     const channel = supabase
       .channel(`encounters-dept-${departmentId}-${nonce}`)
       .on(
         "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "encounters",
-          filter: `department_id=eq.${departmentId}`,
-        },
+        departmentId === "all" ? base : { ...base, filter: `department_id=eq.${departmentId}` },
         () => trigger(),
       )
       .subscribe((status) => setChannelStatus(status));

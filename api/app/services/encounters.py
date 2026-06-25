@@ -71,7 +71,7 @@ async def get_encounter(sub: UUID, encounter_id: UUID) -> EncounterResponse:
 async def list_encounters(
     sub: UUID,
     *,
-    department_id: UUID,
+    department_id: UUID | None = None,
     statuses: list[str] | None = None,
     on_date: date | None = None,
     page: int = 1,

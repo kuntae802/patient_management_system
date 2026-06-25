@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { LogoutButton } from "@/components/auth/logout-button";
 import { usePermissions } from "@/hooks/use-permissions";
 import {
   filterNav,
@@ -120,11 +121,17 @@ export function Sidebar({ collapsed }: { collapsed: boolean }) {
             active={isNavActive(pathname, item.href)}
           />
         ))}
+        {/* 프로필(좌) + 로그아웃(우) 한 줄 — Finding #5(셸 푸터 이동) + 푸터 1행 레이아웃. */}
         <div className="mt-1 flex items-center gap-2 px-2 py-1.5">
           <div className="size-7 shrink-0 rounded-full bg-muted" aria-hidden />
           {!collapsed && roleLabel && (
             <div className="min-w-0">
               <div className="truncate text-[11px] text-muted-foreground">{roleLabel}</div>
+            </div>
+          )}
+          {!collapsed && (
+            <div className="ml-auto shrink-0">
+              <LogoutButton />
             </div>
           )}
         </div>
