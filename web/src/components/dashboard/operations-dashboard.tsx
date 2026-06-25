@@ -14,25 +14,28 @@ import {
   type DashboardOperationsResponse,
 } from "@/lib/dashboard/operations";
 
-// 운영 대시보드(Story 8.5 / FR-230) — 당일 KPI 스냅샷 + 최근 14일 추세(내원·순수납액·노쇼율). 집계는
-// 서버(FastAPI)가 담당 → 여기선 조회·표시만(read-only·쓰기 액션 0). useState 단일 로드(billing-worklist
+// 운영 대시보드(Story 8.5 / FR-230) — 조회 기준일 스냅샷 + 기간 합계(월간 수치) + 추세(내원·순수납액·
+// 노쇼율). 집계는 서버(FastAPI)가 담당 → 여기선 조회·표시만(read-only·쓰기 액션 0). 기준일(date)·기간
+// (days)은 API 가 이미 지원 — web 은 선택 UI + daily_series 합산만. useState 단일 로드(billing-worklist
 // 패턴·TanStack 미사용). 차트 = 신규 의존성 없이 인라인 막대(값·일자 라벨 병기 → 색/음영 비의존·A3).
 
-const TREND_DAYS = 14;
+const PERIOD_OPTIONS = [7, 14, 30, 90];
 
 export function OperationsDashboard() {
   const [data, setData] = useState<DashboardOperationsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [onDate, setOnDate] = useState(""); // "" = 오늘(서버가 KST 오늘 결정)
+  const [days, setDays] = useState(30); // 집계 기간(추세·합계) — 기본 월간(30일)
 
   const load = useCallback(async () => {
     try {
-      const res = await fetchDashboardOperations(undefined, TREND_DAYS);
+      const res = await fetchDashboardOperations(onDate || undefined, days);
       setData(res);
       setError(null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "운영 통계를 불러오지 못했습니다.");
     }
-  }, []);
+  }, [onDate, days]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- load 의 setState 는 await 이후
@@ -59,24 +62,83 @@ export function OperationsDashboard() {
   }
 
   const t = data.today;
+  // 기간 합계(월간 수치) = daily_series 누계. 노쇼율은 분모(슬롯 총수) 미제공 → 건수 합만(today 에 율 표시).
+  const period = data.daily_series.reduce(
+    (a, p) => ({
+      visits: a.visits + p.visits,
+      revenue: a.revenue + p.revenue_net_krw,
+      noShow: a.noShow + p.no_show_count,
+    }),
+    { visits: 0, revenue: 0, noShow: 0 },
+  );
   return (
     <div className="space-y-6">
-      <p className="text-[12px] text-muted-foreground">
-        <span className="tabular-nums">{formatKstDate(data.as_of_date)}</span> 기준
-      </p>
+      {/* 조회 컨트롤 — 기준일(일별 조회) + 기간(추세·합계) */}
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] font-medium text-muted-foreground">조회 기준일</span>
+          <input
+            type="date"
+            value={onDate}
+            onChange={(e) => setOnDate(e.target.value)}
+            aria-label="조회 기준일(미지정=오늘)"
+            className="h-9 rounded-md border border-border bg-card px-2.5 text-[13px] text-foreground outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] font-medium text-muted-foreground">기간</span>
+          <select
+            value={days}
+            onChange={(e) => setDays(Number(e.target.value))}
+            aria-label="집계 기간"
+            className="h-9 rounded-md border border-border bg-card px-2.5 text-[13px] text-foreground outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
+          >
+            {PERIOD_OPTIONS.map((d) => (
+              <option key={d} value={d}>
+                최근 {d}일
+              </option>
+            ))}
+          </select>
+        </label>
+        {onDate && (
+          <button
+            type="button"
+            onClick={() => setOnDate("")}
+            className="h-9 rounded-md border border-border bg-card px-3 text-[12.5px] font-medium text-muted-foreground hover:bg-muted"
+          >
+            오늘로
+          </button>
+        )}
+        <p className="ml-auto self-center text-[12px] text-muted-foreground">
+          <span className="tabular-nums">{formatKstDate(data.as_of_date)}</span> 기준
+        </p>
+      </div>
 
-      {/* 당일 KPI 스냅샷 */}
-      <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <StatCard label="내원" value={`${t.visits}`} unit="명" />
-        <StatCard label="대기" value={`${t.waiting}`} unit="명" />
-        <StatCard label="진료중" value={`${t.in_progress}`} unit="명" />
-        <StatCard label="완료" value={`${t.completed}`} unit="명" />
-        <StatCard label="순수납액" value={formatKrw(t.revenue_net_krw)} unit="원" />
-        <StatCard
-          label="노쇼율"
-          value={formatPercent(t.no_show_rate)}
-          detail={`${t.no_show_count} / ${t.appointment_total}건`}
-        />
+      {/* 기간 합계(월간 수치) — 최근 N일 누계 */}
+      <section>
+        <h2 className="mb-2 text-[12.5px] font-semibold text-foreground">최근 {days}일 합계</h2>
+        <div className="grid grid-cols-3 gap-3">
+          <StatCard label="내원" value={`${period.visits}`} unit="명" />
+          <StatCard label="순수납액" value={formatKrw(period.revenue)} unit="원" />
+          <StatCard label="노쇼" value={`${period.noShow}`} unit="건" />
+        </div>
+      </section>
+
+      {/* 선택일(조회 기준일) 현황 스냅샷 */}
+      <section>
+        <h2 className="mb-2 text-[12.5px] font-semibold text-foreground">선택일 현황</h2>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <StatCard label="내원" value={`${t.visits}`} unit="명" />
+          <StatCard label="대기" value={`${t.waiting}`} unit="명" />
+          <StatCard label="진료중" value={`${t.in_progress}`} unit="명" />
+          <StatCard label="완료" value={`${t.completed}`} unit="명" />
+          <StatCard label="순수납액" value={formatKrw(t.revenue_net_krw)} unit="원" />
+          <StatCard
+            label="노쇼율"
+            value={formatPercent(t.no_show_rate)}
+            detail={`${t.no_show_count} / ${t.appointment_total}건`}
+          />
+        </div>
       </section>
 
       {/* 최근 추세(인라인 막대 — 값·일자 라벨 병기) */}

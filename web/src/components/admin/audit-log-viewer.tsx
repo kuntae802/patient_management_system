@@ -11,6 +11,7 @@ import {
   actorLabel,
   formatAuditTime,
   KNOWN_TARGET_TABLES,
+  targetDisplayName,
   targetTableLabel,
   type AuditLogEntry,
   type AuditLogPage,
@@ -302,9 +303,13 @@ export function AuditLogViewer() {
                       </td>
                       <td className="border-b border-border px-4 py-2.5 text-muted-foreground">
                         {targetTableLabel(entry.target_table)}
-                        {entry.target_id ? (
+                        {targetDisplayName(entry) ? (
+                          <span className="ml-1 font-medium text-foreground">
+                            {targetDisplayName(entry)}
+                          </span>
+                        ) : entry.target_id ? (
                           <span className="ml-1 tabular-nums text-muted-foreground/70">
-                            #{entry.target_id}
+                            #{entry.target_id.slice(0, 8)}…
                           </span>
                         ) : null}
                       </td>

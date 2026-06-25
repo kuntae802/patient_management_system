@@ -183,8 +183,8 @@ begin
   -- ── 검사·처치 오더 생성(ordered) ─────────────────────────────────────────
   insert into examinations (id, encounter_id, exam_type, fee_schedule_id, ordered_by, ordered_at)
   values
-    ((xp||'01')::uuid, (ep||'03')::uuid, 'lab',     v_fee_cbc,   v_doc, (v_today-2 + time '10:10') at time zone 'Asia/Seoul'),
-    ((xp||'02')::uuid, (ep||'03')::uuid, 'lab',     v_fee_hba1c, v_doc, (v_today-2 + time '10:10') at time zone 'Asia/Seoul'),
+    -- lab(검체) 검사 제거 — 검체 채취 수행 경로(주체) 미구현으로 진료허브 "검사" 탭 삭제(Finding #2).
+    -- examination 인프라(exam_type)는 유지하되 영상(imaging)만 시드(처치는 treatment_orders 별도).
     ((xp||'03')::uuid, (ep||'06')::uuid, 'imaging', v_fee_cxr,   v_doc, (v_today-4 + time '10:10') at time zone 'Asia/Seoul'),
     ((xp||'04')::uuid, (ep||'08')::uuid, 'imaging', v_fee_cxr,   v_doc, (v_today   + time '10:05') at time zone 'Asia/Seoul');
 
@@ -221,9 +221,7 @@ begin
          performed_by = v_rad,
          performed_at = ordered_at + interval '20 min',
          equipment_id = case when exam_type='imaging' then v_eq_xr1 end
-   where id::text in ('00021000-0000-4000-8000-000000000001',
-                      '00021000-0000-4000-8000-000000000002',
-                      '00021000-0000-4000-8000-000000000003');
+   where id::text = '00021000-0000-4000-8000-000000000003';
 
   -- ── 판독 완료(performed→completed) + 소견·결론(x01,x02,x03) ─────────────────
   --    findings/reading_conclusion = 직원용 임상 서사(감사 마스킹·환자 비노출).
@@ -231,22 +229,14 @@ begin
   update examinations set status='completed', completed_by = v_doc,
          completed_at = performed_at + interval '30 min',
          findings = case right(id::text,2)
-                      when '01' then 'WBC 7.2, Hb 14.1, PLT 250 — 정상 범위'
-                      when '02' then 'HbA1c 7.8% — 목표(6.5%) 미달, 약물 조절 필요'
                       when '03' then '양측 폐야 청명, 심흉비 정상, 늑골횡격막각 예리' end,
          reading_conclusion = case right(id::text,2)
                       when '03' then '활동성 폐병변 없음' else null end,
          patient_result_summary = case right(id::text,2)
-                      when '01' then '피검사 수치가 모두 정상 범위예요.'
-                      when '02' then '혈당 조절이 조금 더 필요해요. 약과 식이를 꾸준히 지켜 주세요.'
                       when '03' then '가슴 사진에서 특별한 이상은 보이지 않았어요.' end,
          patient_result_flag = case right(id::text,2)
-                      when '01' then 'normal'
-                      when '02' then 'attention'
                       when '03' then 'normal' end
-   where id::text in ('00021000-0000-4000-8000-000000000001',
-                      '00021000-0000-4000-8000-000000000002',
-                      '00021000-0000-4000-8000-000000000003');
+   where id::text = '00021000-0000-4000-8000-000000000003';
 
   -- ── 처치 수행(ordered→performed) → 처치료 트리거 발화(t01,t02) ──────────────
   update treatment_orders set status='performed',

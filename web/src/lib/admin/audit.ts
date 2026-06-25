@@ -82,6 +82,21 @@ export function targetTableLabel(table: string): string {
   return TARGET_TABLE_LABELS[table] ?? table;
 }
 
+/** 대상 식별명 — 스냅샷(after/before)의 비-PII 단서(name·code·사번)로 UUID 대신 사람이 읽는 이름 제공.
+ *  delete 는 after 없음 → before 폴백. role_permissions 등 이름 없는 관계행은 null(목록이 UUID 폴백 표시).
+ *  ⚠️ name 은 서버 마스킹 통과값 — PII 테이블(patients/guardians)이면 마스킹 표시(현 부착 테이블엔 없음). */
+export function targetDisplayName(entry: AuditLogEntry): string | null {
+  const d = entry.after_data ?? entry.before_data;
+  if (!d) return null;
+  const name = typeof d.name === "string" ? d.name : null;
+  const code = typeof d.code === "string" ? d.code : null;
+  if (entry.target_table === "users") {
+    const emp = typeof d.employee_no === "string" ? d.employee_no : null;
+    return name ? (emp ? `${name} (${emp})` : name) : emp;
+  }
+  return name ?? code;
+}
+
 /** 행위자 표시명 — 이름(사번). NULL=시스템(GUC 미주입). 조인 미스(환자·삭제 직원)=불투명 id 일부. */
 export function actorLabel(entry: AuditLogEntry): string {
   if (entry.actor_id === null) return "시스템";

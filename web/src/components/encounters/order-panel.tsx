@@ -30,11 +30,12 @@ import type { Patient } from "@/lib/reception/patients";
 // 데이터는 본 컴포넌트가 리프트(4종 병렬 로드) — 탭 카운트·프리뷰 소계·디텍터 집계의 단일 진실. 자식 패널은
 // controlled(데이터+reload 주입). 검사·영상은 한 테이블 두 탭(exam_type 분할). web 현행 패턴(apiFetch·useState).
 
-type TabKey = "prescription" | "lab" | "imaging" | "treatment";
+type TabKey = "prescription" | "imaging" | "treatment";
 
+// "검사"(lab 진단검사) 탭 제거 — 검체 채취 수행 경로(주체) 미구현(Finding #2). 영상(방사선사)·처치
+// (간호)는 수행 경로 실재. examination 인프라(exam_type)는 백엔드 유지(향후 검체 수행 구현 시 부활).
 const TABS: { key: TabKey; label: string }[] = [
   { key: "prescription", label: "처방" },
-  { key: "lab", label: "검사" },
   { key: "imaging", label: "영상" },
   { key: "treatment", label: "처치" },
 ];
@@ -86,7 +87,6 @@ export function OrderPanel({
     void load();
   }, [load]);
 
-  const labExams = (examinations ?? []).filter((e) => e.exam_type === "lab");
   const imagingExams = (examinations ?? []).filter(
     (e) => e.exam_type === "imaging",
   );
@@ -94,7 +94,6 @@ export function OrderPanel({
   const isActive = (o: { status: string }) => o.status !== "cancelled";
   const counts: Record<TabKey, number> = {
     prescription: (prescriptions ?? []).filter(isActive).length,
-    lab: labExams.filter(isActive).length,
     imaging: imagingExams.filter(isActive).length,
     treatment: (treatments ?? []).filter(isActive).length,
   };
@@ -200,16 +199,6 @@ export function OrderPanel({
               today={today}
               patient={patient}
               prescriptions={prescriptions}
-              onReload={load}
-            />
-          )}
-          {tab === "lab" && (
-            <ExaminationPanel
-              encounter={encounter}
-              today={today}
-              examType="lab"
-              examinations={examinations === null ? null : labExams}
-              nowMs={nowMs}
               onReload={load}
             />
           )}
