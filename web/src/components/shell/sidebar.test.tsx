@@ -47,7 +47,7 @@ describe("Sidebar RBAC 노출 게이트", () => {
     expect(screen.queryByRole("link", { name: "권한" })).not.toBeInTheDocument(); // rbac.manage 필요
     expect(screen.queryByRole("link", { name: "감사 로그" })).not.toBeInTheDocument(); // audit.read 필요
     expect(screen.queryByRole("link", { name: "근무 스케줄" })).not.toBeInTheDocument(); // master.manage 필요(6.1)
-    expect(screen.getByRole("link", { name: "설정" })).toBeInTheDocument(); // 무권한 푸터 항목은 렌더
+    expect(screen.getByRole("link", { name: "도움말" })).toBeInTheDocument(); // 무권한 푸터 항목은 렌더
   });
 
   it("활성 경로 항목 → aria-current=page + 좌측 액센트 바", () => {
@@ -56,9 +56,9 @@ describe("Sidebar RBAC 노출 게이트", () => {
     expect(active).toHaveAttribute("aria-current", "page");
   });
 
-  it("푸터 공통 항목(설정·도움말)은 전 역할에 노출", () => {
+  it("푸터 공통 항목(도움말)은 전 역할에 노출", () => {
     renderSidebar("nurse", []);
-    expect(screen.getByRole("link", { name: "설정" })).toBeInTheDocument();
+    // 설정은 미구현(Story 9.1 = 도움말만 신설) — 도움말은 requiredPermission 없이 전 직원 노출.
     expect(screen.getByRole("link", { name: "도움말" })).toBeInTheDocument();
   });
 

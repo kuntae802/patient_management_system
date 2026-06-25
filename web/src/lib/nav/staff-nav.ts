@@ -4,6 +4,7 @@ import {
   BellRing,
   CalendarClock,
   CalendarDays,
+  CircleHelp,
   ClipboardList,
   Database,
   FileText,
@@ -84,8 +85,11 @@ export const STAFF_NAV: NavItem[] = [
   { section: "관리", label: "감사 로그", icon: ScrollText, href: "/admin/audit-logs", roles: ["admin"], requiredPermission: "audit.read" },
 ];
 
-// 전 직원 공통 푸터. (설정·도움말은 미구현 — 페이지 신설 시 추가. 현재 빈 목록 = 죽은 링크 제거.)
-export const STAFF_FOOTER_NAV: NavItem[] = [];
+// 전 직원 공통 푸터. 도움말(Story 9.1)은 역할 무관 전 직원 노출(requiredPermission 없음) → 사이드바 푸터가
+// 이미 filterNav 로 렌더하므로 데이터만 추가하면 된다. (설정 등은 미구현 — 페이지 신설 시 동일 패턴으로 추가.)
+export const STAFF_FOOTER_NAV: NavItem[] = [
+  { section: "기타", label: "도움말", icon: CircleHelp, href: "/help", roles: ALL_STAFF_ROLES },
+];
 
 // 역할 한글 표시명(0002 roles.name 과 일치).
 export const ROLE_LABELS: Record<string, string> = {
