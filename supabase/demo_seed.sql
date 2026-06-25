@@ -85,7 +85,8 @@ begin
   delete from medical_records      where encounter_id::text  like '00020000-%';
   delete from notification_logs    where patient_id::text like '00010000-%' or appointment_id::text like '00030000-%';
   delete from encounters           where id::text            like '00020000-%';
-  delete from appointments         where id::text            like '00030000-%';
+  -- appointments: prefix + patient_id 기준(구버전 demo_seed 가 다른 prefix·랜덤 UUID 로 만든 예약도 청산).
+  delete from appointments         where id::text like '00030000-%' or patient_id::text like '00010000-%';
   delete from guardians            where patient_id::text    like '00010000-%';
   delete from patients             where id::text            like '00010000-%';
 
@@ -186,7 +187,11 @@ begin
     -- lab(검체) 검사 제거 — 검체 채취 수행 경로(주체) 미구현으로 진료허브 "검사" 탭 삭제(Finding #2).
     -- examination 인프라(exam_type)는 유지하되 영상(imaging)만 시드(처치는 treatment_orders 별도).
     ((xp||'03')::uuid, (ep||'06')::uuid, 'imaging', v_fee_cxr,   v_doc, (v_today-4 + time '10:10') at time zone 'Asia/Seoul'),
-    ((xp||'04')::uuid, (ep||'08')::uuid, 'imaging', v_fee_cxr,   v_doc, (v_today   + time '10:05') at time zone 'Asia/Seoul');
+    ((xp||'04')::uuid, (ep||'08')::uuid, 'imaging', v_fee_cxr,   v_doc, (v_today   + time '10:05') at time zone 'Asia/Seoul'),
+    -- x05: 촬영 수행 완료·판독 대기(아래에서 performed 로 전이) — 의사 "판독 워크리스트"가 빈 화면이
+    --      되지 않게 하는 더미(Story 9.2 갭). reading_worklist 조건 = imaging·status='performed'·활성
+    --      내원(registered/in_progress). e07(in_progress·오늘)에 두어 충족. 발행은 e07 registered 시점.
+    ((xp||'05')::uuid, (ep||'07')::uuid, 'imaging', v_fee_cxr,   v_doc, (v_today   + time '09:40') at time zone 'Asia/Seoul');
 
   insert into treatment_orders (id, encounter_id, fee_schedule_id, ordered_by, ordered_at)
   values
@@ -216,12 +221,14 @@ begin
    where id::text like '00020000-%'
      and right(id::text,2) in ('01','02','03','04','05','06');
 
-  -- ── 검사 수행(ordered→performed) → 검사·영상료 트리거 발화(x01,x02,x03) ──────
+  -- ── 검사 수행(ordered→performed) → 검사·영상료 트리거 발화(x03=완료내원·x05=판독대기) ──────
+  --    x03 은 아래에서 completed 로 더 전이(판독 완료). x05 는 performed 에서 멈춰 의사 판독 워크리스트
+  --    (imaging·performed·활성내원)에 남는다. x04 는 ordered 유지 → 방사선사 촬영 워크리스트.
   update examinations set status='performed',
          performed_by = v_rad,
          performed_at = ordered_at + interval '20 min',
          equipment_id = case when exam_type='imaging' then v_eq_xr1 end
-   where id::text = '00021000-0000-4000-8000-000000000003';
+   where id::text like '00021000-%' and right(id::text,2) in ('03','05');
 
   -- ── 판독 완료(performed→completed) + 소견·결론(x01,x02,x03) ─────────────────
   --    findings/reading_conclusion = 직원용 임상 서사(감사 마스킹·환자 비노출).
@@ -322,6 +329,6 @@ begin
     ((ep||'04')::uuid, (tp||'02')::uuid, '생리식염수 500mL 정맥 점적 시작, 부작용 없음',   v_nurse, (v_today-1 + time '10:10') at time zone 'Asia/Seoul'),
     ((ep||'07')::uuid, null,             '내원 시 활력징후 측정, 환자 안정 상태 유지',     v_nurse, (v_today   + time '09:28') at time zone 'Asia/Seoul');
 
-  raise notice 'demo_seed 완료: 환자 20 / 보호자 3 / 예약 17 / 내원 11(완료6·진료중2·대기3) / 수납 finalize 6';
+  raise notice 'demo_seed 완료: 환자 20 / 보호자 3 / 예약 17 / 내원 11(완료6·진료중2·대기3) / 수납 finalize 6 / 영상검사 3(판독완료1·판독대기1·촬영대기1)';
 end
 $seed$;
