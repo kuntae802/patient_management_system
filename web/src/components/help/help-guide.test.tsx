@@ -40,14 +40,17 @@ describe("HelpGuide — 현재 계정 메뉴만 동적 렌더(FR-251)", () => {
     expect(screen.getByText("결제·내원 완료")).toBeInTheDocument();
   });
 
-  it("의사 계정은 진료 대기 안내(시범 콘텐츠)와 판독(준비 중 플레이스홀더)을 함께 보여준다", () => {
+  it("의사 계정은 모든 메뉴(진료 대기·판독·환자 검색)가 콘텐츠로 채워진다(Story 9.4 — 준비 중 0)", () => {
     renderAs("doctor");
 
     expect(screen.getByRole("heading", { name: "진료 대기" })).toBeInTheDocument();
-    // 의사 시범 콘텐츠(hotspot 요소)
+    // 진료 대기 hotspot(9.1 시범)
     expect(screen.getByText("진료 시작")).toBeInTheDocument();
-    // 콘텐츠 미작성 메뉴(판독·환자 검색)는 플레이스홀더
-    expect(screen.getAllByText("이 메뉴의 안내는 준비 중입니다.").length).toBeGreaterThan(0);
+    // 판독 메뉴 섹션 + hotspot(9.4 신규)
+    expect(screen.getByRole("heading", { name: "판독" })).toBeInTheDocument();
+    expect(screen.getByText("판독 대기 영상검사")).toBeInTheDocument();
+    // 의사 3메뉴 모두 콘텐츠 → 플레이스홀더 0(환자 검색은 9.3 공유 /patients 가이드).
+    expect(screen.queryByText("이 메뉴의 안내는 준비 중입니다.")).not.toBeInTheDocument();
   });
 
   it("관리자라도 권한이 없으면 권한 게이트 메뉴가 전혀 노출되지 않는다", () => {

@@ -70,4 +70,12 @@ describe("HELP_GUIDES 무결성", () => {
       expect(HELP_GUIDES[href], `원무 메뉴 가이드 누락: ${href}`).toBeDefined();
     }
   });
+
+  it("의사(doctor)에 보이는 모든 메뉴는 가이드가 채워져 있다(Story 9.4 — 준비 중 0)", () => {
+    // 의사 메뉴(진료 대기·판독·환자 검색)는 권한 게이트가 없어 전부 노출 → 전부 가이드 필요.
+    const doctorHrefs = STAFF_NAV.filter((n) => n.roles.includes("doctor")).map((n) => n.href);
+    for (const href of doctorHrefs) {
+      expect(HELP_GUIDES[href], `의사 메뉴 가이드 누락: ${href}`).toBeDefined();
+    }
+  });
 });

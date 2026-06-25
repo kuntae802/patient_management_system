@@ -92,6 +92,29 @@ export const HELP_GUIDES: Record<string, HelpMenuGuide> = {
     ],
   },
 
+  // ── 의사 판독(doctor) — Story 9.4. 번호는 캡처 스펙 doctor/radiology 와 1:1. ──
+  "/doctor/radiology": {
+    href: "/doctor/radiology",
+    intro:
+      "방사선사가 촬영을 수행한 영상검사가 “판독 대기”로 올라옵니다. 의사가 영상을 보고 판독 소견·결론을 기록하면 검사 오더가 완료됩니다(판독 겸임).",
+    screens: [
+      {
+        title: "판독 워크리스트",
+        image: "/help/doctor/radiology.png",
+        imageWidth: 1440,
+        imageHeight: 900,
+        alt: "의사 판독 워크리스트 화면 — 판독 대기 목록과 소견·결론 입력",
+        hotspots: [
+          { num: 1, element: "판독 대기 영상검사", desc: "촬영 수행된 미판독 영상검사 목록입니다. 항목을 선택하면 우측에서 판독합니다. 오래 밀리면 “판독 지연” 배지가 붙습니다." },
+          { num: 2, element: "판독 소견", desc: "영상을 보고 판독 소견을 적습니다(필수). 비어 있으면 완료할 수 없습니다." },
+          { num: 3, element: "판독 결론", desc: "결론·임프레션을 적습니다(선택)." },
+          { num: 4, element: "판독 완료", desc: "소견을 입력하면 활성화됩니다. 누르면 검사 오더가 완료(판독 종결)되고 목록에서 빠집니다." },
+        ],
+        flow: "좌측 판독 대기 목록에서 검사를 선택하면 우측에 촬영 영상과 입력란이 나타납니다 → 판독 소견(필수)·결론(선택)을 적고 → “판독 완료”를 누르면 검사 오더가 종결됩니다. 영상 업로드·촬영 수행은 방사선사 몫입니다.",
+      },
+    ],
+  },
+
   // ── 원무(reception) — Story 9.3. 번호는 캡처 스펙(tools/screenshots/specs.mjs)의 reception 엔트리와 1:1. ──
   "/reception/waiting": {
     href: "/reception/waiting",
