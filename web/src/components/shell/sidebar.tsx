@@ -96,7 +96,7 @@ export function Sidebar({ collapsed }: { collapsed: boolean }) {
       <div className="flex h-topbar shrink-0 items-center gap-2.5 border-b border-border px-3">
         <div className="size-7 shrink-0 rounded-md bg-primary" aria-hidden />
         {!collapsed && (
-          <span className="truncate text-sm font-semibold text-foreground">한빛 정형외과</span>
+          <span className="truncate text-sm font-semibold text-foreground">바이브 메디컬 의원</span>
         )}
       </div>
 

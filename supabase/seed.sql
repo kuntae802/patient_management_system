@@ -445,7 +445,7 @@ on conflict (role_id, permission_id) do nothing;
 -- 진료비 계산서·영수증(7.5)·세부산정내역서(7.6) 헤더의 병원명·사업자번호·요양기관기호·주소·대표자·전화.
 -- 단일행(id=1·요양기관 단일 운영). 데모값(심평원 표준 '형식'의 그럴듯한 시연값). 멱등 = id 충돌 시 갱신.
 insert into public.clinic_profile (id, name, biz_no, hira_no, address, ceo_name, phone) values
-  (1, '○○의원', '123-45-67890', '31234567', '서울특별시 ○○구 ○○로 123, 4층', '박○○', '02-123-4567')
+  (1, '바이브 메디컬 의원', '123-45-67890', '31234567', '서울특별시 ○○구 ○○로 123, 4층', '박○○', '02-123-4567')
 on conflict (id) do update set
   name = excluded.name, biz_no = excluded.biz_no, hira_no = excluded.hira_no,
   address = excluded.address, ceo_name = excluded.ceo_name, phone = excluded.phone,
